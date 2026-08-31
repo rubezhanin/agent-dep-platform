@@ -37,7 +37,7 @@ async fn ingest_persist_real_agency_agents_round_trips() {
     let db_path = db_dir.path().join("agency.db");
     let db = connect(&db_path).await.expect("connect");
     db.migrate().await.expect("migrate");
-    assert_eq!(schema_version(&db).await.unwrap(), 2);
+    assert_eq!(schema_version(&db).await.unwrap(), 3);
 
     // Ingest the real catalog.
     let source = Source::new(SourceKind::local(root.clone()));
@@ -57,7 +57,13 @@ async fn ingest_persist_real_agency_agents_round_trips() {
     assert_eq!(snaps.len(), 1, "first run, one snapshot row");
     let only = &snaps[0];
     assert_eq!(only.snapshot.commit_sha, result.snapshot.commit_sha);
+    // The real upstream catalog is clean as of 2026-08-31, so we
+    // expect zero findings and an Active snapshot. If the catalog
+    // ever picks up a pattern match, the snapshot would be Blocked
+    // and this assertion would catch it (and tell us to update the
+    // catalog, not the test).
     assert_eq!(only.snapshot.status, SnapshotStatus::Active);
+    assert_eq!(only.finding_count, 0);
     assert!(only.snapshot.agent_count >= 3);
 
     let detail = repo

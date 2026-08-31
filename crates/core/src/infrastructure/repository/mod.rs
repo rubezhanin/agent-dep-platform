@@ -16,6 +16,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::application::ingest::{IngestReport, IngestResult, RejectedAgent};
+use crate::application::scanner::Severity;
 use crate::domain::source::{SnapshotStatus, Source, SourceKind, SourceSnapshot};
 use crate::error::{CoreError, CoreResult};
 
@@ -69,6 +70,7 @@ type AgentRow = (
 pub struct StoredSnapshotSummary {
     pub snapshot: SourceSnapshot,
     pub source_id: Uuid,
+    pub finding_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +95,18 @@ pub struct StoredSnapshotDetail {
     pub divisions: Vec<StoredDivisionRow>,
     pub agents: Vec<StoredAgentRow>,
     pub rejected: Vec<RejectedAgent>,
+    pub findings: Vec<StoredFinding>,
+}
+
+/// One persisted finding. Carries the scanner's severity verbatim;
+/// the snapshot's `status` already reflects the rollup.
+#[derive(Debug, Clone)]
+pub struct StoredFinding {
+    pub position: u32,
+    pub severity: crate::application::scanner::Severity,
+    pub rule: String,
+    pub path: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -364,6 +378,22 @@ impl IngestRepository {
             .await?;
         }
 
+        // Step 3e: insert scanner findings.
+        for (i, f) in result.findings.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO snapshot_findings (snapshot_id, position, severity, \
+                 rule, path, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .bind(snapshot_id.to_string())
+            .bind(i as i64)
+            .bind(f.severity.as_str())
+            .bind(&f.rule)
+            .bind(&f.path)
+            .bind(&f.reason)
+            .execute(&mut *tx)
+            .await?;
+        }
+
         // Step 4: update source last_indexed_at.
         sqlx::query("UPDATE sources SET last_indexed_at = ?1 WHERE id = ?2")
             .bind(iso8601(Utc::now()))
@@ -420,6 +450,7 @@ impl IngestRepository {
             };
             out.push(StoredSnapshotSummary {
                 source_id,
+                finding_count: 0, // hydrated below
                 snapshot: SourceSnapshot {
                     id,
                     source_id,
@@ -432,6 +463,15 @@ impl IngestRepository {
                     scan_note,
                 },
             });
+        }
+        // Hydrate finding counts in a single follow-up query.
+        for s in &mut out {
+            let row: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM snapshot_findings WHERE snapshot_id = ?1")
+                    .bind(s.snapshot.id.to_string())
+                    .fetch_one(&self.pool)
+                    .await?;
+            s.finding_count = row.0 as u32;
         }
         Ok(out)
     }
@@ -583,11 +623,40 @@ impl IngestRepository {
             })
             .collect();
 
+        let finding_rows: Vec<(i64, String, String, String, String)> = sqlx::query_as(
+            "SELECT position, severity, rule, path, reason FROM snapshot_findings \
+             WHERE snapshot_id = ?1 ORDER BY position",
+        )
+        .bind(snapshot_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let findings = finding_rows
+            .into_iter()
+            .map(
+                |(position, severity_str, rule, path, reason)| -> CoreResult<StoredFinding> {
+                    let severity = Severity::parse(&severity_str).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "snapshot_findings.severity".to_string(),
+                            reason: format!("{e}"),
+                        }
+                    })?;
+                    Ok(StoredFinding {
+                        position: position as u32,
+                        severity,
+                        rule,
+                        path,
+                        reason,
+                    })
+                },
+            )
+            .collect::<CoreResult<Vec<_>>>()?;
+
         Ok(Some(StoredSnapshotDetail {
             snapshot: snap,
             divisions,
             agents,
             rejected,
+            findings,
         }))
     }
 }

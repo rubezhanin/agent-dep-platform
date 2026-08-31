@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use crate::application::scanner::{Finding, ScanPolicy, Scanner};
 use crate::domain::agent::{Agent, UpstreamAgentFrontmatter};
 use crate::domain::division::{DivisionIndex, UpstreamDivisionsFile};
 use crate::domain::source::{SnapshotStatus, Source, SourceSnapshot};
@@ -40,6 +41,9 @@ pub struct IngestResult {
     /// Files that were observed and hashed, in sorted order. Useful
     /// for the SQLite persistence layer to record per-file entries.
     pub files: Vec<ObservedFile>,
+    /// Security scan findings. Empty if the scanner was skipped.
+    /// Block-severity findings flip `snapshot.status` to `Blocked`.
+    pub findings: Vec<Finding>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +61,9 @@ pub struct IngestReport {
     pub divisions_loaded: u32,
     pub files_scanned: u32,
     pub total_bytes: u64,
+    pub findings_block: u32,
+    pub findings_warn: u32,
+    pub findings_pass: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -176,20 +183,49 @@ impl IngestService {
         // 4. Snapshot identity = sha256 of sorted "<rel>\0<sha256>" lines.
         let commit = compute_snapshot_identity(&files);
 
-        // 5. Build snapshot.
+        // 5. Pre-scan the source tree with the security scanner.
+        //    Findings are recorded; any BLOCK flips the snapshot to
+        //    `Blocked` so the planner / deployer can refuse it.
+        let policy = ScanPolicy::mvp_default();
+        let scanner = crate::application::scanner::RegexScanner;
+        let findings = scanner
+            .scan(&root, &policy)
+            .map_err(|e| CoreError::ErrIo(std::io::Error::other(format!("scanner: {e}"))))?;
+        let mut findings_block: u32 = 0;
+        let mut findings_warn: u32 = 0;
+        let mut findings_pass: u32 = 0;
+        for f in &findings {
+            match f.severity {
+                crate::application::scanner::Severity::Block => findings_block += 1,
+                crate::application::scanner::Severity::Warn => findings_warn += 1,
+                crate::application::scanner::Severity::Pass => findings_pass += 1,
+            }
+        }
+        let blocked = findings_block > 0;
+        let scan_note = if findings.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{findings_block} BLOCK, {findings_warn} WARN, {findings_pass} PASS"
+            ))
+        };
+
+        // 6. Build snapshot.
         let now = chrono::Utc::now();
         let snapshot = SourceSnapshot {
             id: Uuid::new_v4(),
             source_id: source.id,
             commit_sha: commit,
-            // MVP: any non-blocked snapshot is `Active`. Blocked is set
-            // by the scanner layer (separate task) once it lands.
-            status: SnapshotStatus::Active,
+            status: if blocked {
+                SnapshotStatus::Blocked
+            } else {
+                SnapshotStatus::Active
+            },
             agent_count: agents.len() as u32,
             division_count: divisions.len() as u32,
             created_at: now,
             upstream_template_version: None,
-            scan_note: None,
+            scan_note,
         };
 
         let report = IngestReport {
@@ -198,6 +234,9 @@ impl IngestService {
             divisions_loaded: divisions.len() as u32,
             files_scanned: files.len() as u32,
             total_bytes,
+            findings_block,
+            findings_warn,
+            findings_pass,
         };
 
         // Re-attach files to agents in source-tree order. (We also
@@ -209,6 +248,7 @@ impl IngestService {
                 divisions,
                 agents,
                 files,
+                findings,
             },
             report,
         ))

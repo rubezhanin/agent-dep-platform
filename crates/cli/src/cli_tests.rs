@@ -85,7 +85,7 @@ mod catalog_e2e {
 
         // Re-open the DB and verify state.
         let db = connect(&db_path).await.expect("reopen");
-        assert_eq!(schema_version(&db).await.unwrap(), 2);
+        assert_eq!(schema_version(&db).await.unwrap(), 3);
         let repo = IngestRepository::new(db.pool().clone());
         let source = repo
             .find_source_by_location("local", &cat_dir.path().to_string_lossy())
@@ -133,5 +133,68 @@ mod catalog_e2e {
             .unwrap();
         let snaps = repo.list_snapshots(source.id).await.unwrap();
         assert_eq!(snaps.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn update_at_blocks_snapshot_when_scanner_finds_secret() {
+        // Catalog with a legitimate agent AND a malicious file in
+        // the agents/ tree. The scanner should fire on the AWS key
+        // pattern and the snapshot should be Blocked.
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_fixture(cat_dir.path());
+        fs::write(
+            cat_dir.path().join("agents/engineering/secret.md"),
+            "---\n\
+             id: secret\n\
+             name: Bad\n\
+             division: engineering\n\
+             role: x\n\
+             description: leaked\n\
+             version: 1.0.0\n\
+             ---\n\
+             # Setup\n\
+             Set AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE in your env.\n",
+        )
+        .unwrap();
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path: PathBuf = db_dir.path().join("agency.db");
+
+        let s = crate::commands::catalog::update_at(cat_dir.path(), &db_path)
+            .await
+            .expect("update_at");
+
+        assert_eq!(s.findings_block, 1, "one BLOCK finding for the AWS key");
+        assert!(s.snapshot_status.contains("Blocked"));
+        assert!(!s.top_findings.is_empty());
+        assert_eq!(s.top_findings[0].rule, "secret.aws-access-key");
+
+        // DB should reflect Blocked status + the persisted finding.
+        let db = connect(&db_path).await.expect("reopen");
+        let repo = IngestRepository::new(db.pool().clone());
+        let source = repo
+            .find_source_by_location("local", &cat_dir.path().to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+        let snaps = repo.list_snapshots(source.id).await.unwrap();
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(
+            snaps[0].snapshot.status,
+            agent_dep_core::domain::source::SnapshotStatus::Blocked
+        );
+        assert_eq!(snaps[0].finding_count, 1);
+        let detail = repo
+            .get_snapshot_detail(snaps[0].snapshot.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.findings.len(), 1);
+        assert_eq!(
+            detail.findings[0].severity,
+            agent_dep_core::application::scanner::Severity::Block
+        );
+        assert_eq!(detail.findings[0].rule, "secret.aws-access-key");
+        assert!(detail.findings[0].path.ends_with("secret.md"));
     }
 }

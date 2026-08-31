@@ -23,7 +23,20 @@ pub struct UpdateSummary {
     pub files_scanned: u32,
     pub total_bytes: u64,
     pub rejected: usize,
+    pub findings_block: u32,
+    pub findings_warn: u32,
+    pub findings_pass: u32,
+    pub snapshot_status: String,
+    pub top_findings: Vec<TopFinding>,
     pub db_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct TopFinding {
+    pub severity: String,
+    pub rule: String,
+    pub path: String,
+    pub reason: String,
 }
 
 /// CLI entry point: resolves the default data dir, persists to the
@@ -80,6 +93,21 @@ pub async fn update_at(path: &Path, db_path: &Path) -> Result<UpdateSummary> {
         files_scanned: report.files_scanned,
         total_bytes: report.total_bytes,
         rejected: report.agents_rejected.len(),
+        findings_block: report.findings_block,
+        findings_warn: report.findings_warn,
+        findings_pass: report.findings_pass,
+        snapshot_status: format!("{:?}", result.snapshot.status),
+        top_findings: result
+            .findings
+            .iter()
+            .take(5)
+            .map(|f| TopFinding {
+                severity: f.severity.as_str().to_string(),
+                rule: f.rule.clone(),
+                path: f.path.clone(),
+                reason: f.reason.clone(),
+            })
+            .collect(),
         db_path: db_path.to_path_buf(),
     })
 }
@@ -97,13 +125,37 @@ async fn open_and_migrate(db_path: &Path) -> Result<Db> {
 fn print_summary(path: &Path, s: &UpdateSummary) {
     output::header(&format!("Ingested catalog: {}", path.display()));
     output::kv("snapshot_id", &s.snapshot_id.to_string());
+    output::kv("status", &s.snapshot_status);
     output::kv("commit", &s.commit_sha);
     output::kv("agents", &s.agent_count.to_string());
     output::kv("divisions", &s.division_count.to_string());
     output::kv("files", &s.files_scanned.to_string());
     output::kv("total_bytes", &s.total_bytes.to_string());
     output::kv("rejected", &s.rejected.to_string());
+    output::kv(
+        "findings",
+        &format!(
+            "{} BLOCK, {} WARN, {} PASS",
+            s.findings_block, s.findings_warn, s.findings_pass
+        ),
+    );
     output::kv("persisted_to", &s.db_path.display().to_string());
+
+    if s.findings_block > 0 {
+        output::warn(&format!(
+            "{} BLOCK finding(s); snapshot status is Blocked. Top {}:",
+            s.findings_block,
+            s.top_findings.len()
+        ));
+        for f in &s.top_findings {
+            eprintln!("  [{}] {} on {}: {}", f.severity, f.rule, f.path, f.reason);
+        }
+    } else if s.findings_warn > 0 {
+        output::warn(&format!(
+            "{} WARN finding(s) (see DB for details)",
+            s.findings_warn
+        ));
+    }
 
     if s.rejected > 0 {
         output::warn(&format!(

@@ -21,6 +21,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 walkdir = { workspace = true }
 once_cell = { workspace = true }
+regex = "1"
 semver = "1"
 
 [dev-dependencies]

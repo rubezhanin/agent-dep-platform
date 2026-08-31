@@ -52,6 +52,7 @@ dependencies = [
  "hex",
  "once_cell",
  "proptest",
+ "regex",
  "semver",
  "serde",
  "serde_json",

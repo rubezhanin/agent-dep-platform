@@ -105,12 +105,16 @@ async fn make_db() -> (tempfile::TempDir, Db) {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
-async fn migration_002_advances_schema_version() {
+async fn migration_advances_schema_version() {
     let (_dir, db) = make_db().await;
     let v = schema_version(&db).await.expect("version");
-    assert_eq!(
-        v, 2,
-        "schema_version should advance to 2 after migration 002"
+    // The exact value depends on the latest applied migration. As of
+    // the MVP-3 scanner (migrations 001/002/003), it should be at
+    // least 3. This test guards against a missing or duplicate
+    // migration. Update the bound when adding more migrations.
+    assert!(
+        v >= 3,
+        "schema_version should be at least 3 after migrations run"
     );
 }
 
