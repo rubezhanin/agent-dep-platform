@@ -1,6 +1,10 @@
 // MVP-0 stub. Real domain/application modules land in later tasks.
 #![doc = "Core domain, application, and infrastructure for the Agent Deployment Platform."]
 
+pub mod error;
+
+pub use error::{CoreError, CoreResult};
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -14,3 +18,6 @@ mod tests {
         assert!(!version().is_empty());
     }
 }
+
+#[cfg(test)]
+mod error_tests;
