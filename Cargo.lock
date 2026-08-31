@@ -19,6 +19,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -43,7 +44,9 @@ dependencies = [
 name = "agent_dep_core"
 version = "0.1.0"
 dependencies = [
+ "agent_dep_hermes_adapter",
  "chrono",
+ "dunce",
  "hex",
  "once_cell",
  "proptest",
@@ -68,6 +71,7 @@ dependencies = [
  "agent_dep_core",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

@@ -3,6 +3,7 @@
 **/target
 **/*.rs.bk
 Cargo.lock.bak
+**/proptest-regressions/
 
 # Tauri
 **/gen/
@@ -29,3 +30,6 @@ Thumbs.db
 .env
 .env.local
 *.local
+
+# Source TZ (kept in working tree as reference, not committed)
+TZ_*.md
