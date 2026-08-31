@@ -27,12 +27,15 @@ impl DivisionIndex {
     pub fn from_upstream(root: &UpstreamDivisionsFile) -> Self {
         let mut idx = Self::new();
         for d in &root.divisions {
-            idx.divisions.insert(d.id.clone(), Division {
-                id: d.id.clone(),
-                display_order: d.order,
-                label: d.label.clone(),
-                description: d.description.clone(),
-            });
+            idx.divisions.insert(
+                d.id.clone(),
+                Division {
+                    id: d.id.clone(),
+                    display_order: d.order,
+                    label: d.label.clone(),
+                    description: d.description.clone(),
+                },
+            );
         }
         idx
     }

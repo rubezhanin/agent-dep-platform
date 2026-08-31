@@ -16,17 +16,24 @@ pub struct Version {
 
 impl Version {
     pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     pub fn parse(s: &str) -> CoreResult<Self> {
-        let v = semver::Version::parse(s).map_err(|e| {
-            crate::error::CoreError::ErrSchemaInvalid {
+        let v =
+            semver::Version::parse(s).map_err(|e| crate::error::CoreError::ErrSchemaInvalid {
                 path: format!("version:{s}"),
                 reason: format!("semver parse: {e}"),
-            }
-        })?;
-        Ok(Self { major: v.major, minor: v.minor, patch: v.patch })
+            })?;
+        Ok(Self {
+            major: v.major,
+            minor: v.minor,
+            patch: v.patch,
+        })
     }
 
     pub fn as_string(&self) -> String {

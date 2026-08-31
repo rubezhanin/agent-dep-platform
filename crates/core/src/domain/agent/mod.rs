@@ -7,10 +7,9 @@
 //! frontmatter (id, name, division, role, description, ...) followed
 //! by a Markdown body.
 
-use chrono::{DateTime, Utc};
+use super::version::Version;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use super::version::Version;
 
 /// Raw upstream `agents/<division>/<slug>.md` frontmatter. Parsed
 /// straight from the file before any normalization.
