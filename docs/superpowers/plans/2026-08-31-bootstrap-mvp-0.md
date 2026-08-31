@@ -1236,7 +1236,7 @@ Expected: compile error.
 
 ### Step 4.3: Create migration
 
-Create `crates/core/src/infrastructure/sqlite/migrations/001_initial.sql`:
+Create `crates/core/migrations/001_initial.sql` (path relative to the `crates/core/` package root, which is what `sqlx::migrate!()` resolves against):
 
 ```sql
 -- Initial schema: meta table for tracking applied migrations.
@@ -1312,6 +1312,9 @@ pub async fn connect(path: &Path) -> CoreResult<Db> {
 
 impl Db {
     pub async fn migrate(&self) -> CoreResult<()> {
+        // `./migrations` is resolved against the `crates/core/` package root,
+        // not the source file. The migration files live at
+        // `crates/core/migrations/*.sql`.
         sqlx::migrate!("./migrations").run(&self.pool).await?;
         Ok(())
     }
@@ -2848,13 +2851,18 @@ pub fn run() -> tauri::Result<()> {
             tracing::info!("Tauri app starting up (MVP-0)");
 
             // Initialize DB.
+            // We use `tauri::async_runtime::block_on` (not `tokio::runtime::Handle::current().block_on`):
+            // the latter would panic with "Cannot drop a runtime in a context where
+            // blocking is not allowed" because Tauri 2's main loop is already a tokio
+            // runtime. Tauri exposes its own async_runtime module that bridges safely.
             let db_path = app_data_dir.join("data").join("agent-dep.db");
             std::fs::create_dir_all(db_path.parent().unwrap())?;
-            let db = tokio::runtime::Handle::current()
-                .block_on(agent_dep_core::infrastructure::sqlite::connect(&db_path))
-                .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("db connect: {e}"))) as Box<dyn std::error::Error>)?;
-            tokio::runtime::Handle::current()
-                .block_on(db.migrate())
+            let db_path_for_connect = db_path.clone();
+            let db = tauri::async_runtime::block_on(async move {
+                agent_dep_core::infrastructure::sqlite::connect(&db_path_for_connect).await
+            })
+            .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("db connect: {e}"))) as Box<dyn std::error::Error>)?;
+            tauri::async_runtime::block_on(async { db.migrate().await })
                 .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("db migrate: {e}"))) as Box<dyn std::error::Error>)?;
 
             // Initialize CAS.
