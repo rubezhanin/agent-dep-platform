@@ -48,7 +48,6 @@ pub struct TracingGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn init_creates_log_dir() {
