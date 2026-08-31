@@ -3,3 +3,4 @@
 //! these modules' public APIs.
 
 pub mod filesystem;
+pub mod sqlite;
