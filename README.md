@@ -59,10 +59,27 @@ scripts/             local CI scripts (PowerShell)
 - **`scripts/ci.ps1`** runs all gates locally; same checks as the
   unactivated `.github/workflows/ci.yml` template
 
+## Architectural Decision Records
+
+TZ §44 requires 7 ADRs before active implementation. All written in
+`docs/adr/`:
+
+| # | File | Topic |
+|---|---|---|
+| 0001 | `0001-hermes-protocol.md` | Hermes v0.18.2 protocol (MCP, not dashboard plugin) |
+| 0002 | `0002-deployment-filesystem-semantics.md` | File-level atomic, journal for dirs |
+| 0003 | `0003-lock-file-and-versioning.md` | Exact versions in MVP, lockfile authoritative |
+| 0004 | `0004-local-storage-boundary.md` | SQLite/CAS layout, migration backup policy |
+| 0005 | `0005-security-scanner-scope.md` | 13 rules, 3 severity, no NLP in MVP |
+| 0006 | `0006-recovery-journal.md` | `operations` table, idempotent recovery |
+| 0007 | `0007-enterprise-server-evolution.md` | Domain frozen across phases, server in 2.x |
+
 ## What's deferred
 
-- Hermes POC + ADR-001 → MVP-1
-- ADRs 002–007 → MVP-2
+- Hermes POC end-to-end (router-MCP server reference impl + sandbox) → MVP-1 PoC,
+  parked per user decision 2026-08-31 (no router-plugin spec in Hermes v0.18.2; ADR-0001
+  documents the MCP alternative)
+- TZ §12.2 / §54 / §55 wording updates to match ADR-0001
 - All MUST HAVE features (TZ §45) → MVP-3+
 
 ## Local CI
