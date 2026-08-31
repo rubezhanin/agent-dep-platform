@@ -23,5 +23,6 @@ walkdir = { workspace = true }
 once_cell = { workspace = true }
 
 [dev-dependencies]
+agent_dep_hermes_adapter = { path = "../hermes-adapter" }
 tempfile = { workspace = true }
 dunce = { workspace = true }
