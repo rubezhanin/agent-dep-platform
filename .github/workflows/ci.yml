@@ -1,0 +1,28 @@
+# CI workflow template. Not currently active (no remote). When a remote is added,
+# this file will run on every push and PR.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: cargo build --workspace
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: npm run check
+      - run: npm run build
+      - run: ./scripts/check-ts-drift.sh  # bash version of check-ts-drift.ps1
