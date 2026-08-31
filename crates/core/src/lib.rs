@@ -2,6 +2,7 @@
 #![doc = "Core domain, application, and infrastructure for the Agent Deployment Platform."]
 
 pub mod error;
+pub mod infrastructure;
 
 pub use error::{CoreError, CoreResult};
 
