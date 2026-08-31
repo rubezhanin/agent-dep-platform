@@ -1,4 +1,6 @@
-fn main() {
-    eprintln!("Tauri app: stub (MVP-0). Real run() lives in agent_dep_app_lib::run().");
-    std::process::exit(2);
+// Prevents an additional console window on Windows in release.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    agent_dep_app_lib::run().map_err(Into::into)
 }
