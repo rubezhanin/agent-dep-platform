@@ -1,5 +1,15 @@
-// MVP-0 stub. Real adapter lands in Task 6.
-#![doc = "Hermes runtime adapter."]
+//! Hermes runtime adapter.
+#![doc = "Hermes runtime adapter implementing the `RuntimeAdapter` trait (TZ §12.3)."]
+
+pub mod adapter;
+pub mod detection;
+pub mod hermes_adapter;
+pub mod paths;
+pub mod types;
+
+pub use adapter::RuntimeAdapter;
+pub use hermes_adapter::HermesAdapter;
+pub use types::RuntimeInfo;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -14,3 +24,7 @@ mod tests {
         assert!(!version().is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "hermes_adapter_tests.rs"]
+mod hermes_adapter_tests;
