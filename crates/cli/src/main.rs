@@ -1,4 +1,5 @@
 mod commands;
+mod data_dir;
 mod output;
 
 #[cfg(test)]
@@ -34,9 +35,8 @@ pub enum Command {
 
 #[derive(Subcommand, Debug)]
 pub enum CatalogAction {
-    /// Walk a local directory, parse + validate + scan, return the
-    /// immutable snapshot identity and counts. (Persistence is a
-    /// separate task; this command prints the result.)
+    /// Walk a local directory, parse + validate + scan, persist the
+    /// snapshot to the default SQLite DB, and print a summary.
     Update {
         /// Path to the catalog root (must contain `divisions.json`
         /// and an `agents/<division>/*.md` subtree).
@@ -51,7 +51,7 @@ async fn main() -> ExitCode {
         Command::Deploy { system } => deploy::run(&system).await.map_err(Into::into),
         Command::Status => status::run().await.map_err(Into::into),
         Command::Catalog { action } => match action {
-            CatalogAction::Update { path } => catalog::update(path),
+            CatalogAction::Update { path } => catalog::update(path).await.map_err(Into::into),
         },
     };
     match result {

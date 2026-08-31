@@ -44,6 +44,12 @@ impl DivisionIndex {
         self.divisions.get(id)
     }
 
+    /// Iterate over all divisions in their natural (BTreeMap) order.
+    /// Each item is `(id, &Division)`.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Division)> {
+        self.divisions.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
     pub fn ids(&self) -> impl Iterator<Item = &str> {
         self.divisions.keys().map(|s| s.as_str())
     }

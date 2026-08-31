@@ -140,7 +140,7 @@ impl IngestService {
                     Err(reason) => {
                         rejected.push(RejectedAgent {
                             relative_path: self.rel_to(&path, &root),
-                            reason: format!("{reason}"),
+                            reason: reason.to_string(),
                         });
                     }
                 }
@@ -162,7 +162,7 @@ impl IngestService {
         }
         all_files.sort();
         for f in &all_files {
-            let bytes = fs::read(f).map_err(|e| CoreError::ErrIo(e))?;
+            let bytes = fs::read(f).map_err(CoreError::ErrIo)?;
             let hash = sha256_hex(&bytes);
             let rel = self.rel_to(f, &root);
             total_bytes += bytes.len() as u64;

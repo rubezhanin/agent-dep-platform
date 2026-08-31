@@ -1,0 +1,64 @@
+//! CLI data directory resolution.
+//!
+//! Per ADR-0004 the SQLite DB lives under a per-user data dir. The
+//! Tauri app uses `app.path().app_data_dir()`; the CLI uses
+//! `$AGENCY_DATA_DIR` if set, otherwise
+//! `$USERPROFILE/.agency` (Windows) or `$HOME/.agency` (other) and
+//! puts the DB at `<data>/data/agency.db`.
+
+use std::path::PathBuf;
+
+pub fn default_data_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("AGENCY_DATA_DIR") {
+        if !p.trim().is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".agency")
+}
+
+pub fn default_db_path() -> PathBuf {
+    default_data_dir().join("data").join("agency.db")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_var_overrides_home() {
+        // SAFETY: tests in this module do not read AGENCY_DATA_DIR
+        // outside the override; we set it for the duration of the call.
+        // SAFETY: single-threaded test runtime; no other thread reads
+        // the env var here.
+        let prev = std::env::var("AGENCY_DATA_DIR").ok();
+        // SAFETY: see above.
+        unsafe {
+            std::env::set_var("AGENCY_DATA_DIR", "X:/custom/agency");
+        }
+        let p = default_data_dir();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AGENCY_DATA_DIR", v) },
+            None => unsafe { std::env::remove_var("AGENCY_DATA_DIR") },
+        }
+        assert_eq!(p, PathBuf::from("X:/custom/agency"));
+    }
+
+    #[test]
+    fn default_db_path_lives_under_data_subdir() {
+        let prev = std::env::var("AGENCY_DATA_DIR").ok();
+        unsafe {
+            std::env::remove_var("AGENCY_DATA_DIR");
+        }
+        let p = default_db_path();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AGENCY_DATA_DIR", v) },
+            None => unsafe { std::env::remove_var("AGENCY_DATA_DIR") },
+        }
+        assert!(p.ends_with("data/agency.db") || p.ends_with("data\\agency.db"));
+    }
+}

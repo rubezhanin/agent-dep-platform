@@ -4,4 +4,5 @@
 
 pub mod content_store;
 pub mod filesystem;
+pub mod repository;
 pub mod sqlite;
