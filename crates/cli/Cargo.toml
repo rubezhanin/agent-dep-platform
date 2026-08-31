@@ -1,0 +1,19 @@
+[package]
+name = "agent_dep_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "agency"
+path = "src/main.rs"
+
+[dependencies]
+agent_dep_core = { path = "../core" }
+agent_dep_hermes_adapter = { path = "../hermes-adapter" }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

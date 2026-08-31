@@ -1,0 +1,31 @@
+# Rust
+/target
+**/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Tauri
+**/gen/
+
+# Node
+node_modules/
+dist/
+.vite/
+.pnpm-store/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Local
+.env
+.env.local
+*.local
