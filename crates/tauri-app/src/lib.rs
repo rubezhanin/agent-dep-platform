@@ -1,5 +1,9 @@
 //! Tauri 2 host for the Agent Deployment Platform.
 
+mod tracing_init;
+
+pub use tracing_init::TracingGuard;
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }

@@ -29,3 +29,6 @@ tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
