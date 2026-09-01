@@ -109,12 +109,12 @@ async fn migration_advances_schema_version() {
     let (_dir, db) = make_db().await;
     let v = schema_version(&db).await.expect("version");
     // The exact value depends on the latest applied migration. As of
-    // the MVP-3 scanner (migrations 001/002/003), it should be at
-    // least 3. This test guards against a missing or duplicate
+    // the MVP-3 journal (migrations 001/002/003/004), it should be at
+    // least 4. This test guards against a missing or duplicate
     // migration. Update the bound when adding more migrations.
     assert!(
-        v >= 3,
-        "schema_version should be at least 3 after migrations run"
+        v >= 4,
+        "schema_version should be at least 4 after migrations run"
     );
 }
 

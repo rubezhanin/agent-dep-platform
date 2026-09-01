@@ -37,7 +37,7 @@ async fn ingest_persist_real_agency_agents_round_trips() {
     let db_path = db_dir.path().join("agency.db");
     let db = connect(&db_path).await.expect("connect");
     db.migrate().await.expect("migrate");
-    assert_eq!(schema_version(&db).await.unwrap(), 3);
+    assert_eq!(schema_version(&db).await.unwrap(), 4);
 
     // Ingest the real catalog.
     let source = Source::new(SourceKind::local(root.clone()));
