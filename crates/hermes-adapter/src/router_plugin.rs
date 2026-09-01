@@ -21,7 +21,6 @@
 //! escapes `<HERMES_HOME>/plugins/<plugin_id>/` is rejected
 //! before a single byte is written.
 
-use crate::adapter::RuntimeAdapter;
 use crate::paths::hermes_plugins_dir;
 use agent_dep_core::error::{CoreError, CoreResult};
 use agent_dep_core::infrastructure::filesystem::safe_path::resolve_safe_path;
@@ -67,7 +66,6 @@ pub struct RouterPluginLayout {
     pub skills_sha256: String,
 }
 
-const MANIFEST_SCHEMA_VERSION: u32 = 1;
 const PLUGIN_META_SCHEMA_VERSION: u32 = 1;
 
 /// Render the router plugin. `hermes_home` is the absolute
@@ -312,14 +310,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     hex::encode(h.finalize())
-}
-
-impl RuntimeAdapter for () {
-    fn detect(&self) -> CoreResult<crate::types::RuntimeInfo> {
-        Err(CoreError::Unimplemented {
-            feature: "unit-only RuntimeAdapter impl".into(),
-        })
-    }
 }
 
 #[cfg(test)]
