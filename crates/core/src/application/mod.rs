@@ -6,6 +6,7 @@
 //! (compose, plan, deploy, reconcile, rollback) land in later tasks.
 
 pub mod compose;
+pub mod deploy;
 pub mod ingest;
 pub mod journal;
 pub mod plan;

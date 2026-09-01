@@ -1,0 +1,23 @@
+# Example `system.yaml` for `agency deploy apply`.
+#
+# A `system` is a named bundle of agent references pulled from a
+# catalog (a local directory that contains `divisions.json` and
+# `agents/<division>/*.md`). The deploy service materializes each
+# resolved agent into the target directory at:
+#
+#     <target>/agents/<id>@<version>/<id>.md
+#
+# per ADR-0002 (file-level atomic temp+rename, backup-before-overwrite)
+# and journals the whole operation per ADR-0006.
+
+apiVersion: agent-dep/v1
+kind: System
+metadata:
+  id: saas-stack
+  name: SaaS Stack
+  description: A minimal two-agent system for a small SaaS product.
+spec:
+  source: agency-agents
+  agents:
+    - ref: backend-engineer@1.0.0
+    - ref: frontend-architect@1.0.0

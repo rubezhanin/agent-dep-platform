@@ -19,11 +19,6 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Deploy a system to a runtime.
-    Deploy {
-        /// System identifier (e.g. "saas-platform").
-        system: String,
-    },
     /// Show current deployment status.
     Status,
     /// Ingest and inspect a local catalog (MVP-3).
@@ -35,6 +30,14 @@ pub enum Command {
     System {
         #[command(subcommand)]
         action: SystemAction,
+    },
+    /// Apply a `system.yaml` to a target directory through the
+    /// journal-backed `DeploymentService`. The journal records the
+    /// operation so a crash mid-flight leaves a non-terminal row
+    /// that `gc_stale` will force-fail on next startup.
+    Deploy {
+        #[command(subcommand)]
+        action: DeployAction,
     },
 }
 
@@ -67,11 +70,27 @@ pub enum SystemAction {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum DeployAction {
+    /// Apply a composed `system.yaml` to a target directory. Agent
+    /// files are written to `<target>/agents/<id>@<version>/<id>.md`
+    /// with backup-before-overwrite and atomic temp+rename.
+    Apply {
+        /// Path to the system definition (a `system.yaml`).
+        file: PathBuf,
+        /// Path to the local catalog root.
+        #[arg(long)]
+        catalog: PathBuf,
+        /// Directory to write the deployed agent files into.
+        #[arg(long)]
+        target: PathBuf,
+    },
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
-        Command::Deploy { system } => deploy::run(&system).await.map_err(Into::into),
         Command::Status => status::run().await.map_err(Into::into),
         Command::Catalog { action } => match action {
             CatalogAction::Update { path } => catalog::update(path).await.map_err(Into::into),
@@ -79,6 +98,13 @@ async fn main() -> ExitCode {
         Command::System { action } => match action {
             SystemAction::Plan { file, catalog } => {
                 system::plan(&file, &catalog).await.map_err(Into::into)
+            }
+        },
+        Command::Deploy { action } => match action {
+            DeployAction::Apply { file, catalog, target } => {
+                deploy::deploy(&file, &catalog, &target)
+                    .await
+                    .map_err(Into::into)
             }
         },
     };
