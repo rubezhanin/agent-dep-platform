@@ -2,4 +2,5 @@
   import Placeholder from "../lib/components/Placeholder.svelte";
 </script>
 
-<Placeholder title="Catalog" hint="Browse agents and skills (TZ §28.1)." />
+<Placeholder titleKey="placeholder.title.catalog"
+              hintKey="placeholder.hint.catalog" />

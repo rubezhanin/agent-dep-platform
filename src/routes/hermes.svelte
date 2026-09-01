@@ -2,4 +2,5 @@
   import Placeholder from "../lib/components/Placeholder.svelte";
 </script>
 
-<Placeholder title="Hermes" hint="Runtime health and configuration (TZ §28.1)." />
+<Placeholder titleKey="placeholder.title.hermes"
+              hintKey="placeholder.hint.hermes" />

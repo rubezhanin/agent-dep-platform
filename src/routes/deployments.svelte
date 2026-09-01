@@ -2,4 +2,5 @@
   import Placeholder from "../lib/components/Placeholder.svelte";
 </script>
 
-<Placeholder title="Deployments" hint="Desired/actual state and history (TZ §28.1)." />
+<Placeholder titleKey="placeholder.title.deployments"
+              hintKey="placeholder.hint.deployments" />

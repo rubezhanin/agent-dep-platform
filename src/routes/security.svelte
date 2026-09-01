@@ -2,4 +2,5 @@
   import Placeholder from "../lib/components/Placeholder.svelte";
 </script>
 
-<Placeholder title="Security" hint="Findings and policy decisions (TZ §28.1)." />
+<Placeholder titleKey="placeholder.title.security"
+              hintKey="placeholder.hint.security" />

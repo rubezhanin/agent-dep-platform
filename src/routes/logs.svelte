@@ -2,4 +2,5 @@
   import Placeholder from "../lib/components/Placeholder.svelte";
 </script>
 
-<Placeholder title="Logs" hint="Diagnostics (TZ §28.1)." />
+<Placeholder titleKey="placeholder.title.logs"
+              hintKey="placeholder.hint.logs" />
