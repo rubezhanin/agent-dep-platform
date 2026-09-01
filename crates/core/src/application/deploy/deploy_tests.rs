@@ -4,16 +4,12 @@
 use super::*;
 use crate::application::journal::JournalService;
 use crate::domain::agent::Agent;
-use crate::domain::plan::PlanOperationKind;
-use crate::domain::source::{Source, SourceKind};
 use crate::domain::system::{
-    AgentOverride, AgentRef, ResolvedAgent, System, SystemAgentRef, SystemFile, SystemMetadata,
-    SystemSpec,
+    AgentRef, ResolvedAgent, System, SystemAgentRef, SystemMetadata, SystemSpec,
 };
 use crate::domain::version::Version;
+use crate::infrastructure::repository::deployed_artifacts_repository::DeployedArtifactsRepository;
 use crate::infrastructure::sqlite::connect;
-use sha2::{Digest, Sha256};
-use std::path::Path;
 use uuid::Uuid;
 
 fn make_agent(id: &str, version: &str, body: &str) -> Agent {
@@ -72,28 +68,26 @@ fn make_system(agents: Vec<(&str, &str)>) -> System {
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    hex::encode(h.finalize())
-}
-
-async fn make_journal() -> (tempfile::TempDir, JournalService) {
+async fn make_journal() -> (tempfile::TempDir, JournalService, DeployedArtifactsRepository) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("journal.db");
     let db = connect(&path).await.expect("connect");
     db.migrate().await.expect("migrate");
-    (dir, JournalService::new(db.pool().clone()))
+    (
+        dir,
+        JournalService::new(db.pool().clone()),
+        DeployedArtifactsRepository::new(db.pool().clone()),
+    )
 }
 
 #[tokio::test]
 async fn apply_writes_each_resolved_agent_file() {
-    let (_dir, journal) = make_journal().await;
+    let (_dir, journal, artifacts) = make_journal().await;
     let target = tempfile::tempdir().expect("target tempdir");
     let system = make_system(vec![("be", "1.0.0"), ("fe", "1.0.0")]);
     let svc = DeploymentService;
     let outcome = svc
-        .apply(target.path(), &system, &journal)
+        .apply(target.path(), &system, &journal, &artifacts)
         .await
         .expect("apply");
 
@@ -114,20 +108,20 @@ async fn apply_writes_each_resolved_agent_file() {
 
 #[tokio::test]
 async fn apply_is_idempotent_second_run_with_same_content() {
-    let (_dir, journal) = make_journal().await;
+    let (_dir, journal, artifacts) = make_journal().await;
     let target = tempfile::tempdir().expect("target tempdir");
     let system = make_system(vec![("be", "1.0.0")]);
     let svc = DeploymentService;
 
     let first = svc
-        .apply(target.path(), &system, &journal)
+        .apply(target.path(), &system, &journal, &artifacts)
         .await
         .expect("first");
     assert_eq!(first.wrote, 1);
     assert_eq!(first.skipped, 0);
 
     let second = svc
-        .apply(target.path(), &system, &journal)
+        .apply(target.path(), &system, &journal, &artifacts)
         .await
         .expect("second");
     assert_eq!(second.wrote, 0, "no new writes on idempotent re-deploy");
@@ -137,12 +131,12 @@ async fn apply_is_idempotent_second_run_with_same_content() {
 
 #[tokio::test]
 async fn apply_creates_backup_when_content_changes() {
-    let (_dir, journal) = make_journal().await;
+    let (_dir, journal, artifacts) = make_journal().await;
     let target = tempfile::tempdir().expect("target tempdir");
     let system_v1 = make_system(vec![("be", "1.0.0")]);
     let svc = DeploymentService;
 
-    svc.apply(target.path(), &system_v1, &journal)
+    svc.apply(target.path(), &system_v1, &journal, &artifacts)
         .await
         .expect("v1");
 
@@ -159,7 +153,7 @@ async fn apply_creates_backup_when_content_changes() {
         ..system_v1.clone()
     };
     let second = svc
-        .apply(target.path(), &system_v1_changed, &journal)
+        .apply(target.path(), &system_v1_changed, &journal, &artifacts)
         .await
         .expect("v1 changed");
     assert_eq!(second.wrote, 1);
@@ -191,12 +185,12 @@ async fn apply_creates_backup_when_content_changes() {
 
 #[tokio::test]
 async fn apply_records_operation_in_journal() {
-    let (_dir, journal) = make_journal().await;
+    let (_dir, journal, artifacts) = make_journal().await;
     let target = tempfile::tempdir().expect("target tempdir");
     let system = make_system(vec![("be", "1.0.0")]);
     let svc = DeploymentService;
     let outcome = svc
-        .apply(target.path(), &system, &journal)
+        .apply(target.path(), &system, &journal, &artifacts)
         .await
         .expect("apply");
     let op = journal.get(outcome.operation_id).await.expect("get").expect("some");
@@ -209,7 +203,7 @@ async fn apply_records_operation_in_journal() {
 
 #[tokio::test]
 async fn apply_rejects_when_target_is_not_a_directory() {
-    let (_dir, journal) = make_journal().await;
+    let (_dir, journal, artifacts) = make_journal().await;
     let target = tempfile::tempdir().expect("target tempdir");
     // Create a regular file where a directory is expected.
     let not_a_dir = target.path().join("not-a-dir");
@@ -217,8 +211,132 @@ async fn apply_rejects_when_target_is_not_a_directory() {
     let system = make_system(vec![("be", "1.0.0")]);
     let svc = DeploymentService;
     let err = svc
-        .apply(&not_a_dir, &system, &journal)
+        .apply(&not_a_dir, &system, &journal, &artifacts)
         .await
         .expect_err("apply on a file should error");
     let _ = err;
+}
+
+#[tokio::test]
+async fn apply_writes_one_deployed_artifacts_row_per_file() {
+    let (_dir, journal, artifacts) = make_journal().await;
+    let target = tempfile::tempdir().expect("target tempdir");
+    let system = make_system(vec![("be", "1.0.0"), ("fe", "1.0.0")]);
+    let svc = DeploymentService;
+    let outcome = svc
+        .apply(target.path(), &system, &journal, &artifacts)
+        .await
+        .expect("apply");
+    assert_eq!(outcome.wrote, 2);
+
+    let rows = artifacts
+        .list_for_system("test")
+        .await
+        .expect("list_for_system");
+    assert_eq!(rows.len(), 2, "one row per agent file");
+
+    // Each row has state="current" and actual==expected.
+    for (target_rel, expected, actual) in &rows {
+        assert!(
+            actual.is_some(),
+            "{target_rel} should have actual_sha256 set after a successful write"
+        );
+        assert_eq!(
+            actual.as_deref(),
+            Some(expected.as_str()),
+            "{target_rel}: actual_sha must equal expected_sha after write"
+        );
+        let row = artifacts
+            .get("test", target_rel)
+            .await
+            .expect("get")
+            .expect("row exists");
+        assert_eq!(row.state, "current");
+        assert!(row.last_verified_at.is_some());
+    }
+}
+
+#[tokio::test]
+async fn apply_re_records_actual_sha_after_content_change() {
+    let (_dir, journal, artifacts) = make_journal().await;
+    let target = tempfile::tempdir().expect("target tempdir");
+    let system_v1 = make_system(vec![("be", "1.0.0")]);
+    let svc = DeploymentService;
+
+    svc.apply(target.path(), &system_v1, &journal, &artifacts)
+        .await
+        .expect("v1");
+    let first = artifacts
+        .get("test", "agents/be@1.0.0/be.md")
+        .await
+        .expect("get")
+        .expect("row");
+    let first_expected = first.expected_sha256.clone();
+    let first_deployed = first.deployed_at.clone();
+
+    // Change the body, redeploy.
+    let system_v2 = System {
+        resolved: vec![ResolvedAgent {
+            agent: make_agent("be", "1.0.0", "You are be. v2 content.\n"),
+            from_ref: AgentRef {
+                id: "be".to_string(),
+                version: Version::new(1, 0, 0),
+            },
+            applied_override: None,
+        }],
+        ..system_v1.clone()
+    };
+    svc.apply(target.path(), &system_v2, &journal, &artifacts)
+        .await
+        .expect("v2");
+
+    let rows = artifacts
+        .list_for_system("test")
+        .await
+        .expect("list");
+    assert_eq!(rows.len(), 1, "upsert keeps a single row per target");
+    let second = artifacts
+        .get("test", "agents/be@1.0.0/be.md")
+        .await
+        .expect("get")
+        .expect("row");
+    assert_ne!(
+        second.expected_sha256, first_expected,
+        "expected_sha must change when body changes"
+    );
+    assert_eq!(
+        second.actual_sha256.as_deref(),
+        Some(second.expected_sha256.as_str()),
+        "actual_sha must equal new expected_sha after rewrite"
+    );
+    assert_eq!(second.state, "current");
+    assert_ne!(
+        second.deployed_at, first_deployed,
+        "deployed_at must advance to reflect the latest apply"
+    );
+}
+
+#[tokio::test]
+async fn apply_idempotent_run_does_not_grow_deployed_artifacts() {
+    let (_dir, journal, artifacts) = make_journal().await;
+    let target = tempfile::tempdir().expect("target tempdir");
+    let system = make_system(vec![("be", "1.0.0")]);
+    let svc = DeploymentService;
+
+    svc.apply(target.path(), &system, &journal, &artifacts)
+        .await
+        .expect("first");
+    svc.apply(target.path(), &system, &journal, &artifacts)
+        .await
+        .expect("second");
+
+    let rows = artifacts
+        .list_for_system("test")
+        .await
+        .expect("list");
+    assert_eq!(
+        rows.len(),
+        1,
+        "idempotent re-deploy upserts the same row, not a new one"
+    );
 }

@@ -15,6 +15,10 @@
 use crate::application::journal::{JournalService, OperationType};
 use crate::domain::system::System;
 use crate::error::{CoreError, CoreResult};
+use crate::infrastructure::repository::deployed_artifacts_repository::{
+    DeployedArtifactRow, DeployedArtifactsRepository,
+};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -69,11 +73,20 @@ impl DeploymentService {
     /// Apply a `System` to `target`, journaled end-to-end. The
     /// returned `DeployOutcome` reports counts of writes, skips,
     /// and backups so the CLI can print a useful summary.
+    ///
+    /// On every successful write (Wrote / Skipped / BackedUp), a
+    /// `deployed_artifacts` row is upserted with `state = "current"`
+    /// (TZ v2 §20). `PlanService` reads these rows back to compute
+    /// real `Noop` / `Update` / `Delete` diffs on the next run. A
+    /// failed write leaves no row — the next `apply` will retry
+    /// from scratch and, if the agent body is unchanged, mark the
+    /// row as `current` then.
     pub async fn apply(
         &self,
         target: &Path,
         system: &System,
         journal: &JournalService,
+        artifacts: &DeployedArtifactsRepository,
     ) -> CoreResult<DeployOutcome> {
         if !target.exists() {
             std::fs::create_dir_all(target).map_err(|e| CoreError::ErrIo(e))?;
@@ -128,6 +141,7 @@ impl DeploymentService {
         let mut skipped = 0usize;
         let mut backed_up = 0usize;
         let mut failed: Vec<FailedWrite> = Vec::new();
+        let system_id = system.metadata.id.clone();
         for w in &writes {
             // Find the agent body by ref.
             let resolved = system
@@ -149,10 +163,38 @@ impl DeploymentService {
                     backed_up += 1;
                     wrote += 1;
                 }
-                Err(e) => failed.push(FailedWrite {
+                Err(e) => {
+                    failed.push(FailedWrite {
+                        agent_ref: w.agent_ref.clone(),
+                        reason: format!("{e}"),
+                    });
+                    continue;
+                }
+            }
+            // Record the successful write in `deployed_artifacts` so
+            // `PlanService` can diff against it on the next run.
+            // actual_sha == expected_sha here by construction: we
+            // either just wrote the body, or skipped because the
+            // existing file already had exactly this hash.
+            let now = now_iso();
+            let row = DeployedArtifactRow {
+                system_id: system_id.clone(),
+                target: w.relative.clone(),
+                expected_sha256: w.body_sha256.clone(),
+                actual_sha256: Some(w.body_sha256.clone()),
+                state: "current".to_string(),
+                deployed_at: now.clone(),
+                last_verified_at: Some(now),
+            };
+            if let Err(e) = artifacts.upsert(&row).await {
+                // Surface DB-side errors as a failed write so the
+                // operator notices, but keep the on-disk state
+                // intact (we don't undo filesystem writes just
+                // because the audit row couldn't be persisted).
+                failed.push(FailedWrite {
                     agent_ref: w.agent_ref.clone(),
-                    reason: format!("{e}"),
-                }),
+                    reason: format!("deployed_artifacts upsert: {e}"),
+                });
             }
         }
 
@@ -280,6 +322,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     hex::encode(h.finalize())
+}
+
+fn now_iso() -> String {
+    let now: DateTime<Utc> = Utc::now();
+    now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 #[cfg(test)]

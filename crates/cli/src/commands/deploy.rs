@@ -12,6 +12,7 @@ use agent_dep_core::application::journal::JournalService;
 use agent_dep_core::application::policy::Policy;
 use agent_dep_core::domain::source::{Source, SourceKind};
 use agent_dep_core::domain::system::parse_system_file;
+use agent_dep_core::infrastructure::repository::deployed_artifacts_repository::DeployedArtifactsRepository;
 use agent_dep_core::infrastructure::sqlite::{connect, Db};
 use agent_dep_hermes_adapter::paths::default_hermes_home;
 use agent_dep_hermes_adapter::router_plugin::{AgentFile, RouterPluginInputs};
@@ -131,9 +132,10 @@ pub async fn deploy_at(
 
     let db = open_and_migrate(db_path).await?;
     let journal = JournalService::new(db.pool().clone());
+    let artifacts = DeployedArtifactsRepository::new(db.pool().clone());
 
     let outcome = DeploymentService::new()
-        .apply(target, &composed, &journal)
+        .apply(target, &composed, &journal, &artifacts)
         .await
         .map_err(|e| anyhow::anyhow!("deploy: {e}"))?;
 
