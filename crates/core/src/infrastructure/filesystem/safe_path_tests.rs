@@ -31,6 +31,21 @@ fn rejects_absolute_path_outside_root() {
     assert!(is_blocked, "expected blocked, got: {result:?}");
 }
 
+/// Same as `rejects_absolute_path_outside_root` but with a forward-slash
+/// drive-letter path (e.g. `D:/foo/bar`). The path shape is also
+/// Windows-only and must be rejected on Linux/macOS where it would
+/// otherwise be treated as a relative filename.
+#[test]
+fn rejects_windows_drive_letter_with_forward_slash() {
+    let root = temp_root();
+    let result = resolve_safe_path(&root, Path::new("D:/secrets/passwords"));
+    let is_blocked = matches!(
+        result,
+        Err(CoreError::ErrPathOutsideRoot { .. }) | Err(CoreError::ErrSymlinkEscape { .. })
+    );
+    assert!(is_blocked, "expected blocked, got: {result:?}");
+}
+
 #[test]
 fn accepts_relative_safe_path() {
     let root = temp_root();

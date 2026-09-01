@@ -32,6 +32,29 @@ pub fn resolve_safe_path(root: &Path, input: &Path) -> CoreResult<PathBuf> {
         }
     }
 
+    // 1b. On non-Windows, reject paths that look like Windows absolute
+    //     paths (drive letter + `\` or `/`, e.g. `C:\Windows\System32`).
+    //     On Linux/macOS the backslash is a valid filename character, so
+    //     `Path::is_absolute()` returns false and the string is silently
+    //     joined inside the root, which is a path-traversal by symbol.
+    //     Reject before the join happens.
+    #[cfg(not(windows))]
+    {
+        if let Some(s) = input.to_str() {
+            let bytes = s.as_bytes();
+            if bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && (bytes[2] == b'\\' || bytes[2] == b'/')
+            {
+                return Err(CoreError::ErrPathOutsideRoot {
+                    path: input.to_string_lossy().into_owned(),
+                    root: root.to_string_lossy().into_owned(),
+                });
+            }
+        }
+    }
+
     // 2. Reject NUL bytes (Windows path injection).
     if let Some(s) = input.to_str() {
         if s.contains('\0') {
