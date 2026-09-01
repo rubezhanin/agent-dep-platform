@@ -15,7 +15,7 @@
 use crate::application::journal::{JournalService, OperationType};
 use crate::domain::system::System;
 use crate::error::{CoreError, CoreResult};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,13 +24,13 @@ use uuid::Uuid;
 /// Plan + per-file target for one operation, snapshotted at
 /// `prepare` time so recovery can finish or roll back without
 /// re-reading external state (per ADR-0006).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeployEffect {
     pub target: PathBuf,
     pub writes: Vec<DeployWrite>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeployWrite {
     pub agent_ref: String, // e.g. "be@1.0.0"
     pub relative: String,  // POSIX, relative to target root

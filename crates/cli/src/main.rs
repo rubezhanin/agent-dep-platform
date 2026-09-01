@@ -6,7 +6,7 @@ mod output;
 mod cli_tests;
 
 use clap::{Parser, Subcommand};
-use commands::{catalog, deploy, lock, status, system};
+use commands::{catalog, deploy, lock, rollback, status, system};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -43,6 +43,11 @@ pub enum Command {
     Lock {
         #[command(subcommand)]
         action: LockAction,
+    },
+    /// Roll back a previous deploy by operation id.
+    Rollback {
+        /// Journal operation id (UUID) to roll back.
+        operation_id: String,
     },
 }
 
@@ -150,6 +155,14 @@ async fn main() -> ExitCode {
         Command::Lock { action } => match action {
             LockAction::Generate { file, catalog } => {
                 lock::generate(&file, &catalog).await.map_err(Into::into)
+            }
+        },
+        Command::Rollback { operation_id } => match uuid::Uuid::parse_str(&operation_id) {
+            Ok(id) => rollback::rollback(id).await.map_err(Into::into),
+            Err(e) => {
+                let err: Box<dyn std::error::Error> =
+                    anyhow::anyhow!("invalid operation id `{operation_id}`: {e}").into();
+                Err(err)
             }
         },
     };
