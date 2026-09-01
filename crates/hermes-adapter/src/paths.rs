@@ -22,3 +22,14 @@ fn dirs_home() -> Option<PathBuf> {
 pub fn plugin_dir(home: &std::path::Path) -> std::path::PathBuf {
     home.join("plugins")
 }
+
+/// Same as `plugin_dir` but returns a `Result` so callers in
+/// the application layer can report the resolution failure.
+pub fn hermes_plugins_dir(
+    home: &std::path::Path,
+) -> Result<std::path::PathBuf, agent_dep_core::error::CoreError> {
+    if !home.is_dir() {
+        return Err(agent_dep_core::error::CoreError::ErrHermesNotFound);
+    }
+    Ok(home.join("plugins"))
+}

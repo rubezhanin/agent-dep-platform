@@ -74,13 +74,16 @@ name = "agent_dep_hermes_adapter"
 version = "0.1.0"
 dependencies = [
  "agent_dep_core",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
  "ts-rs",
+ "uuid",
  "which",
 ]
 
