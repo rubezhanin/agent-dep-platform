@@ -77,7 +77,7 @@ fn make_system() -> crate::domain::system::System {
 #[test]
 fn plan_for_emits_add_per_resolved_agent() {
     let sys = make_system();
-    let plan = PlanService::new().plan_for(&sys);
+    let plan = PlanService::new().plan_for(&sys, None);
     assert_eq!(plan.system_id, "saas");
     assert_eq!(plan.operations.len(), 3);
     for op in &plan.operations {
@@ -124,7 +124,54 @@ fn plan_for_empty_system_is_empty_plan() {
         }],
         resolved_skills: vec![],
     };
-    let plan = PlanService::new().plan_for(&sys);
+    let plan = PlanService::new().plan_for(&sys, None);
     assert_eq!(plan.operations.len(), 1);
     assert_eq!(plan.risk, PlanRisk::Low);
+}
+
+#[test]
+fn plan_for_emits_noop_when_actual_sha_matches_desired() {
+    use std::collections::HashMap;
+    let mut sys = make_system();
+    // The fixture's `be@1.0.0` body is "You are be.\n" with
+    // body_hash "deadbeef" (the placeholder we set in
+    // `make_agent`). The map below claims the on-disk file
+    // for `be@1.0.0` already has the same hash. The plan
+    // should mark `be@1.0.0` as Noop and the other two as
+    // Add.
+    let mut actual: HashMap<String, String> = HashMap::new();
+    actual.insert("be@1.0.0".to_string(), "deadbeef".to_string());
+    let plan = PlanService::new().plan_for(&sys, Some(&actual));
+
+    let be = plan
+        .operations
+        .iter()
+        .find(|o| o.target == "agent:be@1.0.0")
+        .expect("be op");
+    assert_eq!(be.kind, PlanOperationKind::Noop);
+    assert!(be.reason.contains("nothing to write"));
+
+    for op in &plan.operations {
+        if op.target != "agent:be@1.0.0" {
+            assert_eq!(op.kind, PlanOperationKind::Add);
+        }
+    }
+}
+
+#[test]
+fn plan_for_emits_add_when_actual_sha_mismatches() {
+    use std::collections::HashMap;
+    let sys = make_system();
+    let mut actual: HashMap<String, String> = HashMap::new();
+    actual.insert(
+        "be@1.0.0".to_string(),
+        "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+    );
+    let plan = PlanService::new().plan_for(&sys, Some(&actual));
+    let be = plan
+        .operations
+        .iter()
+        .find(|o| o.target == "agent:be@1.0.0")
+        .expect("be op");
+    assert_eq!(be.kind, PlanOperationKind::Add);
 }
