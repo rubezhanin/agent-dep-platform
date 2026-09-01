@@ -253,24 +253,32 @@ async fn open_and_migrate(db_path: &Path) -> Result<Db> {
 }
 
 fn print_summary(s: &DeploySummary) {
-    output::header(&format!("Deployed system: {}", s.system_id));
-    output::kv("operation_id", &s.operation_id.to_string());
-    output::kv("target", &s.target.display().to_string());
-    output::kv("wrote", &s.wrote.to_string());
-    output::kv("skipped", &s.skipped.to_string());
-    output::kv("backed_up", &s.backed_up.to_string());
-    output::kv("journaled_to", &s.db_path.display().to_string());
+    let i = agent_dep_core::i18n::I18n::from_env();
+    output::header(&i.tr("cli.deploy.apply.header", &[("id", &s.system_id)]));
+    output::kv(&i.t("cli.deploy.kv.operation_id"), &s.operation_id.to_string());
+    output::kv(&i.t("cli.deploy.kv.target"), &s.target.display().to_string());
+    output::kv(&i.t("cli.deploy.kv.wrote"), &s.wrote.to_string());
+    output::kv(&i.t("cli.deploy.kv.skipped"), &s.skipped.to_string());
+    output::kv(&i.t("cli.deploy.kv.backed_up"), &s.backed_up.to_string());
+    output::kv(
+        &i.t("cli.deploy.kv.journaled_to"),
+        &s.db_path.display().to_string(),
+    );
 }
 
 fn print_install_summary(s: &InstallSummary) {
-    output::header(&format!(
-        "Installed router plugin for system: {}",
-        s.system_id
-    ));
-    output::kv("plugin_id", &s.plugin_id);
-    output::kv("plugin_dir", &s.plugin_dir.display().to_string());
-    output::kv("hermes_home", &s.hermes_home.display().to_string());
-    output::kv("skill_count", &s.skill_count.to_string());
-    output::kv("manifest_sha256", &s.manifest_sha256);
-    output::kv("skills_sha256", &s.skills_sha256);
+    let i = agent_dep_core::i18n::I18n::from_env();
+    output::header(&i.tr("cli.deploy.install.header", &[("id", &s.system_id)]));
+    output::kv(&i.t("cli.deploy.kv.plugin_id"), &s.plugin_id);
+    output::kv(&i.t("cli.deploy.kv.plugin_dir"), &s.plugin_dir.display().to_string());
+    output::kv(
+        &i.t("cli.deploy.kv.hermes_home"),
+        &s.hermes_home.display().to_string(),
+    );
+    output::kv(&i.t("cli.deploy.kv.skill_count"), &s.skill_count.to_string());
+    output::kv(
+        &i.t("cli.deploy.kv.manifest_sha256"),
+        &s.manifest_sha256,
+    );
+    output::kv(&i.t("cli.deploy.kv.skills_sha256"), &s.skills_sha256);
 }

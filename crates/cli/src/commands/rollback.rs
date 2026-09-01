@@ -71,10 +71,15 @@ pub async fn rollback_at(
 }
 
 fn print_summary(s: &RollbackSummary) {
-    output::header(&format!("Rollback plan for operation: {}", s.operation_id));
-    output::kv("target_root", &s.target_root.display().to_string());
-    output::kv("files_to_revert", &s.files_to_revert.to_string());
-    println!(
-        "  (Phase 5 TODO: actually re-write the pre-deploy bytes from CAS)"
+    let i = agent_dep_core::i18n::I18n::from_env();
+    output::header(&i.tr("cli.rollback.header", &[("id", &s.operation_id.to_string())]));
+    output::kv(
+        &i.t("cli.rollback.kv.target_root"),
+        &s.target_root.display().to_string(),
     );
+    output::kv(
+        &i.t("cli.rollback.kv.files_to_revert"),
+        &s.files_to_revert.to_string(),
+    );
+    println!("{}", i.t("cli.rollback.todo_cas"));
 }

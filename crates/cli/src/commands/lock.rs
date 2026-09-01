@@ -109,9 +109,10 @@ fn lock_path_for(system_file: &Path) -> PathBuf {
 }
 
 fn print_summary(s: &LockSummary) {
-    output::header(&format!("Lock file for system: {}", s.system_id));
-    output::kv("lock_path", &s.lock_path.display().to_string());
-    output::kv("agent_count", &s.agent_count.to_string());
-    output::kv("skill_count", &s.skill_count.to_string());
-    output::kv("catalog_commit", &s.commit_sha);
+    let i = agent_dep_core::i18n::I18n::from_env();
+    output::header(&i.tr("cli.lock.header", &[("id", &s.system_id)]));
+    output::kv(&i.t("cli.lock.kv.lock_path"), &s.lock_path.display().to_string());
+    output::kv(&i.t("cli.lock.kv.agent_count"), &s.agent_count.to_string());
+    output::kv(&i.t("cli.lock.kv.skill_count"), &s.skill_count.to_string());
+    output::kv(&i.t("cli.lock.kv.catalog_commit"), &s.commit_sha);
 }

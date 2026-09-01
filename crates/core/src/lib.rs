@@ -5,6 +5,7 @@ pub mod application;
 pub mod domain;
 pub mod dto;
 pub mod error;
+pub mod i18n;
 pub mod infrastructure;
 
 pub use error::{CoreError, CoreResult};
