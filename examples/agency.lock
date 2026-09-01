@@ -1,0 +1,10 @@
+lockVersion: 1
+source:
+  repository: C:\projects\agency-agents
+  commit: 5308f3fcb30a5c28d0da5d89c2aee90d9fdf9784ddb4a06931bc8b8bde6263b5
+agents:
+  backend-engineer: 1.0.0
+  frontend-architect: 1.0.0
+skills: {}
+renderers:
+  hermes-router: 1.0.0

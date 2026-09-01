@@ -6,7 +6,7 @@ mod output;
 mod cli_tests;
 
 use clap::{Parser, Subcommand};
-use commands::{catalog, deploy, status, system};
+use commands::{catalog, deploy, lock, status, system};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -39,6 +39,11 @@ pub enum Command {
         #[command(subcommand)]
         action: DeployAction,
     },
+    /// Generate or inspect an `agency.lock` next to a system file.
+    Lock {
+        #[command(subcommand)]
+        action: LockAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -65,6 +70,20 @@ pub enum SystemAction {
         /// `divisions.json` and `agents/<division>/*.md`). The
         /// catalog is re-ingested in-memory; nothing is written to
         /// the DB by this command.
+        #[arg(long)]
+        catalog: PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LockAction {
+    /// Generate `agency.lock` next to a `system.yaml` from
+    /// the resolved snapshot. Re-ingests the catalog; does
+    /// not write to the DB.
+    Generate {
+        /// Path to the system definition (a `system.yaml`).
+        file: PathBuf,
+        /// Path to the local catalog root.
         #[arg(long)]
         catalog: PathBuf,
     },
@@ -126,6 +145,11 @@ async fn main() -> ExitCode {
                 deploy::install(&file, &catalog, &plugin_id)
                     .await
                     .map_err(Into::into)
+            }
+        },
+        Command::Lock { action } => match action {
+            LockAction::Generate { file, catalog } => {
+                lock::generate(&file, &catalog).await.map_err(Into::into)
             }
         },
     };

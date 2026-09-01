@@ -658,3 +658,73 @@ mod deploy_e2e {
         assert!(s.contains("plugin_id") || s.contains("outside"), "got: {s}");
     }
 }
+
+// -----------------------------------------------------------------------
+// End-to-end tests for `agency lock generate`
+// -----------------------------------------------------------------------
+
+mod lock_e2e {
+    use std::fs;
+
+    use super::*;
+
+    fn write_system_yaml_local(path: &std::path::Path, refs: &[&str]) {
+        let yaml = format!(
+            "apiVersion: agent-dep/v1\n\
+             kind: System\n\
+             metadata:\n  \
+               id: saas-platform\n  \
+               name: SaaS Platform\n\
+             spec:\n  \
+               source: agency-agents\n  \
+               agents:\n{}\n",
+            refs.iter()
+                .map(|r| format!("    - ref: {r}\n"))
+                .collect::<String>()
+        );
+        fs::write(path, yaml).unwrap();
+    }
+
+    fn write_min_catalog(root: &std::path::Path) {
+        fs::write(
+            root.join("divisions.json"),
+            r#"{
+                "_note": "lock e2e",
+                "divisions": [
+                    {"id": "engineering", "order": 1, "label": "Engineering"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("agents/engineering")).unwrap();
+        fs::write(
+            root.join("agents/engineering/be.md"),
+            "---\nid: be\nname: BE\ndivision: engineering\nrole: r\ndescription: d\nversion: 1.0.0\n---\nbody\n",
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lock_generate_writes_agency_lock_next_to_system_yaml() {
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_min_catalog(cat_dir.path());
+
+        let sys_dir = tempfile::tempdir().unwrap();
+        let sys_path = sys_dir.path().join("system.yaml");
+        write_system_yaml_local(&sys_path, &["be@1.0.0"]);
+
+        let summary = crate::commands::lock::generate_at(&sys_path, cat_dir.path())
+            .await
+            .expect("generate");
+        assert_eq!(summary.system_id, "saas-platform");
+        assert_eq!(summary.agent_count, 1);
+        assert_eq!(summary.skill_count, 0);
+        assert!(summary.lock_path.is_file());
+
+        let text = std::fs::read_to_string(&summary.lock_path).unwrap();
+        assert!(text.contains("lockVersion: 1"));
+        assert!(text.contains("be: 1.0.0"));
+        assert!(text.contains("hermes-router: 1.0.0"));
+        assert!(text.contains(&format!("commit: {}", summary.commit_sha)));
+    }
+}

@@ -13,6 +13,7 @@
 pub mod agent;
 pub mod agent_yaml;
 pub mod division;
+pub mod lock;
 pub mod plan;
 pub mod skill;
 pub mod skill_yaml;
