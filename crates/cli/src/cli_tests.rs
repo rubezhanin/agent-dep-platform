@@ -605,4 +605,56 @@ mod deploy_e2e {
         .expect_err("should fail on missing catalog dir");
         assert!(err.to_string().contains("not a directory"));
     }
+
+    #[tokio::test]
+    async fn install_at_writes_router_plugin_under_hermes_home() {
+        // Isolated Hermes home — no real install needed.
+        let hermes_home = tempfile::tempdir().unwrap();
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_catalog(cat_dir.path());
+        let sys_file = tempfile::tempdir().unwrap();
+        let sys_path = sys_file.path().join("system.yaml");
+        write_system_yaml(&sys_path, &["be@1.0.0", "fe@1.0.0"]);
+
+        let summary = crate::commands::deploy::install_at(
+            &sys_path,
+            cat_dir.path(),
+            "agency-agents-router",
+            hermes_home.path(),
+        )
+        .await
+        .expect("install_at");
+
+        assert_eq!(summary.plugin_id, "agency-agents-router");
+        assert_eq!(summary.skill_count, 2);
+        assert_eq!(summary.hermes_home, hermes_home.path());
+        assert!(summary.plugin_dir.is_dir());
+        assert!(summary.plugin_dir.join("manifest.yaml").is_file());
+        assert!(summary.plugin_dir.join("SKILL.md").is_file());
+        assert!(summary.plugin_dir.join("skills/be.md").is_file());
+        assert!(summary.plugin_dir.join("skills/fe.md").is_file());
+        assert_eq!(summary.manifest_sha256.len(), 64);
+        assert_eq!(summary.skills_sha256.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn install_at_rejects_unsafe_plugin_id() {
+        let hermes_home = tempfile::tempdir().unwrap();
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_catalog(cat_dir.path());
+        let sys_file = tempfile::tempdir().unwrap();
+        let sys_path = sys_file.path().join("system.yaml");
+        write_system_yaml(&sys_path, &["be@1.0.0"]);
+
+        let err = crate::commands::deploy::install_at(
+            &sys_path,
+            cat_dir.path(),
+            "../escape",
+            hermes_home.path(),
+        )
+        .await
+        .expect_err("unsafe plugin_id");
+        let s = err.to_string();
+        assert!(s.contains("plugin_id") || s.contains("outside"), "got: {s}");
+    }
 }

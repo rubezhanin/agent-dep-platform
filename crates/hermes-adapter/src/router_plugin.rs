@@ -184,8 +184,8 @@ fn build_manifest_yaml(inputs: &RouterPluginInputs) -> String {
     out.push_str(&format!("  version: 0.1.0\n"));
     out.push_str("  author: agent-dep-platform\n");
     out.push_str(&format!(
-        "  homepage: file://{}\n",
-        yaml_scalar(&inputs.catalog_source)
+        "  homepage: {}\n",
+        yaml_scalar(&format!("file://{}", inputs.catalog_source))
     ));
     out.push_str("  license: MIT\n");
     out.push_str("  type: router\n");

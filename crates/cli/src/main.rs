@@ -85,6 +85,22 @@ pub enum DeployAction {
         #[arg(long)]
         target: PathBuf,
     },
+    /// Install a router plugin into Hermes home. Writes
+    /// `manifest.yaml` + `SKILL.md` + `skills/<slug>.md` under
+    /// `<HERMES_HOME>/plugins/<plugin-id>/` (per ADR-0008). Does
+    /// NOT call `hermes mcp configure` — enable the plugin in
+    /// Hermes separately (e.g. via the Hermes UI or
+    /// `hermes plugin enable <id>` when available in your build).
+    Install {
+        /// Path to the system definition (a `system.yaml`).
+        file: PathBuf,
+        /// Path to the local catalog root.
+        #[arg(long)]
+        catalog: PathBuf,
+        /// Plugin slug under `<HERMES_HOME>/plugins/`.
+        #[arg(long, default_value = deploy::DEFAULT_PLUGIN_ID)]
+        plugin_id: String,
+    },
 }
 
 #[tokio::main]
@@ -103,6 +119,11 @@ async fn main() -> ExitCode {
         Command::Deploy { action } => match action {
             DeployAction::Apply { file, catalog, target } => {
                 deploy::deploy(&file, &catalog, &target)
+                    .await
+                    .map_err(Into::into)
+            }
+            DeployAction::Install { file, catalog, plugin_id } => {
+                deploy::install(&file, &catalog, &plugin_id)
                     .await
                     .map_err(Into::into)
             }
