@@ -1,6 +1,18 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot\..
-$env:PATH = "C:\Users\Администратор\.cargo\bin;$env:PATH"
+
+# Make `cargo` discoverable. See ci.ps1 for the same logic.
+$candidateCargoDirs = @(
+    (Join-Path $env:USERPROFILE '.cargo\bin')
+    (Join-Path $env:HOME        '.cargo/bin')
+    '/usr/local/cargo/bin'
+)
+foreach ($d in $candidateCargoDirs) {
+    if ($d -and (Test-Path -LiteralPath $d)) {
+        $env:PATH = "$d;$env:PATH"
+        break
+    }
+}
 
 Write-Host "[1/2] Running ts-rs export test..." -ForegroundColor Cyan
 $out = [System.IO.Path]::GetTempFileName()

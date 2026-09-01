@@ -33,3 +33,10 @@ Thumbs.db
 
 # Source TZ (kept in working tree as reference, not committed)
 TZ_*.md
+
+# Design notes (ADRs, MVP plans/specs) — kept in working tree as
+# reference but not committed. Tracked files were removed with
+# `git rm --cached` so the next commit untracks them; the entries
+# below keep the files untracked in fresh clones.
+docs/adr/
+docs/superpowers/

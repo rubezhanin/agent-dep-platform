@@ -1,25 +1,23 @@
 //! Integration test: ingest the real upstream `agency-agents` catalog
-//! at `C:\projects\agency-agents` and verify the result.
+//! and verify the result.
 //!
-//! This test is gated on the catalog existing; if it's not present
+//! This test is gated on the catalog existing. The location is taken
+//! from the `AGENCY_AGENTS_DIR` environment variable; if that is unset
 //! the test is skipped (not failed) so the suite still runs in CI.
+//! See `AGENTS.md` for the convention.
 
 use agent_dep_core::application::ingest::IngestService;
 use agent_dep_core::domain::source::{Source, SourceKind};
 use std::path::PathBuf;
 
 fn real_agency_agents_path() -> Option<PathBuf> {
-    // Look in a few likely places. The dev host uses this path; CI may
-    // not have it, so we skip gracefully.
-    let candidates = [
-        r"C:\projects\agency-agents",
-        r"C:/projects/agency-agents",
-        "/projects/agency-agents",
-    ];
-    candidates
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.join("divisions.json").exists() && p.join("agents").is_dir())
+    let raw = std::env::var_os("AGENCY_AGENTS_DIR")?;
+    let p = PathBuf::from(raw);
+    if p.join("divisions.json").exists() && p.join("agents").is_dir() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 #[test]

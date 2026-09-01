@@ -1,10 +1,11 @@
 //! Integration test: full path against the real upstream
-//! `agency-agents` catalog at `C:\projects\agency-agents`.
+//! `agency-agents` catalog.
 //!
 //! Ingest -> persist to a tempdir SQLite DB -> read back -> verify
 //! counts and that the snapshot identity round-trips. Gated on the
-//! catalog existing; skips gracefully when not present (CI may not
-//! have it).
+//! `AGENCY_AGENTS_DIR` environment variable; skips gracefully when
+//! unset so the suite still runs in CI. See `AGENTS.md` for the
+//! convention.
 
 use std::path::PathBuf;
 
@@ -14,15 +15,13 @@ use agent_dep_core::infrastructure::repository::IngestRepository;
 use agent_dep_core::infrastructure::sqlite::{connect, schema_version};
 
 fn real_agency_agents_path() -> Option<PathBuf> {
-    let candidates = [
-        r"C:\projects\agency-agents",
-        r"C:/projects/agency-agents",
-        "/projects/agency-agents",
-    ];
-    candidates
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.join("divisions.json").exists() && p.join("agents").is_dir())
+    let raw = std::env::var_os("AGENCY_AGENTS_DIR")?;
+    let p = PathBuf::from(raw);
+    if p.join("divisions.json").exists() && p.join("agents").is_dir() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 #[tokio::test]

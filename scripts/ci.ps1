@@ -1,6 +1,21 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot\..
-$env:PATH = "C:\Users\Администратор\.cargo\bin;$env:PATH"
+
+# Make `cargo` discoverable. On Windows cargo is installed under
+# `%USERPROFILE%\.cargo\bin` (PowerShell session) or `~/.cargo/bin`
+# (POSIX shells). We probe a few standard locations and prepend
+# the first one that exists, falling back to the existing PATH.
+$candidateCargoDirs = @(
+    (Join-Path $env:USERPROFILE '.cargo\bin')
+    (Join-Path $env:HOME        '.cargo/bin')
+    '/usr/local/cargo/bin'
+)
+foreach ($d in $candidateCargoDirs) {
+    if ($d -and (Test-Path -LiteralPath $d)) {
+        $env:PATH = "$d;$env:PATH"
+        break
+    }
+}
 
 $failed = $false
 

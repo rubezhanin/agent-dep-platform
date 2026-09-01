@@ -10,10 +10,12 @@ use std::path::{Component, Path, PathBuf};
 /// - `ErrPathOutsideRoot` if `input` (after normalization) escapes `root`
 /// - `ErrSymlinkEscape` if a symlink/junction on the resolved path leads outside `root`
 pub fn resolve_safe_path(root: &Path, input: &Path) -> CoreResult<PathBuf> {
-    // 0. Normalize the root if it exists. This matters on Windows where the
-    //    caller may pass an 8.3 short-name (e.g. `C:\Users\836D~1\...`) while
-    //    `canonicalize` returns the long name (`C:\Users\Администратор\...`).
-    //    Without this, `starts_with` would fail.
+    // 0. Normalize the root if it exists. This matters on Windows where
+    //    the caller may pass an 8.3 short-name (DOS-compatible form) while
+    //    `canonicalize` returns the long-name form. Without this, a byte-
+    //    for-byte `starts_with` would fail even though the two paths
+    //    point to the same directory. The fix: canonicalize the root once
+    //    up front so the comparison is long-vs-long.
     let root = if root.exists() {
         strip_verbatim_prefix(&canonicalize_existing(root)?)
     } else {
