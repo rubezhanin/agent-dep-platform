@@ -140,6 +140,20 @@ impl DeployedArtifactsRepository {
             .map_err(CoreError::ErrSqlx)?;
         Ok(res.rows_affected())
     }
+
+    /// All distinct `system_id` values present in
+    /// `deployed_artifacts`, sorted alphabetically. Used by
+    /// the Svelte systems route to render a list of systems
+    /// that have ever been deployed through the platform.
+    pub async fn list_distinct_systems(&self) -> CoreResult<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT system_id FROM deployed_artifacts ORDER BY system_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(CoreError::ErrSqlx)?;
+        Ok(rows.into_iter().map(|(s,)| s).collect())
+    }
 }
 
 #[cfg(test)]

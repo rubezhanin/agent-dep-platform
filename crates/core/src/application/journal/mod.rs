@@ -234,6 +234,21 @@ impl JournalService {
         rows.into_iter().map(row_to_op).collect()
     }
 
+    /// Most-recent N operations of any type, newest first. Used
+    /// by the Svelte deployments route to populate the history
+    /// panel.
+    pub async fn list_recent(&self, limit: u32) -> CoreResult<Vec<Operation>> {
+        let rows: Vec<OpRow> = sqlx::query_as(
+            "SELECT operation_id, type, status, plan_hash, started_at, \
+             finished_at, effect_json, error FROM operations \
+             ORDER BY started_at DESC LIMIT ?1",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_op).collect()
+    }
+
     /// `prepared -> writing`. The first time the operation actually
     /// touches the filesystem.
     pub async fn begin_writing(&self, op_id: Uuid) -> CoreResult<()> {

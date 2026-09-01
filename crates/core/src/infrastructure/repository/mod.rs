@@ -19,6 +19,7 @@ pub mod deployed_artifacts_repository;
 pub mod skill_repository;
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -122,6 +123,15 @@ pub struct StoredDivisionRow {
     pub display_order: u32,
     pub label: String,
     pub description: Option<String>,
+}
+
+/// Minimal agent row for list views (TZ §51). Returned by
+/// `IngestRepository::list_agents_in_latest_snapshot`.
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredAgentListEntry {
+    pub id: String,
+    pub name: String,
+    pub version: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -665,6 +675,69 @@ impl IngestRepository {
             rejected,
             findings,
         }))
+    }
+
+    /// All sources, newest first (last_indexed_at DESC NULLS LAST,
+    /// then created_at DESC). Used by the Svelte sources route.
+    pub async fn list_sources(&self) -> CoreResult<Vec<Source>> {
+        let rows: Vec<SourceRow> = sqlx::query_as(
+            "SELECT id, kind, location, pinned_ref, display_name, created_at, \
+             last_indexed_at FROM sources \
+             ORDER BY (last_indexed_at IS NULL), last_indexed_at DESC, created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, kind, location, pinned_ref, display_name, created_at, last_indexed_at) in rows {
+            let id = Uuid::parse_str(&id).map_err(|e| CoreError::ErrSchemaInvalid {
+                path: "sources.id".to_string(),
+                reason: format!("bad UUID: {e}"),
+            })?;
+            let created_at = parse_iso8601(&created_at)?;
+            let last_indexed_at = match last_indexed_at {
+                Some(s) => Some(parse_iso8601(&s)?),
+                None => None,
+            };
+            let kind = parse_source_kind(&kind, &location)?;
+            out.push(Source {
+                id,
+                kind,
+                pinned_ref,
+                display_name,
+                created_at,
+                last_indexed_at,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Agents in the most-recent `active` snapshot across all
+    /// sources. Returns an empty Vec when no active snapshot
+    /// exists (e.g. fresh install, no `agency catalog update`
+    /// run yet). Used by the Svelte catalog route.
+    pub async fn list_agents_in_latest_snapshot(
+        &self,
+    ) -> CoreResult<Vec<StoredAgentListEntry>> {
+        let latest: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM source_snapshots WHERE status = 'active' \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((snap_id,)) = latest else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT id, name, version FROM agents \
+             WHERE snapshot_id = ?1 ORDER BY division, id",
+        )
+        .bind(&snap_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, name, version)| StoredAgentListEntry { id, name, version })
+            .collect())
     }
 }
 

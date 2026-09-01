@@ -15,6 +15,7 @@ dependencies = [
  "agent_dep_core",
  "agent_dep_hermes_adapter",
  "anyhow",
+ "chrono",
  "serde",
  "serde_json",
  "tauri",
@@ -25,6 +26,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "walkdir",
 ]
 
 [[package]]
