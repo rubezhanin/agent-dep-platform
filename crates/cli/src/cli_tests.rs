@@ -730,3 +730,204 @@ mod lock_e2e {
         assert!(text.contains(&format!("commit: {}", summary.commit_sha)));
     }
 }
+
+// -----------------------------------------------------------------------
+// End-to-end tests for `agency rollback`
+// -----------------------------------------------------------------------
+
+mod rollback_e2e {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use agent_dep_core::application::journal::{JournalService, OperationStatus};
+    use agent_dep_core::infrastructure::sqlite::{connect, Db};
+
+    fn write_catalog(root: &std::path::Path) {
+        fs::write(
+            root.join("divisions.json"),
+            r#"{
+                "_note": "rollback e2e",
+                "divisions": [
+                    {"id": "engineering", "order": 1, "label": "Engineering"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("agents/engineering")).unwrap();
+        fs::write(
+            root.join("agents/engineering/be.md"),
+            "---\nid: be\nname: BE\ndivision: engineering\nrole: r\ndescription: d\nversion: 1.0.0\n---\nbody v1\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("agents/engineering/fe.md"),
+            "---\nid: fe\nname: FE\ndivision: engineering\nrole: r\ndescription: d\nversion: 1.0.0\n---\nbody v1\n",
+        )
+        .unwrap();
+    }
+
+    fn write_system_yaml(path: &std::path::Path) {
+        fs::write(
+            path,
+            "apiVersion: agent-dep/v1\n\
+             kind: System\n\
+             metadata:\n  \
+               id: saas\n  \
+               name: SaaS\n\
+             spec:\n  \
+               source: agency-agents\n  \
+               agents:\n    - ref: be@1.0.0\n    - ref: fe@1.0.0\n",
+        )
+        .unwrap();
+    }
+
+    async fn open_journal(db_path: &std::path::Path) -> Db {
+        let db = connect(db_path).await.expect("connect");
+        db.migrate().await.expect("migrate");
+        db
+    }
+
+    #[tokio::test]
+    async fn rollback_restores_modified_file_from_backup_and_flips_journal() {
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_catalog(cat_dir.path());
+        let sys_file = tempfile::tempdir().unwrap();
+        let sys_path = sys_file.path().join("system.yaml");
+        write_system_yaml(&sys_path);
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path: PathBuf = db_dir.path().join("agency.db");
+        let target = tempfile::tempdir().unwrap().into_path();
+
+        // First deploy: writes be.md and fe.md.
+        let s1 = crate::commands::deploy::deploy_at(
+            &sys_path,
+            cat_dir.path(),
+            &target,
+            &db_path,
+        )
+        .await
+        .expect("first deploy");
+        assert_eq!(s1.wrote, 2);
+
+        // Hand-edit be.md so the second deploy has a real
+        // pre-deploy body to back up.
+        let be = target.join("agents/be@1.0.0/be.md");
+        let original = fs::read_to_string(&be).expect("read be");
+        fs::write(&be, "---\nmanual edit\n---\n").expect("write be");
+
+        // Second deploy: backs up the manual edit, writes the
+        // catalog body again. fe.md was untouched, so it is
+        // reported as skipped (no backup).
+        let s2 = crate::commands::deploy::deploy_at(
+            &sys_path,
+            cat_dir.path(),
+            &target,
+            &db_path,
+        )
+        .await
+        .expect("second deploy");
+        assert_eq!(s2.wrote, 1, "only be.md was rewritten");
+        assert_eq!(s2.skipped, 1, "fe.md is unchanged");
+        assert_eq!(s2.backed_up, 1, "the hand-edited be.md was backed up");
+
+        // Now mutate the catalog body itself, so the on-disk
+        // file no longer matches the deploy's expected_sha256.
+        // The rollback must restore the backup (the manual
+        // edit), not the catalog body.
+        fs::write(&be, "totally different content\n").expect("tamper");
+        assert_eq!(fs::read_to_string(&be).unwrap(), "totally different content\n");
+
+        // Roll back the SECOND operation.
+        let r = crate::commands::rollback::rollback_at(s2.operation_id, &db_path)
+            .await
+            .expect("rollback");
+        assert_eq!(r.files_to_revert, 2);
+        // be.md had been tampered with, so it must have been
+        // restored from its backup (the manual edit).
+        // fe.md was not modified after the deploy, so it stays
+        // as current and is reported as kept.
+        assert_eq!(r.restored, 1, "be.md was restored from backup");
+        assert_eq!(r.kept_current, 1, "fe.md was already current");
+        assert!(r.failed.is_empty());
+
+        // On disk, be.md now holds the backup (manual edit).
+        let restored_be = fs::read_to_string(&be).expect("read restored");
+        assert_eq!(
+            restored_be, "---\nmanual edit\n---\n",
+            "rollback should restore the backup, got: {restored_be:?}"
+        );
+
+        // The journal row for the rolled-back operation is
+        // now in `rolled_back`.
+        let db = open_journal(&db_path).await;
+        let journal = JournalService::new(db.pool().clone());
+        let op = journal
+            .get(s2.operation_id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(op.status, OperationStatus::RolledBack);
+        assert!(op.finished_at.is_some());
+
+        // The first operation is still in `committed` —
+        // rollback only affects the operation it was given.
+        let first_op = journal
+            .get(s1.operation_id)
+            .await
+            .expect("get first")
+            .expect("row");
+        assert_eq!(first_op.status, OperationStatus::Committed);
+    }
+
+    #[tokio::test]
+    async fn rollback_is_noop_when_no_files_changed() {
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_catalog(cat_dir.path());
+        let sys_file = tempfile::tempdir().unwrap();
+        let sys_path = sys_file.path().join("system.yaml");
+        write_system_yaml(&sys_path);
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path: PathBuf = db_dir.path().join("agency.db");
+        let target = tempfile::tempdir().unwrap().into_path();
+
+        let s = crate::commands::deploy::deploy_at(
+            &sys_path,
+            cat_dir.path(),
+            &target,
+            &db_path,
+        )
+        .await
+        .expect("deploy");
+
+        // No edits, no deletions: rollback should report every
+        // file as `kept_current` and still flip the journal
+        // row (a rollback of an untouched deploy is a valid
+        // terminal state).
+        let r = crate::commands::rollback::rollback_at(s.operation_id, &db_path)
+            .await
+            .expect("rollback");
+        assert_eq!(r.restored, 0);
+        assert_eq!(r.kept_current, 2);
+        assert!(r.failed.is_empty());
+
+        let db = open_journal(&db_path).await;
+        let journal = JournalService::new(db.pool().clone());
+        let op = journal
+            .get(s.operation_id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(op.status, OperationStatus::RolledBack);
+    }
+
+    #[tokio::test]
+    async fn rollback_errors_on_unknown_operation_id() {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path: PathBuf = db_dir.path().join("agency.db");
+        let id = uuid::Uuid::new_v4();
+        let err = crate::commands::rollback::rollback_at(id, &db_path)
+            .await
+            .expect_err("unknown id");
+        assert!(err.to_string().contains("operation not found"));
+    }
+}

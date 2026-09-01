@@ -199,6 +199,9 @@ fn en_us_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.rollback.header", "Rollback plan for operation: {id}"),
         ("cli.rollback.kv.target_root", "target_root"),
         ("cli.rollback.kv.files_to_revert", "files_to_revert"),
+        ("cli.rollback.kv.restored", "restored"),
+        ("cli.rollback.kv.kept_current", "kept_current"),
+        ("cli.rollback.kv.failed", "failed"),
         ("cli.rollback.todo_cas", "  (Phase 5 TODO: actually re-write the pre-deploy bytes from CAS)"),
         // Status
         ("cli.status.unknown", "no deployment found"),
@@ -232,6 +235,9 @@ fn ru_ru_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.rollback.header", "План отката для операции: {id}"),
         ("cli.rollback.kv.target_root", "корневая директория"),
         ("cli.rollback.kv.files_to_revert", "файлов к откату"),
+        ("cli.rollback.kv.restored", "восстановлено"),
+        ("cli.rollback.kv.kept_current", "уже актуально"),
+        ("cli.rollback.kv.failed", "ошибок"),
         ("cli.rollback.todo_cas", "  (TODO Phase 5: записать байты до деплоя из CAS)"),
         ("cli.status.unknown", "развёртывание не найдено"),
     ]
