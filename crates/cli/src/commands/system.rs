@@ -76,7 +76,7 @@ pub async fn plan_at(system_file: &Path, catalog_path: &Path) -> Result<PlanSumm
         )
         .map_err(|e| anyhow::anyhow!("compose: {e}"))?;
 
-    let plan = PlanService::new().plan_for(&composed, None);
+    let plan = PlanService::new().plan_for(&composed, None, None);
 
     Ok(PlanSummary {
         system_id: plan.system_id.clone(),

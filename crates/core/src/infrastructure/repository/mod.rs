@@ -15,6 +15,7 @@
 //! previous Active row is flipped to `Superseded` in the same
 //! transaction.
 
+pub mod deployed_artifacts_repository;
 pub mod skill_repository;
 
 use chrono::{DateTime, Utc};

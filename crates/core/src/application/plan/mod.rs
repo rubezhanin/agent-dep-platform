@@ -44,28 +44,48 @@ impl PlanService {
     /// references the same agent id at two different
     /// versions emits two distinct operations, each
     /// classified against its own current state.
+    ///
+    /// `previously_deployed_targets` is the set of target
+    /// paths that exist in `deployed_artifacts` for this
+    /// system but are **not** referenced by the current
+    /// `System`. Each one becomes a `Delete` op — the
+    /// deploy loop will route it through
+    /// `RuntimeAdapter::verify` (or the rollback path)
+    /// before the actual removal. Pass `None` to skip
+    /// delete detection (the old behavior).
     pub fn plan_for(
         &self,
         system: &System,
         actual_sha256_by_ref: Option<&std::collections::HashMap<String, String>>,
+        previously_deployed_targets: Option<&std::collections::HashSet<String>>,
     ) -> Plan {
         let mut operations = Vec::with_capacity(system.resolved.len());
+        let mut planned_targets: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
         for r in &system.resolved {
             let agent_ref = format!("{}@{}", r.agent.id, r.agent.version);
-            let desired_sha = r.agent.body_hash.clone();
+            let target = format!("agents/{}/{}.md", agent_ref, r.agent.id);
+            planned_targets.insert(target.clone());
 
-            let kind = match actual_sha256_by_ref
-                .and_then(|m| m.get(&agent_ref))
-            {
+            let desired_sha = r.agent.body_hash.clone();
+            let kind = match actual_sha256_by_ref.and_then(|m| m.get(&agent_ref)) {
                 Some(actual) if actual == &desired_sha => PlanOperationKind::Noop,
-                _ => PlanOperationKind::Add,
+                Some(actual) => {
+                    // Hash differs: content drift. The deploy
+                    // service backs up the previous bytes and
+                    // writes the new ones.
+                    PlanOperationKind::Update
+                }
+                None => PlanOperationKind::Add,
             };
             let reason = match kind {
-                PlanOperationKind::Noop => {
-                    format!(
-                        "agent `{agent_ref}` already at desired content; nothing to write"
-                    )
-                }
+                PlanOperationKind::Noop => format!(
+                    "agent `{agent_ref}` already at desired content; nothing to write"
+                ),
+                PlanOperationKind::Update => format!(
+                    "agent `{agent_ref}` content changed (actual != desired); back up + write"
+                ),
                 _ => format!("agent in system `{}`", system.metadata.id),
             };
             operations.push(PlanOperation {
@@ -74,6 +94,24 @@ impl PlanService {
                 reason,
             });
         }
+
+        // Deletes: anything in `previously_deployed_targets`
+        // that the current system no longer references.
+        if let Some(prev) = previously_deployed_targets {
+            for old in prev {
+                if !planned_targets.contains(old) {
+                    operations.push(PlanOperation {
+                        kind: PlanOperationKind::Delete,
+                        target: format!("path:{old}"),
+                        reason: format!(
+                            "previously deployed at `{old}` but no longer in system `{}`",
+                            system.metadata.id
+                        ),
+                    });
+                }
+            }
+        }
+
         Plan {
             system_id: system.metadata.id.clone(),
             operations,

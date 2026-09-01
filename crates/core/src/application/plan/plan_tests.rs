@@ -77,7 +77,7 @@ fn make_system() -> crate::domain::system::System {
 #[test]
 fn plan_for_emits_add_per_resolved_agent() {
     let sys = make_system();
-    let plan = PlanService::new().plan_for(&sys, None);
+    let plan = PlanService::new().plan_for(&sys, None, None);
     assert_eq!(plan.system_id, "saas");
     assert_eq!(plan.operations.len(), 3);
     for op in &plan.operations {
@@ -124,7 +124,7 @@ fn plan_for_empty_system_is_empty_plan() {
         }],
         resolved_skills: vec![],
     };
-    let plan = PlanService::new().plan_for(&sys, None);
+    let plan = PlanService::new().plan_for(&sys, None, None);
     assert_eq!(plan.operations.len(), 1);
     assert_eq!(plan.risk, PlanRisk::Low);
 }
@@ -141,7 +141,7 @@ fn plan_for_emits_noop_when_actual_sha_matches_desired() {
     // Add.
     let mut actual: HashMap<String, String> = HashMap::new();
     actual.insert("be@1.0.0".to_string(), "deadbeef".to_string());
-    let plan = PlanService::new().plan_for(&sys, Some(&actual));
+    let plan = PlanService::new().plan_for(&sys, Some(&actual), None);
 
     let be = plan
         .operations
@@ -159,7 +159,7 @@ fn plan_for_emits_noop_when_actual_sha_matches_desired() {
 }
 
 #[test]
-fn plan_for_emits_add_when_actual_sha_mismatches() {
+fn plan_for_emits_update_when_actual_sha_mismatches() {
     use std::collections::HashMap;
     let sys = make_system();
     let mut actual: HashMap<String, String> = HashMap::new();
@@ -167,11 +167,12 @@ fn plan_for_emits_add_when_actual_sha_mismatches() {
         "be@1.0.0".to_string(),
         "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
     );
-    let plan = PlanService::new().plan_for(&sys, Some(&actual));
+    let plan = PlanService::new().plan_for(&sys, Some(&actual), None);
     let be = plan
         .operations
         .iter()
         .find(|o| o.target == "agent:be@1.0.0")
         .expect("be op");
-    assert_eq!(be.kind, PlanOperationKind::Add);
+    assert_eq!(be.kind, PlanOperationKind::Update);
+    assert!(be.reason.contains("content changed"));
 }
