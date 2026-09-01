@@ -8,7 +8,7 @@ use agent_dep_core::application::deploy::DeploymentService;
 use agent_dep_core::application::ingest::IngestService;
 use agent_dep_core::application::journal::JournalService;
 use agent_dep_core::domain::source::{Source, SourceKind};
-use agent_dep_core::domain::system::SystemFile;
+use agent_dep_core::domain::system::parse_system_file;
 use agent_dep_core::infrastructure::sqlite::{connect, Db};
 use anyhow::{Context, Result};
 use tokio::fs;
@@ -59,9 +59,8 @@ pub async fn deploy_at(
 
     let text = std::fs::read_to_string(system_file)
         .with_context(|| format!("read {}", system_file.display()))?;
-    let file: SystemFile = serde_yaml::from_str(&text).with_context(|| {
-        format!("parse {} (expected a `system.yaml`)", system_file.display())
-    })?;
+    let file = parse_system_file(&text)
+        .map_err(|e| anyhow::anyhow!("parse {} (expected a `system.yaml`): {e}", system_file.display()))?;
 
     let source = Source::new(SourceKind::local(catalog_path.to_path_buf()));
     let (result, _report) = IngestService::new().ingest_local(&source).map_err(|e| {
@@ -69,11 +68,16 @@ pub async fn deploy_at(
     })?;
 
     let placeholder_source_id = uuid::Uuid::new_v4();
+    // v1 `IngestService` does not produce skills; the v2
+    // pipeline (Phase 1B) will populate them. Pass an empty slice
+    // for now; v2 systems that declare skills will resolve them
+    // after the v2 ingest lands.
     let composed = CompositionService::new()
         .compose(
             placeholder_source_id,
             result.snapshot.id,
             &result.agents,
+            &[],
             &file,
         )
         .map_err(|e| anyhow::anyhow!("compose: {e}"))?;

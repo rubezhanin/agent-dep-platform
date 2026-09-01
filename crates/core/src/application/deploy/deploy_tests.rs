@@ -53,6 +53,7 @@ fn make_system(agents: Vec<(&str, &str)>) -> System {
             description: None,
         },
         spec: SystemSpec {
+            runtime_type: "hermes".to_string(),
             source: "x".to_string(),
             agents: resolved
                 .iter()
@@ -61,10 +62,13 @@ fn make_system(agents: Vec<(&str, &str)>) -> System {
                     r#override: None,
                 })
                 .collect(),
+            skills: vec![],
+            project_root: None,
         },
         source_id: Uuid::nil(),
         snapshot_id: Uuid::nil(),
         resolved,
+        resolved_skills: vec![],
     }
 }
 

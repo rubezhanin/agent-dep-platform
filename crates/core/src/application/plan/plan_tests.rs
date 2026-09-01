@@ -3,7 +3,10 @@
 use super::*;
 use crate::application::compose::CompositionService;
 use crate::domain::agent::Agent;
-use crate::domain::system::{AgentRef, SystemAgentRef, SystemFile, SystemMetadata, SystemSpec};
+use crate::domain::system::{
+    AgentRef, ParsedSystemFile, ResolvedAgent, System, SystemAgentRef, SystemFile,
+    SystemMetadata, SystemSpec, SystemSpecV1,
+};
 use crate::domain::version::Version;
 use uuid::Uuid;
 
@@ -39,7 +42,7 @@ fn make_system() -> crate::domain::system::System {
             name: "SaaS".to_string(),
             description: None,
         },
-        spec: SystemSpec {
+        spec: SystemSpecV1 {
             source: "agency-agents".to_string(),
             agents: vec![
                 SystemAgentRef {
@@ -67,7 +70,7 @@ fn make_system() -> crate::domain::system::System {
         },
     };
     CompositionService::new()
-        .compose(Uuid::nil(), Uuid::nil(), &agents, &file)
+        .compose(Uuid::nil(), Uuid::nil(), &agents, &[], &ParsedSystemFile::V1(file))
         .expect("compose")
 }
 
@@ -94,7 +97,6 @@ fn plan_for_emits_add_per_resolved_agent() {
 
 #[test]
 fn plan_for_empty_system_is_empty_plan() {
-    use crate::domain::system::{ResolvedAgent, System};
     let sys = System {
         metadata: SystemMetadata {
             id: "x".to_string(),
@@ -102,13 +104,16 @@ fn plan_for_empty_system_is_empty_plan() {
             description: None,
         },
         spec: SystemSpec {
+            runtime_type: "hermes".to_string(),
             source: "x".to_string(),
             agents: vec![],
+            skills: vec![],
+            project_root: None,
         },
         source_id: Uuid::nil(),
         snapshot_id: Uuid::nil(),
-        // This is an unusual state (the composer would reject empty
-        // agents), but the planner should still be well-defined.
+        // Unusual state (the composer would reject empty agents),
+        // but the planner should still be well-defined.
         resolved: vec![ResolvedAgent {
             agent: make_agent("be", "1.0.0"),
             from_ref: AgentRef {
@@ -117,6 +122,7 @@ fn plan_for_empty_system_is_empty_plan() {
             },
             applied_override: None,
         }],
+        resolved_skills: vec![],
     };
     let plan = PlanService::new().plan_for(&sys);
     assert_eq!(plan.operations.len(), 1);

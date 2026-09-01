@@ -8,7 +8,7 @@ use agent_dep_core::application::ingest::IngestService;
 use agent_dep_core::application::plan::PlanService;
 use agent_dep_core::domain::plan::PlanOperationKind;
 use agent_dep_core::domain::source::{Source, SourceKind};
-use agent_dep_core::domain::system::SystemFile;
+use agent_dep_core::domain::system::parse_system_file;
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
@@ -52,8 +52,8 @@ pub async fn plan_at(system_file: &Path, catalog_path: &Path) -> Result<PlanSumm
 
     let text = std::fs::read_to_string(system_file)
         .with_context(|| format!("read {}", system_file.display()))?;
-    let file: SystemFile = serde_yaml::from_str(&text)
-        .with_context(|| format!("parse {} (expected a `system.yaml`)", system_file.display()))?;
+    let file = parse_system_file(&text)
+        .map_err(|e| anyhow::anyhow!("parse {} (expected a `system.yaml`): {e}", system_file.display()))?;
 
     let source = Source::new(SourceKind::local(catalog_path.to_path_buf()));
     let (result, _report) = IngestService::new()
@@ -71,6 +71,7 @@ pub async fn plan_at(system_file: &Path, catalog_path: &Path) -> Result<PlanSumm
             placeholder_source_id,
             placeholder_snapshot_id,
             &result.agents,
+            &[],
             &file,
         )
         .map_err(|e| anyhow::anyhow!("compose: {e}"))?;
