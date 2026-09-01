@@ -35,6 +35,7 @@ dependencies = [
  "agent_dep_hermes_adapter",
  "anyhow",
  "clap",
+ "serde_yaml",
  "tempfile",
  "tokio",
  "tracing",

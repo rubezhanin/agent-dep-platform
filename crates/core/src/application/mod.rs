@@ -5,6 +5,8 @@
 //! MVP-3: only `ingest` is implemented. Other application services
 //! (compose, plan, deploy, reconcile, rollback) land in later tasks.
 
+pub mod compose;
 pub mod ingest;
 pub mod journal;
+pub mod plan;
 pub mod scanner;

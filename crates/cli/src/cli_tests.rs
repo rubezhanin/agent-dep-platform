@@ -8,12 +8,24 @@ fn cli_parses_help() {
 }
 
 #[test]
-fn cli_has_deploy_status_and_catalog_subcommands() {
+fn cli_has_deploy_status_and_catalog_system_subcommands() {
     let cmd = crate::Cli::command();
     let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
     assert!(names.contains(&"deploy"));
     assert!(names.contains(&"status"));
     assert!(names.contains(&"catalog"));
+    assert!(names.contains(&"system"));
+}
+
+#[test]
+fn system_subcommand_has_plan() {
+    let cmd = crate::Cli::command();
+    let system = cmd
+        .get_subcommands()
+        .find(|c| c.get_name() == "system")
+        .expect("system subcommand");
+    let sub_names: Vec<&str> = system.get_subcommands().map(|c| c.get_name()).collect();
+    assert!(sub_names.contains(&"plan"));
 }
 
 #[test]
@@ -196,5 +208,142 @@ mod catalog_e2e {
         );
         assert_eq!(detail.findings[0].rule, "secret.aws-access-key");
         assert!(detail.findings[0].path.ends_with("secret.md"));
+    }
+}
+
+// -----------------------------------------------------------------------
+// End-to-end tests for `system::plan_at`
+// -----------------------------------------------------------------------
+
+mod system_e2e {
+    use std::fs;
+
+    fn write_catalog(root: &std::path::Path) {
+        fs::write(
+            root.join("divisions.json"),
+            r#"{
+                "_note": "e2e",
+                "divisions": [
+                    {"id": "engineering", "order": 1, "label": "Engineering"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("agents/engineering")).unwrap();
+        fs::write(
+            root.join("agents/engineering/be.md"),
+            "---\n\
+             id: be\n\
+             name: Backend Engineer\n\
+             division: engineering\n\
+             role: builds APIs\n\
+             description: backend\n\
+             version: 1.0.0\n\
+             ---\n\
+             body\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("agents/engineering/fe.md"),
+            "---\n\
+             id: fe\n\
+             name: Frontend Engineer\n\
+             division: engineering\n\
+             role: builds UIs\n\
+             description: frontend\n\
+             version: 1.0.0\n\
+             ---\n\
+             body\n",
+        )
+        .unwrap();
+    }
+
+    fn write_system_yaml(path: &std::path::Path, refs: &[&str]) {
+        let yaml = format!(
+            "apiVersion: agent-dep/v1\n\
+             kind: System\n\
+             metadata:\n  \
+               id: saas\n  \
+               name: SaaS\n\
+             spec:\n  \
+               source: agency-agents\n  \
+               agents:\n{}\n",
+            refs.iter()
+                .map(|r| format!("    - ref: {r}\n"))
+                .collect::<String>()
+        );
+        fs::write(path, yaml).unwrap();
+    }
+
+    #[tokio::test]
+    async fn plan_at_resolves_refs_against_local_catalog() {
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_catalog(cat_dir.path());
+
+        let sys_file = tempfile::tempdir().unwrap();
+        let sys_path = sys_file.path().join("system.yaml");
+        write_system_yaml(&sys_path, &["be@1.0.0", "fe@1.0.0"]);
+
+        let s = crate::commands::system::plan_at(&sys_path, cat_dir.path())
+            .await
+            .expect("plan_at");
+
+        assert_eq!(s.system_id, "saas");
+        assert_eq!(s.operations.len(), 2);
+        assert!(s.operations.iter().all(|o| o.kind == "ADD"));
+        let targets: Vec<&str> = s.operations.iter().map(|o| o.target.as_str()).collect();
+        assert!(targets.contains(&"agent:be@1.0.0"));
+        assert!(targets.contains(&"agent:fe@1.0.0"));
+        assert_eq!(s.risk, "low");
+    }
+
+    #[tokio::test]
+    async fn plan_at_rejects_missing_agent() {
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_catalog(cat_dir.path());
+
+        let sys_file = tempfile::tempdir().unwrap();
+        let sys_path = sys_file.path().join("system.yaml");
+        write_system_yaml(&sys_path, &["be@1.0.0", "ghost@1.0.0"]);
+
+        let err = crate::commands::system::plan_at(&sys_path, cat_dir.path())
+            .await
+            .expect_err("ghost agent");
+        assert!(err.to_string().contains("ghost"));
+    }
+
+    #[tokio::test]
+    async fn plan_at_rejects_missing_system_file() {
+        let cat_dir = tempfile::tempdir().unwrap();
+        let missing = cat_dir.path().join("system.yaml");
+        let err = crate::commands::system::plan_at(&missing, cat_dir.path())
+            .await
+            .expect_err("missing file");
+        assert!(err.to_string().contains("not a file"));
+    }
+
+    #[tokio::test]
+    async fn plan_at_rejects_missing_catalog_dir() {
+        let sys_file = tempfile::tempdir().unwrap();
+        let sys_path = sys_file.path().join("system.yaml");
+        write_system_yaml(&sys_path, &["be@1.0.0"]);
+        let missing = sys_file.path().join("nope");
+        let err = crate::commands::system::plan_at(&sys_path, &missing)
+            .await
+            .expect_err("missing dir");
+        assert!(err.to_string().contains("not a directory"));
+    }
+
+    #[tokio::test]
+    async fn plan_at_rejects_malformed_yaml() {
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_catalog(cat_dir.path());
+        let sys_file = tempfile::tempdir().unwrap();
+        let sys_path = sys_file.path().join("system.yaml");
+        fs::write(&sys_path, "not: a: system: file").unwrap();
+        let err = crate::commands::system::plan_at(&sys_path, cat_dir.path())
+            .await
+            .expect_err("bad yaml");
+        assert!(err.to_string().contains("parse"));
     }
 }

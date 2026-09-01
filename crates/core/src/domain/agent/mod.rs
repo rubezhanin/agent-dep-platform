@@ -33,7 +33,7 @@ pub struct UpstreamAgentFrontmatter {
 
 /// One parsed agent as our domain sees it. The body is stored as a
 /// string (Markdown); the `body_hash` references its CAS entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent {
     pub snapshot_id: Uuid,
     pub id: String,
