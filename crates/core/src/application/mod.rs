@@ -11,4 +11,6 @@ pub mod ingest;
 pub mod ingest_v2;
 pub mod journal;
 pub mod plan;
+pub mod policy;
+pub mod reconcile;
 pub mod scanner;

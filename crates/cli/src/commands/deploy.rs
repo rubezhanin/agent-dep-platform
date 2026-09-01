@@ -9,6 +9,7 @@ use agent_dep_core::application::compose::CompositionService;
 use agent_dep_core::application::deploy::DeploymentService;
 use agent_dep_core::application::ingest::IngestService;
 use agent_dep_core::application::journal::JournalService;
+use agent_dep_core::application::policy::Policy;
 use agent_dep_core::domain::source::{Source, SourceKind};
 use agent_dep_core::domain::system::parse_system_file;
 use agent_dep_core::infrastructure::sqlite::{connect, Db};
@@ -72,8 +73,16 @@ pub async fn install(
     system_file: &Path,
     catalog_path: &Path,
     plugin_id: &str,
+    policy_path: Option<&Path>,
 ) -> Result<()> {
-    let summary = install_at(system_file, catalog_path, plugin_id, &default_hermes_home_safe()).await?;
+    let summary = install_at(
+        system_file,
+        catalog_path,
+        plugin_id,
+        policy_path,
+        &default_hermes_home_safe(),
+    )
+    .await?;
     print_install_summary(&summary);
     Ok(())
 }
@@ -149,6 +158,7 @@ pub async fn install_at(
     system_file: &Path,
     catalog_path: &Path,
     plugin_id: &str,
+    policy_path: Option<&Path>,
     hermes_home: &Path,
 ) -> Result<InstallSummary> {
     if !system_file.is_file() {
@@ -161,6 +171,18 @@ pub async fn install_at(
         .with_context(|| format!("read {}", system_file.display()))?;
     let file = parse_system_file(&text)
         .map_err(|e| anyhow::anyhow!("parse {} (expected a `system.yaml`): {e}", system_file.display()))?;
+
+    if let Some(pp) = policy_path {
+        let policy = Policy::from_path(pp)
+            .map_err(|e| anyhow::anyhow!("policy {}: {e}", pp.display()))?;
+        let location = catalog_path.to_string_lossy().to_string();
+        if !policy.source_allowed(&location) {
+            anyhow::bail!(
+                "policy blocks catalog location `{}` (not in allowedRepositories)",
+                location
+            );
+        }
+    }
 
     let source = Source::new(SourceKind::local(catalog_path.to_path_buf()));
     let (result, _report) = IngestService::new().ingest_local(&source).map_err(|e| {

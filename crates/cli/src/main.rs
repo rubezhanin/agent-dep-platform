@@ -124,6 +124,9 @@ pub enum DeployAction {
         /// Plugin slug under `<HERMES_HOME>/plugins/`.
         #[arg(long, default_value = deploy::DEFAULT_PLUGIN_ID)]
         plugin_id: String,
+        /// Optional policy file (`policy.yaml`).
+        #[arg(long)]
+        policy: Option<PathBuf>,
     },
 }
 
@@ -146,8 +149,8 @@ async fn main() -> ExitCode {
                     .await
                     .map_err(Into::into)
             }
-            DeployAction::Install { file, catalog, plugin_id } => {
-                deploy::install(&file, &catalog, &plugin_id)
+            DeployAction::Install { file, catalog, plugin_id, policy } => {
+                deploy::install(&file, &catalog, &plugin_id, policy.as_deref())
                     .await
                     .map_err(Into::into)
             }

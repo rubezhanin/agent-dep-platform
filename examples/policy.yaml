@@ -1,0 +1,29 @@
+# Example policy file (TZ v2 §24).
+#
+# MVP-1.0 ships a typed local policy. Three sections,
+# each independently configurable. Decisions are one of:
+# allow, warn, block.
+
+policyVersion: 1
+
+# Source allowlist. Empty list = no constraint.
+sources:
+  allowedRepositories:
+    - "git@github.com:rubezhanin/*"
+    - "/srv/agency-agents"
+
+# Security baseline. Each field sets the *minimum*
+# severity the engine emits if the matching scanner
+# rule fires. The scanner's per-finding severity is
+# re-evaluated against this floor.
+security:
+  unknownExternalUrls: block
+  plaintextSecrets: block
+  executableFiles: warn
+
+# Deployment-side gates.
+deployment:
+  # block  = refuse to overwrite modified/foreign files
+  # warn   = overwrite with a warning
+  # allow  = overwrite silently
+  modifiedFiles: block

@@ -620,6 +620,7 @@ mod deploy_e2e {
             &sys_path,
             cat_dir.path(),
             "agency-agents-router",
+            None,
             hermes_home.path(),
         )
         .await
@@ -650,6 +651,7 @@ mod deploy_e2e {
             &sys_path,
             cat_dir.path(),
             "../escape",
+            None,
             hermes_home.path(),
         )
         .await
