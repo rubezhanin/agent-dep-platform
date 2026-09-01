@@ -11,8 +11,11 @@
 //! (System, DeploymentPlan, etc.) are added in MVP-3+ tasks.
 
 pub mod agent;
+pub mod agent_yaml;
 pub mod division;
 pub mod plan;
+pub mod skill;
+pub mod skill_yaml;
 pub mod source;
 pub mod system;
 pub mod version;
