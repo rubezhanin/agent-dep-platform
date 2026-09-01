@@ -97,7 +97,7 @@ mod catalog_e2e {
 
         // Re-open the DB and verify state.
         let db = connect(&db_path).await.expect("reopen");
-        assert_eq!(schema_version(&db).await.unwrap(), 4);
+        assert_eq!(schema_version(&db).await.unwrap(), 5);
         let repo = IngestRepository::new(db.pool().clone());
         let source = repo
             .find_source_by_location("local", &cat_dir.path().to_string_lossy())

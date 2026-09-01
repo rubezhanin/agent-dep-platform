@@ -5,11 +5,17 @@
 //! the transactional boundary: a snapshot and all its child rows are
 //! written in a single transaction so partial failures never leak.
 //!
+//! `SkillRepository` (Phase 1B) owns the parallel `skills` /
+//! `skill_tags` / `skill_dependencies` / `skill_permissions` tables
+//! for the v2 catalog shape.
+//!
 //! Per ADR-0004: this DB is metadata only. The on-disk system YAML
 //! remains the source of truth; a snapshot row is a derived view.
 //! Per ADR-0006: re-ingestion produces a new snapshot row; the
 //! previous Active row is flipped to `Superseded` in the same
 //! transaction.
+
+pub mod skill_repository;
 
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;

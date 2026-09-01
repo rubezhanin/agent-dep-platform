@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 use crate::application::scanner::{Finding, ScanPolicy, Scanner};
 use crate::domain::agent::{Agent, UpstreamAgentFrontmatter};
 use crate::domain::division::{DivisionIndex, UpstreamDivisionsFile};
+use crate::domain::skill::Skill;
 use crate::domain::source::{SnapshotStatus, Source, SourceSnapshot};
 use crate::error::{CoreError, CoreResult};
 use uuid::Uuid;
@@ -38,6 +39,10 @@ pub struct IngestResult {
     pub snapshot: SourceSnapshot,
     pub divisions: DivisionIndex,
     pub agents: Vec<Agent>,
+    /// Skills resolved from the v2 catalog layout (`skills/<id>/skill.yaml`
+    /// + `SKILL.md`). Empty for the v1 reader; the v1 source tree
+    /// (MVP-3 `agents/<division>/*.md`) has no skills to resolve.
+    pub skills: Vec<Skill>,
     /// Files that were observed and hashed, in sorted order. Useful
     /// for the SQLite persistence layer to record per-file entries.
     pub files: Vec<ObservedFile>,
@@ -247,6 +252,7 @@ impl IngestService {
                 snapshot,
                 divisions,
                 agents,
+                skills: Vec::new(),
                 files,
                 findings,
             },
