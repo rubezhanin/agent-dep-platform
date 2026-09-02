@@ -6,7 +6,7 @@ mod output;
 mod cli_tests;
 
 use clap::{Parser, Subcommand};
-use commands::{catalog, deploy, lock, rollback, status, system};
+use commands::{catalog, deploy, lock, mcp, rollback, status, system};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -43,6 +43,13 @@ pub enum Command {
     Lock {
         #[command(subcommand)]
         action: LockAction,
+    },
+    /// Install / remove Hermes 0.19+ Flow B MCP server
+    /// manifests under `<hermes_home>/optional-mcps/<name>/`
+    /// (1.3.0, ADR-0011).
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
     },
     /// Roll back a previous deploy by operation id.
     Rollback {
@@ -117,6 +124,24 @@ pub enum LockAction {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum McpAction {
+    /// Materialize a `manifest.yaml` for a remote MCP
+    /// server under `<hermes_home>/optional-mcps/<name>/`.
+    /// The spec is read from a JSON file the operator
+    /// points at with `--spec <path>`. The directory
+    /// name in the filesystem is the CLI argument
+    /// (`<name>`), not the `name` field in the spec.
+    Add {
+        /// Name of the MCP server (also the directory
+        /// name). Must match `^[a-z][a-z0-9_-]{0,63}$`.
+        name: String,
+        /// Path to a JSON file describing the server.
+        #[arg(long, value_name = "PATH")]
+        spec: PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum DeployAction {
     /// Apply a composed `system.yaml` to a target directory. Agent
     /// files are written to `<target>/agents/<id>@<version>/<id>.md`
@@ -184,6 +209,11 @@ async fn main() -> ExitCode {
                     .await
                     .map(|_| ())
                     .map_err(Into::into)
+            }
+        },
+        Command::Mcp { action } => match action {
+            McpAction::Add { name, spec } => {
+                mcp::add(name, &spec).await.map_err(Into::into)
             }
         },
         Command::Rollback { operation_id } => match uuid::Uuid::parse_str(&operation_id) {

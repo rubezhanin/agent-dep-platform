@@ -983,3 +983,78 @@ mod rollback_e2e {
         assert!(err.to_string().contains("operation not found"));
     }
 }
+
+// -----------------------------------------------------------------------
+// End-to-end tests for gency mcp add
+// -----------------------------------------------------------------------
+
+#[cfg(test)]
+mod mcp_e2e {
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn write_linear_spec(path: &std::path::Path) {
+        fs::write(
+            path,
+            r#"{
+                "name": "linear",
+                "description": "Find, create, and update Linear issues.",
+                "source_url": "https://linear.app/docs/mcp",
+                "transport": { "type": "http", "url": "https://mcp.linear.app/mcp" },
+                "auth": { "type": "oauth" }
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mcp_add_writes_optional_mcps_manifest() {
+        // Isolated Hermes home so we never touch a real
+        // install. The default is the AGENCY_HERMES_HOME
+        // env var; we set it to a tempdir for the test.
+        let hermes_home = tempfile::tempdir().unwrap();
+        let prev = env::var("AGENCY_HERMES_HOME").ok();
+        // SAFETY: tests in this module are single-threaded.
+        unsafe { env::set_var("AGENCY_HERMES_HOME", hermes_home.path()); }
+
+        let spec_dir = tempfile::tempdir().unwrap();
+        let spec_path: PathBuf = spec_dir.path().join("linear.json");
+        write_linear_spec(&spec_path);
+
+        let summary = crate::commands::mcp::add_at("linear", &spec_path)
+            .expect("mcp add");
+
+        assert_eq!(summary.name, "linear");
+        let manifest = hermes_home
+            .path()
+            .join("optional-mcps")
+            .join("linear")
+            .join("manifest.yaml");
+        assert!(manifest.is_file(), "manifest should exist at {}", manifest.display());
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(text.contains("manifest_version: 1"));
+        assert!(text.contains("name: linear"));
+        assert!(text.contains("transport:"));
+        assert!(text.contains("  type: http"));
+        assert!(text.contains("  url: https://mcp.linear.app/mcp"));
+        assert!(text.contains("auth:"));
+        assert!(text.contains("  type: oauth"));
+
+        match prev {
+            Some(v) => unsafe { env::set_var("AGENCY_HERMES_HOME", v) },
+            None => unsafe { env::remove_var("AGENCY_HERMES_HOME") },
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_add_rejects_invalid_name() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        let spec_path: PathBuf = spec_dir.path().join("linear.json");
+        write_linear_spec(&spec_path);
+        let err = crate::commands::mcp::add_at("BadName", &spec_path)
+            .expect_err("invalid name");
+        let s = err.to_string();
+        assert!(s.contains("invalid") || s.contains("name"), "got: {s}");
+    }
+}

@@ -34,6 +34,21 @@ pub fn default_working_copy_root() -> PathBuf {
     default_data_dir().join("sources")
 }
 
+/// Default Hermes home for `agency mcp add` (1.3.0).
+/// Falls back to `<app_data_dir>/hermes/` if no real
+/// Hermes install is found on the host.
+pub fn default_hermes_home() -> PathBuf {
+    if let Ok(p) = std::env::var("AGENCY_HERMES_HOME") {
+        if !p.trim().is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    if let Some(p) = agent_dep_hermes_adapter::paths::default_hermes_home() {
+        return p;
+    }
+    default_data_dir().join("hermes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

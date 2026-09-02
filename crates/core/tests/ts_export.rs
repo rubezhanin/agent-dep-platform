@@ -8,6 +8,7 @@ use agent_dep_core::dto::{
     AgentSummary, BackupSummary, DeploymentSummary, Finding, LogLine, Plan, PlanOperation,
     ScanResult, SourceSummary, SystemSummary,
 };
+use agent_dep_hermes_adapter::mcp_server::{McpAuth, McpServerSpec, McpTransport};
 use agent_dep_hermes_adapter::types::RuntimeInfo;
 use ts_rs::TS;
 
@@ -27,4 +28,7 @@ fn export_all_types() {
     let _ = Finding::export_all();
     let _ = LogLine::export_all();
     let _ = RuntimeInfo::export_all();
+    let _ = McpServerSpec::export_all();
+    let _ = McpTransport::export_all();
+    let _ = McpAuth::export_all();
 }

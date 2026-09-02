@@ -203,6 +203,11 @@ fn en_us_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.rollback.kv.kept_current", "kept_current"),
         ("cli.rollback.kv.failed", "failed"),
         ("cli.rollback.todo_cas", "  (Phase 5 TODO: actually re-write the pre-deploy bytes from CAS)"),
+        // MCP
+        ("cli.mcp.add.header", "Installed MCP server: {name}"),
+        ("cli.mcp.kv.server_dir", "server_dir"),
+        ("cli.mcp.kv.manifest_path", "manifest_path"),
+        ("cli.mcp.kv.manifest_sha256", "manifest_sha256"),
         // Status
         ("cli.status.unknown", "no deployment found"),
     ]
@@ -239,6 +244,10 @@ fn ru_ru_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.rollback.kv.kept_current", "уже актуально"),
         ("cli.rollback.kv.failed", "ошибок"),
         ("cli.rollback.todo_cas", "  (TODO Phase 5: записать байты до деплоя из CAS)"),
+        ("cli.mcp.add.header", "Установлен MCP-сервер: {name}"),
+        ("cli.mcp.kv.server_dir", "каталог сервера"),
+        ("cli.mcp.kv.manifest_path", "путь к manifest"),
+        ("cli.mcp.kv.manifest_sha256", "sha256 manifest"),
         ("cli.status.unknown", "развёртывание не найдено"),
     ]
 }

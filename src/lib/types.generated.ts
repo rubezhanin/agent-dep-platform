@@ -36,4 +36,32 @@ export type HealthReport = { plugin_id: string, hermes_home: string, artifacts: 
  */
 ok: boolean, };
 
+/**
+ * Authentication scheme. `Oauth` covers the
+ * `native MCP OAuth` case (the Linear manifest) and
+ * the `third-party provider` case where the
+ * `provider` field names e.g. Google.
+ */
+export type McpAuth = { "type": "oauth", 
+/**
+ * None for native MCP OAuth (case 1), Some for
+ * third-party providers (case 2).
+ */
+provider: string | null, };
+
+/**
+ * The platform-owned spec for an MCP server manifest.
+ * `name` is the manifest directory name; `description`,
+ * `source_url`, `transport`, and `auth` map 1:1 to
+ * their YAML fields. The manifest adds a static
+ * `manifest_version: 1` header.
+ */
+export type McpServerSpec = { name: string, description: string, source_url: string, transport: McpTransport, auth?: McpAuth | null, };
+
+/**
+ * HTTP transport for an MCP server. The 0.19 reference
+ * catalog only ships `Http`; `Stdio` lands in 1.3.1.
+ */
+export type McpTransport = { "type": "http", url: string, };
+
 export type RuntimeInfo = { version: string, home: string, plugin_dir: string, };

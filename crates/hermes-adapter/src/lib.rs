@@ -4,6 +4,7 @@
 pub mod adapter;
 pub mod detection;
 pub mod hermes_adapter;
+pub mod mcp_server;
 pub mod paths;
 pub mod router_plugin;
 pub mod types;
