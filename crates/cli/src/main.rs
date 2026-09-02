@@ -60,6 +60,18 @@ pub enum CatalogAction {
         /// and an `agents/<division>/*.md` subtree).
         path: PathBuf,
     },
+    /// Clone a Git repository (HTTPS or SSH) and ingest it as a
+    /// new catalog source. The working copy is cached at
+    /// `<data>/sources/<source_id>/` so subsequent
+    /// `agency catalog update <url>` calls only re-fetch
+    /// (1.1.0, ADR-0009).
+    Add {
+        /// URL of the Git repository. Accepts `https://…`,
+        /// `http://…`, `git@host:path`, or `host:path`
+        /// (SCP-style SSH). `file://…` is also accepted for
+        /// local testing.
+        url: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -137,6 +149,7 @@ async fn main() -> ExitCode {
         Command::Status => status::run().await.map_err(Into::into),
         Command::Catalog { action } => match action {
             CatalogAction::Update { path } => catalog::update(path).await.map_err(Into::into),
+            CatalogAction::Add { url } => catalog::add(url).await.map_err(Into::into),
         },
         Command::System { action } => match action {
             SystemAction::Plan { file, catalog } => {

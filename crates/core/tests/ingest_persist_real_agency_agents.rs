@@ -41,7 +41,7 @@ async fn ingest_persist_real_agency_agents_round_trips() {
     // Ingest the real catalog.
     let source = Source::new(SourceKind::local(root.clone()));
     let (result, report) = IngestService::new()
-        .ingest_local(&source)
+        .ingest_local(&source, None)
         .expect("ingest real catalog");
 
     // Persist.
@@ -94,7 +94,7 @@ async fn ingest_persist_real_agency_agents_round_trips() {
 
     // Re-ingest -> new snapshot row, old flips to Superseded.
     let (r2, rep2) = IngestService::new()
-        .ingest_local(&source)
+        .ingest_local(&source, None)
         .expect("re-ingest");
     assert_eq!(r2.snapshot.commit_sha, result.snapshot.commit_sha);
     repo.record_snapshot(source_id, &r2, &rep2)

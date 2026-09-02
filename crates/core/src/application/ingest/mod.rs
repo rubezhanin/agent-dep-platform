@@ -86,12 +86,29 @@ impl IngestService {
 
     /// Ingest a local source. The returned `IngestResult` is the
     /// *parsed-and-validated* view; persistence is a separate concern.
-    pub fn ingest_local(&self, source: &Source) -> CoreResult<(IngestResult, IngestReport)> {
-        let root = match &source.kind {
-            crate::domain::source::SourceKind::Local { path } => path.clone(),
-            other => {
+    ///
+    /// For `SourceKind::Local`, the working copy is `source.kind.path`.
+    /// For `SourceKind::GitHttps` / `SourceKind::GitSsh`, the
+    /// caller MUST pass `override_root` pointing at the
+    /// already-cloned working copy (typically produced by
+    /// `git_fetcher::HttpsFetcher` or `SshFetcher`). The
+    /// `git_fetcher::ingest_source` helper wires the two
+    /// together; the public CLI uses that.
+    pub fn ingest_local(
+        &self,
+        source: &Source,
+        override_root: Option<&Path>,
+    ) -> CoreResult<(IngestResult, IngestReport)> {
+        let root: PathBuf = match (&source.kind, override_root) {
+            (crate::domain::source::SourceKind::Local { path }, None) => path.clone(),
+            (crate::domain::source::SourceKind::Local { path: _ }, Some(p)) => p.to_path_buf(),
+            (_, Some(p)) => p.to_path_buf(),
+            (_, None) => {
                 return Err(CoreError::Unimplemented {
-                    feature: format!("ingest for source kind {:?}", other),
+                    feature: format!(
+                        "ingest for source kind {:?} requires an override_root (use `ingest_git`)",
+                        source.kind
+                    ),
                 });
             }
         };
@@ -414,3 +431,5 @@ pub fn extract_frontmatter_pub(text: &str) -> Result<(UpstreamAgentFrontmatter, 
 
 #[cfg(test)]
 mod ingest_tests;
+
+pub mod git_fetcher;

@@ -29,7 +29,7 @@ fn ingest_real_agency_agents_catalog() {
 
     let source = Source::new(SourceKind::local(root.clone()));
     let svc = IngestService::new();
-    let (result, report) = svc.ingest_local(&source).expect("ingest real catalog");
+    let (result, report) = svc.ingest_local(&source, None).expect("ingest real catalog");
 
     // The seed catalog ships 3 demo agents in `agents/engineering/`.
     assert!(
@@ -60,7 +60,7 @@ fn ingest_real_agency_agents_catalog() {
     assert_eq!(result.snapshot.commit_sha.len(), 64);
 
     // Re-ingestion yields the same commit (idempotent).
-    let (again, _) = svc.ingest_local(&source).expect("re-ingest");
+    let (again, _) = svc.ingest_local(&source, None).expect("re-ingest");
     assert_eq!(result.snapshot.commit_sha, again.snapshot.commit_sha);
 
     // Each agent has a body and a body hash.

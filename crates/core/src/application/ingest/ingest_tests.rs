@@ -92,7 +92,7 @@ fn ingest_local_agency_agents_shape() {
 
     let source = Source::new(SourceKind::local(root.clone()));
     let svc = IngestService::new();
-    let (result, report) = svc.ingest_local(&source).expect("ingest");
+    let (result, report) = svc.ingest_local(&source, None).expect("ingest");
 
     // 2 good agents; 2 rejected (id mismatch + unknown division).
     assert_eq!(result.agents.len(), 2, "expected 2 valid agents");
@@ -104,7 +104,7 @@ fn ingest_local_agency_agents_shape() {
     assert!(ids.contains(&"devops"));
 
     // Snapshot identity is stable: re-ingesting yields the same commit.
-    let (_again, _) = svc.ingest_local(&source).expect("ingest 2");
+    let (_again, _) = svc.ingest_local(&source, None).expect("ingest 2");
     assert_eq!(
         result.snapshot.commit_sha, _again.snapshot.commit_sha,
         "snapshot identity must be stable across re-ingest"
@@ -118,6 +118,6 @@ fn ingest_local_missing_divisions_errors() {
     // No divisions.json
     let source = Source::new(SourceKind::local(root));
     let svc = IngestService::new();
-    let result = svc.ingest_local(&source);
+    let result = svc.ingest_local(&source, None);
     assert!(result.is_err(), "missing divisions.json should fail ingest");
 }

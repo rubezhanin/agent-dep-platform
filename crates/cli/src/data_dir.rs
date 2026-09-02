@@ -25,6 +25,15 @@ pub fn default_db_path() -> PathBuf {
     default_data_dir().join("data").join("agency.db")
 }
 
+/// Per-app-data-dir cache for Git working copies used by
+/// `agency catalog add` (1.1.0). The structure is
+/// `<data>/sources/<source_id>/` and survives across
+/// re-ingest runs so `agency catalog update` only does
+/// `git fetch` rather than `git clone`.
+pub fn default_working_copy_root() -> PathBuf {
+    default_data_dir().join("sources")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

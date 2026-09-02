@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use agent_dep_core::application::ingest::git_fetcher::{classify_url, ingest_source};
 use agent_dep_core::application::ingest::IngestService;
 use agent_dep_core::domain::source::{Source, SourceKind};
 use agent_dep_core::infrastructure::repository::IngestRepository;
@@ -68,7 +69,7 @@ pub async fn update_at(path: &Path, db_path: &Path) -> Result<UpdateSummary> {
     let source = Source::new(SourceKind::local(path.to_path_buf()));
     let svc = IngestService::new();
     let (result, report) = svc
-        .ingest_local(&source)
+        .ingest_local(&source, None)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Upsert source (no-op if same (kind, location) already exists)
@@ -83,6 +84,93 @@ pub async fn update_at(path: &Path, db_path: &Path) -> Result<UpdateSummary> {
 
     // Keep the DB connection alive for the duration of the call so
     // any background task is shut down before we return.
+    drop(db);
+
+    Ok(UpdateSummary {
+        snapshot_id: result.snapshot.id,
+        commit_sha: result.snapshot.commit_sha,
+        agent_count: result.agents.len(),
+        division_count: result.divisions.len(),
+        files_scanned: report.files_scanned,
+        total_bytes: report.total_bytes,
+        rejected: report.agents_rejected.len(),
+        findings_block: report.findings_block,
+        findings_warn: report.findings_warn,
+        findings_pass: report.findings_pass,
+        snapshot_status: format!("{:?}", result.snapshot.status),
+        top_findings: result
+            .findings
+            .iter()
+            .take(5)
+            .map(|f| TopFinding {
+                severity: f.severity.as_str().to_string(),
+                rule: f.rule.clone(),
+                path: f.path.clone(),
+                reason: f.reason.clone(),
+            })
+            .collect(),
+        db_path: db_path.to_path_buf(),
+    })
+}
+
+/// CLI entry point for the new (1.1.0) `agency catalog add <url>`
+/// subcommand. Classifies the URL, persists a `Source` row, clones
+/// (or re-uses the cached working copy), runs the full ingest
+/// pipeline, and writes a fresh `SourceSnapshot`.
+pub async fn add(url: String) -> Result<()> {
+    let db_path = crate::data_dir::default_db_path();
+    let working_copy_root = crate::data_dir::default_working_copy_root();
+    let summary = add_at(&url, &db_path, &working_copy_root).await?;
+    print_summary(std::path::Path::new(&url), &summary);
+    Ok(())
+}
+
+/// Pure orchestration for `catalog add`: classify, upsert source,
+/// fetch + ingest, record snapshot. The `working_copy_root` is the
+/// per-app-data-dir cache for Git working copies (typically
+/// `<app_data_dir>/sources/`). Tests can pass a tempdir to avoid
+/// polluting the real data dir.
+pub async fn add_at(
+    url: &str,
+    db_path: &Path,
+    working_copy_root: &Path,
+) -> Result<UpdateSummary> {
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create_dir_all {}", parent.display()))?;
+    }
+    if !working_copy_root.exists() {
+        fs::create_dir_all(working_copy_root)
+            .await
+            .with_context(|| format!("create_dir_all {}", working_copy_root.display()))?;
+    }
+
+    let kind = classify_url(url).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let source = Source::new(kind);
+
+    let db = open_and_migrate(db_path).await?;
+    let repo = IngestRepository::new(db.pool().clone());
+
+    // First persist the source so we get a stable source_id for
+    // the working-copy folder name; the same source_id is then
+    // threaded through `ingest_source` so the snapshot's
+    // `source_id` matches.
+    let source_id = repo
+        .upsert_source(&source, false)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Re-create the source with the assigned id so the working
+    // copy is keyed off it.
+    let mut source = source;
+    source.id = source_id;
+
+    let (result, report) = ingest_source(&source, working_copy_root)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    repo.record_snapshot(source_id, &result, &report)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
     drop(db);
 
     Ok(UpdateSummary {

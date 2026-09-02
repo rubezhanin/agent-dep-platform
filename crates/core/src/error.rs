@@ -60,4 +60,22 @@ pub enum CoreError {
 
     #[error("not yet implemented: {feature}")]
     Unimplemented { feature: String },
+
+    #[error("git clone of `{url}` failed: {reason}")]
+    ErrGitClone { url: String, reason: String },
+
+    #[error("git open of `{path}` failed: {reason}")]
+    ErrGitOpen { path: String, reason: String },
+
+    #[error("git fetch from `{url}` failed: {reason}")]
+    ErrGitFetch { url: String, reason: String },
+
+    #[error("git ref `{ref_name}` is invalid: {reason}")]
+    ErrGitInvalidRef { ref_name: String, reason: String },
+
+    #[error("git source kind mismatch: expected {expected}, got {got}")]
+    ErrGitWrongKind { expected: String, got: String },
+
+    #[error("git remote URL changed: was `{old}`, now `{new}`; remove the working copy at `{new}`'s source_id directory and retry")]
+    ErrGitRemoteChanged { old: String, new: String },
 }

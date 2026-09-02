@@ -115,7 +115,7 @@ pub async fn deploy_at(
         .map_err(|e| anyhow::anyhow!("parse {} (expected a `system.yaml`): {e}", system_file.display()))?;
 
     let source = Source::new(SourceKind::local(catalog_path.to_path_buf()));
-    let (result, _report) = IngestService::new().ingest_local(&source).map_err(|e| {
+    let (result, _report) = IngestService::new().ingest_local(&source, None).map_err(|e| {
         anyhow::anyhow!("ingest {}: {e}", catalog_path.display())
     })?;
 
@@ -187,7 +187,7 @@ pub async fn install_at(
     }
 
     let source = Source::new(SourceKind::local(catalog_path.to_path_buf()));
-    let (result, _report) = IngestService::new().ingest_local(&source).map_err(|e| {
+    let (result, _report) = IngestService::new().ingest_local(&source, None).map_err(|e| {
         anyhow::anyhow!("ingest {}: {e}", catalog_path.display())
     })?;
 

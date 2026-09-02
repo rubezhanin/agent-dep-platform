@@ -57,7 +57,7 @@ pub async fn plan_at(system_file: &Path, catalog_path: &Path) -> Result<PlanSumm
 
     let source = Source::new(SourceKind::local(catalog_path.to_path_buf()));
     let (result, _report) = IngestService::new()
-        .ingest_local(&source)
+        .ingest_local(&source, None)
         .map_err(|e| anyhow::anyhow!("ingest {}: {e}", catalog_path.display()))?;
 
     // For MVP-3 we always work against the just-ingested snapshot
