@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use agent_dep_core::application::ingest::git_fetcher::{classify_url, ingest_source};
 use agent_dep_core::application::ingest::IngestService;
-use agent_dep_core::application::scanner::{findings_to_sarif, Finding, RegexScanner, ScanPolicy, Scanner};
+use agent_dep_core::application::scanner::{findings_to_sarif, Finding, RegexScanner, ScanPolicy, Scanner, Severity};
 use agent_dep_core::domain::source::{Source, SourceKind};
 use agent_dep_core::infrastructure::repository::IngestRepository;
 use agent_dep_core::infrastructure::sqlite::{connect, Db};
@@ -258,8 +258,13 @@ fn print_summary(path: &Path, s: &UpdateSummary) {
 /// CLI entry point. Runs the scanner over `path`
 /// with the default `ScanPolicy` and writes the
 /// results to stdout in the requested format.
-pub async fn scan(path: PathBuf, format: String) -> Result<()> {
-    let findings = scan_at(&path)?;
+///
+/// 2.7.0 (ADR-0028): if `plugins` is non-empty,
+/// each `name:path` pair is registered as a
+/// `PluginScanner` and its findings are merged
+/// with the internal `RegexScanner` findings.
+pub async fn scan(path: PathBuf, format: String, plugins: Vec<String>) -> Result<()> {
+    let findings = scan_at(&path, &plugins)?;
     match format.as_str() {
         "text" => {
             print_findings_text(&findings);
@@ -306,18 +311,54 @@ pub async fn scan(path: PathBuf, format: String) -> Result<()> {
 }
 
 /// Pure orchestration for `catalog scan`. Runs
-/// the `RegexScanner` over `path` with the
-/// default policy and returns the findings.
+/// the `RegexScanner` (and any registered
+/// `PluginScanner`s) over `path` with the default
+/// policy and returns the merged findings.
 /// Exposed for tests.
-pub fn scan_at(path: &Path) -> Result<Vec<Finding>> {
+pub fn scan_at(path: &Path, plugins: &[String]) -> Result<Vec<Finding>> {
     if !path.is_dir() {
         anyhow::bail!("not a directory: {}", path.display());
     }
-    let scanner = RegexScanner;
     let policy = ScanPolicy::mvp_default();
-    scanner
+    let mut findings = RegexScanner
         .scan(path, &policy)
-        .map_err(|e| anyhow::anyhow!("{e}"))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    for spec in plugins {
+        let (name, binary) = parse_plugin_spec(spec)?;
+        let scanner = agent_dep_core::application::scanner::plugin::PluginScanner::new(&name, binary);
+        match scanner.scan(path, &policy) {
+            Ok(mut pf) => findings.append(&mut pf),
+            Err(e) => {
+                // Surface the plugin failure as a
+                // Warn finding so the operator sees
+                // it in the SARIF output rather
+                // than a hard error.
+                findings.push(Finding {
+                    severity: Severity::Warn,
+                    rule: format!("plugin.{name}.exec-failed"),
+                    path: String::new(),
+                    reason: format!("{e}"),
+                });
+            }
+        }
+    }
+    Ok(findings)
+}
+
+/// Parse a `name:path` plugin spec from the
+/// CLI. We use `:` as the separator because
+/// Windows paths use `C:\...` and the colon is
+/// only present as the drive letter — splitting
+/// on the FIRST `:` works for both `name:C:\...`
+/// and `name:/usr/local/bin/...`.
+fn parse_plugin_spec(spec: &str) -> Result<(String, PathBuf)> {
+    let (name, path) = spec
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("plugin spec must be `NAME:PATH`, got `{spec}`"))?;
+    if name.is_empty() || path.is_empty() {
+        anyhow::bail!("plugin spec must be `NAME:PATH` with non-empty parts, got `{spec}`");
+    }
+    Ok((name.to_string(), PathBuf::from(path)))
 }
 
 fn print_findings_text(findings: &[Finding]) {

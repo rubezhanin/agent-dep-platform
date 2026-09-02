@@ -14,6 +14,7 @@
 
 use once_cell::sync::Lazy;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -25,7 +26,7 @@ use crate::error::{CoreError, CoreResult};
 // Severity
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Severity {
     Pass,
     Warn,
@@ -93,7 +94,7 @@ impl Finding {
 // Policy
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanPolicy {
     /// Hosts (exact or `*.example.com`) that are considered safe
     /// download sources. Used by `url.allowed-domain` and
@@ -803,6 +804,12 @@ pub fn findings_to_sarif(findings: &[Finding]) -> serde_json::Value {
         }]
     })
 }
+
+// ---------------------------------------------------------------------------
+// 2.7.0 third-party scanner plugins (ADR-0028)
+// ---------------------------------------------------------------------------
+
+pub mod plugin;
 
 // ---------------------------------------------------------------------------
 // Tests

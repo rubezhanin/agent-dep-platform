@@ -105,6 +105,13 @@ pub enum CatalogAction {
         /// the SARIF 2.1.0 log.
         #[arg(long, value_name = "FORMAT", default_value = "text")]
         format: String,
+        /// 2.7.0 (ADR-0028): register an external
+        /// scanner plugin (absolute path to a
+        /// binary). May be repeated. The plugin
+        /// receives a JSON envelope on stdin and
+        /// writes a JSON envelope on stdout.
+        #[arg(long, value_name = "NAME:PATH")]
+        plugin: Vec<String>,
     },
 }
 

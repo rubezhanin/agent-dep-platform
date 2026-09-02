@@ -39,8 +39,8 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Command::Catalog { action } => match action {
             agent_dep_cli::cli_def::CatalogAction::Update { path } => catalog::update(path).await,
             agent_dep_cli::cli_def::CatalogAction::Add { url } => catalog::add(url).await,
-            agent_dep_cli::cli_def::CatalogAction::Scan { path, format } => {
-                catalog::scan(path, format).await
+            agent_dep_cli::cli_def::CatalogAction::Scan { path, format, plugin } => {
+                catalog::scan(path, format, plugin).await
             }
         },
         Command::System { action } => match action {
