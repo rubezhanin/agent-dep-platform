@@ -1,6 +1,6 @@
 //! Library surface for the `agency-server` crate.
 //!
-//! 2.0.0: integration tests link against this lib to
+//! 2.1.0: integration tests link against this lib to
 //! bind a real `axum` router on a random port. The
 //! `main.rs` binary is a thin wrapper that constructs
 //! the production `ServerState` and calls `axum::serve`.
@@ -16,10 +16,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_dep_core::infrastructure::repository::audit_log_repository::AuditLogRepository;
+use agent_dep_core::infrastructure::repository::users_repository::UserRepository;
 use agent_dep_core::infrastructure::sqlite::connect;
 use anyhow::{Context, Result};
 use axum::{
-    middleware,
+    extract::{Request, State},
+    middleware::{self, Next},
     routing::{get, post},
     Router,
 };
@@ -30,11 +32,54 @@ use tower_http::trace::TraceLayer;
 pub use state::ServerState;
 
 pub fn router(state: ServerState) -> Router {
+    // Each per-route layer inserts its `AllowedRoles`
+    // extension and then delegates to
+    // `auth::check_role`. The state is threaded via
+    // `from_fn_with_state`.
     let authed = Router::new()
-        .route("/v1/audit", get(handlers::list_audit))
-        .route("/v1/systems", get(handlers::list_systems))
-        .route("/v1/systems/plan", post(handlers::plan_system))
-        .route("/v1/rollback/:id", post(handlers::rollback_operation))
+        // viewer-or-higher
+        .route(
+            "/v1/audit",
+            get(handlers::list_audit)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
+        )
+        .route(
+            "/v1/systems",
+            get(handlers::list_systems)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
+        )
+        // operator-or-higher
+        .route(
+            "/v1/systems/plan",
+            post(handlers::plan_system).layer(middleware::from_fn_with_state(
+                state.clone(),
+                allow_operator,
+            )),
+        )
+        .route(
+            "/v1/rollback/:id",
+            post(handlers::rollback_operation).layer(middleware::from_fn_with_state(
+                state.clone(),
+                allow_operator,
+            )),
+        )
+        // admin-only
+        .route(
+            "/v1/users",
+            get(handlers::list_users)
+                .post(handlers::create_user)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
+        .route(
+            "/v1/users/:id",
+            axum::routing::delete(handlers::disable_user)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
+        .route(
+            "/v1/users/:id/rotate",
+            post(handlers::rotate_user_token)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,
@@ -44,6 +89,44 @@ pub fn router(state: ServerState) -> Router {
         .merge(authed)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
+}
+
+async fn allow_viewer(
+    State(state): State<ServerState>,
+    mut request: Request,
+    next: Next,
+) -> axum::response::Response {
+    use agent_dep_core::infrastructure::repository::users_repository::Role;
+    request.extensions_mut().insert(auth::AllowedRoles(vec![
+        Role::Viewer,
+        Role::Operator,
+        Role::Admin,
+    ]));
+    auth::check_role(state, request, next).await
+}
+
+async fn allow_operator(
+    State(state): State<ServerState>,
+    mut request: Request,
+    next: Next,
+) -> axum::response::Response {
+    use agent_dep_core::infrastructure::repository::users_repository::Role;
+    request
+        .extensions_mut()
+        .insert(auth::AllowedRoles(vec![Role::Operator, Role::Admin]));
+    auth::check_role(state, request, next).await
+}
+
+async fn allow_admin(
+    State(state): State<ServerState>,
+    mut request: Request,
+    next: Next,
+) -> axum::response::Response {
+    use agent_dep_core::infrastructure::repository::users_repository::Role;
+    request
+        .extensions_mut()
+        .insert(auth::AllowedRoles(vec![Role::Admin]));
+    auth::check_role(state, request, next).await
 }
 
 /// Read the bearer token from `path`. If the file does
@@ -104,22 +187,66 @@ pub fn default_db_path() -> PathBuf {
     default_data_dir().join("data").join("agency.db")
 }
 
-/// Boot a `ServerState` for the hermetic default
-/// data dir. Used by the production `main.rs`.
+/// Boot a `ServerState` for the production default
+/// data dir. On first start with a 2.0.0
+/// `server.token` file, the legacy token is migrated
+/// to an `admin` user so existing scripts keep
+/// working.
 pub async fn boot_default_state() -> Result<ServerState> {
     let data_dir = default_data_dir();
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("create_dir_all {}", data_dir.display()))?;
-    let token = ensure_token(&data_dir.join("server.token"))?;
     let db_path = default_db_path();
     std::fs::create_dir_all(db_path.parent().unwrap())?;
     let db = connect(&db_path).await?;
     db.migrate().await?;
+    let users = UserRepository::new(db.pool().clone());
+    let token_path = data_dir.join("server.token");
+    let legacy_token = if token_path.is_file() {
+        let s = std::fs::read_to_string(&token_path)
+            .with_context(|| format!("read {}", token_path.display()))?;
+        let trimmed = s.trim().to_string();
+        if trimmed.is_empty() {
+            ensure_token(&token_path)?
+        } else {
+            // 2.0.0 → 2.1.0 migration: try to migrate
+            // the legacy token to an `admin` user.
+            // If the users table is already
+            // populated, the migration is a no-op.
+            let _ = users.migrate_legacy_token(&trimmed).await?;
+            trimmed
+        }
+    } else {
+        // Fresh install: bootstrap an admin user with
+        // a fresh token. Print the token to stderr
+        // exactly once so the operator can copy it.
+        let created = users
+            .create(
+                "admin",
+                agent_dep_core::infrastructure::repository::users_repository::Role::Admin,
+            )
+            .await
+            .with_context(|| "create initial admin user")?;
+        let token = created.token.clone();
+        std::fs::write(&token_path, &token)
+            .with_context(|| format!("write {}", token_path.display()))?;
+        set_token_file_mode(&token_path);
+        eprintln!(
+            "agency-server: created initial admin user, token in {}",
+            token_path.display()
+        );
+        eprintln!(
+            "agency-server: token={} (save this; the plain token is not stored)",
+            token
+        );
+        token
+    };
     let audit = AuditLogRepository::new(db.pool().clone());
     Ok(ServerState {
         db,
         audit,
-        token: Arc::new(token),
+        users,
+        legacy_token: Arc::new(Some(legacy_token)),
     })
 }
 

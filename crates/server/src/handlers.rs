@@ -1,8 +1,9 @@
-//! HTTP handler functions for the 2.0.0 server.
+//! HTTP handler functions for the 2.1.0 server.
 
 use agent_dep_core::infrastructure::repository::audit_log_repository::AuditOutcome;
+use agent_dep_core::infrastructure::repository::users_repository::Role;
 use axum::{
-    extract::{Path as AxPath, Query, State},
+    extract::{Extension, Path as AxPath, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -11,10 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::auth::AuthenticatedUser;
 use crate::plan;
 use crate::ServerState;
-
-const ACTOR: &str = "operator";
 
 #[derive(Debug, Deserialize)]
 pub struct AuditQuery {
@@ -34,6 +34,7 @@ pub async fn health() -> impl IntoResponse {
 
 pub async fn list_audit(
     State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Query(q): Query<AuditQuery>,
 ) -> impl IntoResponse {
     let limit = q.limit.unwrap_or(50);
@@ -48,7 +49,13 @@ pub async fn list_audit(
             let details = Some(json!({"limit": limit, "cursor": q.cursor}).to_string());
             let _ = state
                 .audit
-                .record(ACTOR, action, None, AuditOutcome::Ok, details.as_deref())
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
                 .await;
             (
                 StatusCode::OK,
@@ -63,7 +70,7 @@ pub async fn list_audit(
             let _ = state
                 .audit
                 .record(
-                    ACTOR,
+                    &user.name,
                     "GET /v1/audit",
                     None,
                     AuditOutcome::Error,
@@ -88,7 +95,10 @@ pub struct SystemSummary {
     pub created_at: String,
 }
 
-pub async fn list_systems(State(state): State<ServerState>) -> impl IntoResponse {
+pub async fn list_systems(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
     let action = "GET /v1/systems".to_string();
     let result = list_active_snapshots(state.db.pool()).await;
     match result {
@@ -96,7 +106,13 @@ pub async fn list_systems(State(state): State<ServerState>) -> impl IntoResponse
             let details = Some(json!({"count": rows.len()}).to_string());
             let _ = state
                 .audit
-                .record(ACTOR, &action, None, AuditOutcome::Ok, details.as_deref())
+                .record(
+                    &user.name,
+                    &action,
+                    None,
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
                 .await;
             (StatusCode::OK, Json(rows)).into_response()
         }
@@ -104,7 +120,7 @@ pub async fn list_systems(State(state): State<ServerState>) -> impl IntoResponse
             let _ = state
                 .audit
                 .record(
-                    ACTOR,
+                    &user.name,
                     &action,
                     None,
                     AuditOutcome::Error,
@@ -158,6 +174,7 @@ pub struct PlanRequest {
 
 pub async fn plan_system(
     State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Json(req): Json<PlanRequest>,
 ) -> impl IntoResponse {
     let action = "POST /v1/systems/plan".to_string();
@@ -168,7 +185,7 @@ pub async fn plan_system(
             let _ = state
                 .audit
                 .record(
-                    ACTOR,
+                    &user.name,
                     &action,
                     Some(&target),
                     AuditOutcome::Ok,
@@ -181,7 +198,7 @@ pub async fn plan_system(
             let _ = state
                 .audit
                 .record(
-                    ACTOR,
+                    &user.name,
                     &action,
                     None,
                     AuditOutcome::Error,
@@ -199,6 +216,7 @@ pub async fn plan_system(
 
 pub async fn rollback_operation(
     State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
     AxPath(id): AxPath<Uuid>,
 ) -> impl IntoResponse {
     let action = format!("POST /v1/rollback/{id}");
@@ -217,7 +235,7 @@ pub async fn rollback_operation(
             let _ = state
                 .audit
                 .record(
-                    ACTOR,
+                    &user.name,
                     &action,
                     Some(&target),
                     AuditOutcome::Ok,
@@ -230,7 +248,7 @@ pub async fn rollback_operation(
             let _ = state
                 .audit
                 .record(
-                    ACTOR,
+                    &user.name,
                     &action,
                     Some(&format!("operation:{id}")),
                     AuditOutcome::Error,
@@ -239,6 +257,235 @@ pub async fn rollback_operation(
                 .await;
             (
                 StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2.1.0 — /v1/users endpoints (admin only).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateUserRequest {
+    pub name: String,
+    pub role: Role,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserView {
+    pub id: i64,
+    pub name: String,
+    pub role: Role,
+    pub created_at: String,
+    pub last_seen_at: Option<String>,
+    pub disabled_at: Option<String>,
+}
+
+fn to_view(u: &agent_dep_core::infrastructure::repository::users_repository::UserRow) -> UserView {
+    UserView {
+        id: u.id,
+        name: u.name.clone(),
+        role: u.role,
+        created_at: u.created_at.clone(),
+        last_seen_at: u.last_seen_at.clone(),
+        disabled_at: u.disabled_at.clone(),
+    }
+}
+
+pub async fn list_users(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
+    let action = "GET /v1/users";
+    match state.users.list().await {
+        Ok(rows) => {
+            let views: Vec<UserView> = rows.iter().map(to_view).collect();
+            let details = Some(json!({"count": views.len()}).to_string());
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
+            (StatusCode::OK, Json(views)).into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn create_user(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Json(req): Json<CreateUserRequest>,
+) -> impl IntoResponse {
+    let action = "POST /v1/users";
+    let target = format!("user:{}", req.name);
+    match state.users.create(&req.name, req.role).await {
+        Ok(created) => {
+            let details = Some(json!({"role": created.user.role.as_str()}).to_string());
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
+            let view = to_view(&created.user);
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "id": view.id,
+                    "name": view.name,
+                    "role": view.role,
+                    "created_at": view.created_at,
+                    "token": created.token,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("create error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn disable_user(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(id): AxPath<i64>,
+) -> impl IntoResponse {
+    let action = "DELETE /v1/users/:id";
+    let target = format!("user:{id}");
+    match state.users.disable(id).await {
+        Ok(true) => {
+            let _ = state
+                .audit
+                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .await;
+            (StatusCode::NO_CONTENT, ()).into_response()
+        }
+        Ok(false) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(r#"{"reason":"already disabled or not found"}"#),
+                )
+                .await;
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "user not found or already disabled"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn rotate_user_token(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(id): AxPath<i64>,
+) -> impl IntoResponse {
+    let action = "POST /v1/users/:id/rotate";
+    let target = format!("user:{id}");
+    match state.users.rotate_token(id).await {
+        Ok(Some(new_token)) => {
+            let _ = state
+                .audit
+                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .await;
+            (StatusCode::OK, Json(json!({"id": id, "token": new_token}))).into_response()
+        }
+        Ok(None) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(r#"{"reason":"user not found or disabled"}"#),
+                )
+                .await;
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "user not found or disabled"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),
             )
                 .into_response()

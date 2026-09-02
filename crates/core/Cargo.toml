@@ -24,6 +24,8 @@ once_cell = { workspace = true }
 regex = "1"
 semver = "1"
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
+base64 = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 agent_dep_hermes_adapter = { path = "../hermes-adapter" }

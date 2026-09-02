@@ -18,6 +18,7 @@
 pub mod audit_log_repository;
 pub mod deployed_artifacts_repository;
 pub mod skill_repository;
+pub mod users_repository;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
