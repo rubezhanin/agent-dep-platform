@@ -9,7 +9,6 @@
 //! are wired in Phase 5 remaining (1.x).
 
 use sqlx::SqlitePool;
-use uuid::Uuid;
 
 use crate::error::{CoreError, CoreResult};
 

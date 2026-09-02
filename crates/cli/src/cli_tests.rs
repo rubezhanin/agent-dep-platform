@@ -486,7 +486,7 @@ mod deploy_e2e {
         write_system_yaml(&sys_path, &["be@1.0.0", "fe@1.0.0"]);
         let db_dir = tempfile::tempdir().unwrap();
         let db_path: PathBuf = db_dir.path().join("agency.db");
-        let target = tempfile::tempdir().unwrap().into_path();
+        let target = tempfile::tempdir().unwrap().keep();
 
         let s1 = crate::commands::deploy::deploy_at(
             &sys_path,
@@ -521,7 +521,7 @@ mod deploy_e2e {
         write_system_yaml(&sys_path, &["be@1.0.0"]);
         let db_dir = tempfile::tempdir().unwrap();
         let db_path: PathBuf = db_dir.path().join("agency.db");
-        let target = tempfile::tempdir().unwrap().into_path();
+        let target = tempfile::tempdir().unwrap().keep();
 
         // First deploy: 1 write, 0 backups.
         let s1 = crate::commands::deploy::deploy_at(
@@ -571,7 +571,7 @@ mod deploy_e2e {
         write_catalog(cat_dir.path());
         let db_dir = tempfile::tempdir().unwrap();
         let db_path: PathBuf = db_dir.path().join("agency.db");
-        let target = tempfile::tempdir().unwrap().into_path();
+        let target = tempfile::tempdir().unwrap().keep();
         let missing = cat_dir.path().join("missing.yaml");
 
         let err = crate::commands::deploy::deploy_at(
@@ -592,7 +592,7 @@ mod deploy_e2e {
         write_system_yaml(&sys_path, &["be@1.0.0"]);
         let db_dir = tempfile::tempdir().unwrap();
         let db_path: PathBuf = db_dir.path().join("agency.db");
-        let target = tempfile::tempdir().unwrap().into_path();
+        let target = tempfile::tempdir().unwrap().keep();
         let missing_cat = sys_file.path().join("nope");
 
         let err = crate::commands::deploy::deploy_at(
@@ -667,8 +667,6 @@ mod deploy_e2e {
 
 mod lock_e2e {
     use std::fs;
-
-    use super::*;
 
     fn write_system_yaml_local(path: &std::path::Path, refs: &[&str]) {
         let yaml = format!(
@@ -796,7 +794,7 @@ mod rollback_e2e {
         write_system_yaml(&sys_path);
         let db_dir = tempfile::tempdir().unwrap();
         let db_path: PathBuf = db_dir.path().join("agency.db");
-        let target = tempfile::tempdir().unwrap().into_path();
+        let target = tempfile::tempdir().unwrap().keep();
 
         // First deploy: writes be.md and fe.md.
         let s1 = crate::commands::deploy::deploy_at(
@@ -812,7 +810,6 @@ mod rollback_e2e {
         // Hand-edit be.md so the second deploy has a real
         // pre-deploy body to back up.
         let be = target.join("agents/be@1.0.0/be.md");
-        let original = fs::read_to_string(&be).expect("read be");
         fs::write(&be, "---\nmanual edit\n---\n").expect("write be");
 
         // Second deploy: backs up the manual edit, writes the
@@ -888,7 +885,7 @@ mod rollback_e2e {
         write_system_yaml(&sys_path);
         let db_dir = tempfile::tempdir().unwrap();
         let db_path: PathBuf = db_dir.path().join("agency.db");
-        let target = tempfile::tempdir().unwrap().into_path();
+        let target = tempfile::tempdir().unwrap().keep();
 
         let s = crate::commands::deploy::deploy_at(
             &sys_path,

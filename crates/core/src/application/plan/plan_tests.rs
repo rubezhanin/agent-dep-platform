@@ -132,7 +132,7 @@ fn plan_for_empty_system_is_empty_plan() {
 #[test]
 fn plan_for_emits_noop_when_actual_sha_matches_desired() {
     use std::collections::HashMap;
-    let mut sys = make_system();
+    let sys = make_system();
     // The fixture's `be@1.0.0` body is "You are be.\n" with
     // body_hash "deadbeef" (the placeholder we set in
     // `make_agent`). The map below claims the on-disk file

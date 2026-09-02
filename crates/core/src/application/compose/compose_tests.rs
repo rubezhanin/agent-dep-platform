@@ -284,7 +284,6 @@ spec:
 
 #[test]
 fn compose_v2_carries_project_root() {
-    use crate::domain::skill::Skill;
     let svc = CompositionService::new();
     let yaml = r#"
 $schema: "https://schemas.agent-dep.platform/system/v1.json"

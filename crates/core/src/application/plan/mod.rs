@@ -71,7 +71,7 @@ impl PlanService {
             let desired_sha = r.agent.body_hash.clone();
             let kind = match actual_sha256_by_ref.and_then(|m| m.get(&agent_ref)) {
                 Some(actual) if actual == &desired_sha => PlanOperationKind::Noop,
-                Some(actual) => {
+                Some(_actual) => {
                     // Hash differs: content drift. The deploy
                     // service backs up the previous bytes and
                     // writes the new ones.

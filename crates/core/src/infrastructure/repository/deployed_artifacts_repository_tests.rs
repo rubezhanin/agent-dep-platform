@@ -1,4 +1,5 @@
 use super::*;
+use uuid::Uuid;
 
 async fn make_db() -> (tempfile::TempDir, DeployedArtifactsRepository) {
     let dir = tempfile::tempdir().unwrap();
