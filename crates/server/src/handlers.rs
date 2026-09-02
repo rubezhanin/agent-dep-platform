@@ -493,6 +493,437 @@ pub async fn rotate_user_token(
     }
 }
 
+// ---------------------------------------------------------------------------
+// 2.2.0 — /v1/deploys endpoints (ADR-0020).
+// ---------------------------------------------------------------------------
+
+use agent_dep_core::infrastructure::repository::pending_deploys_repository::{
+    PendingDeployRow, Status as DeployStatus,
+};
+
+#[derive(Debug, Serialize)]
+pub struct DeployView {
+    pub id: i64,
+    pub system_id: String,
+    pub plan_summary: String,
+    pub requested_by: i64,
+    pub requested_at: String,
+    pub status: DeployStatus,
+    pub approved_by: Option<i64>,
+    pub approved_at: Option<String>,
+    pub rejection_reason: Option<String>,
+    pub applied_at: Option<String>,
+}
+
+fn deploy_view(r: &PendingDeployRow) -> DeployView {
+    DeployView {
+        id: r.id,
+        system_id: r.system_id.clone(),
+        plan_summary: r.plan_summary.clone(),
+        requested_by: r.requested_by,
+        requested_at: r.requested_at.clone(),
+        status: r.status,
+        approved_by: r.approved_by,
+        approved_at: r.approved_at.clone(),
+        rejection_reason: r.rejection_reason.clone(),
+        applied_at: r.applied_at.clone(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeployRequestBody {
+    pub catalog: String,
+    pub system_yaml: String,
+}
+
+pub async fn request_deploy(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Json(req): Json<DeployRequestBody>,
+) -> impl IntoResponse {
+    let action = "POST /v1/deploys";
+    match plan::compute_plan(&req.catalog, &req.system_yaml).await {
+        Ok(summary) => {
+            let plan_json = match serde_json::to_string(&summary) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = state
+                        .audit
+                        .record(
+                            &user.name,
+                            action,
+                            None,
+                            AuditOutcome::Error,
+                            Some(&format!("serialise plan: {e}")),
+                        )
+                        .await;
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": e.to_string()})),
+                    )
+                        .into_response();
+                }
+            };
+            match state
+                .deploys
+                .request(&summary.system_id, &plan_json, user.id)
+                .await
+            {
+                Ok(row) => {
+                    let target = format!("deploy:{}", row.id);
+                    let details = Some(
+                        json!({"system_id": row.system_id, "writes": summary.writes.len()})
+                            .to_string(),
+                    );
+                    let _ = state
+                        .audit
+                        .record(
+                            &user.name,
+                            action,
+                            Some(&target),
+                            AuditOutcome::Ok,
+                            details.as_deref(),
+                        )
+                        .await;
+                    let view = deploy_view(&row);
+                    (
+                        StatusCode::CREATED,
+                        Json(serde_json::json!({
+                            "deploy": view,
+                            "plan": summary,
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(e) => {
+                    let _ = state
+                        .audit
+                        .record(
+                            &user.name,
+                            action,
+                            None,
+                            AuditOutcome::Error,
+                            Some(&format!("persist: {e}")),
+                        )
+                        .await;
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": e.to_string()})),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Error,
+                    Some(&format!("plan error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListDeploysQuery {
+    pub status: Option<DeployStatus>,
+    pub limit: Option<u32>,
+}
+
+pub async fn list_deploys(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Query(q): Query<ListDeploysQuery>,
+) -> impl IntoResponse {
+    let action = "GET /v1/deploys";
+    let limit = q.limit.unwrap_or(50);
+    match state.deploys.list(q.status, limit).await {
+        Ok(rows) => {
+            let views: Vec<DeployView> = rows.iter().map(deploy_view).collect();
+            let details = Some(
+                json!({"count": views.len(), "status_filter": q.status.map(|s| s.as_str())})
+                    .to_string(),
+            );
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
+            (StatusCode::OK, Json(views)).into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn get_deploy(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(id): AxPath<i64>,
+) -> impl IntoResponse {
+    let action = "GET /v1/deploys/:id";
+    let target = format!("deploy:{id}");
+    match state.deploys.get(id).await {
+        Ok(Some(row)) => {
+            let _ = state
+                .audit
+                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .await;
+            (StatusCode::OK, Json(deploy_view(&row))).into_response()
+        }
+        Ok(None) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(r#"{"reason":"not found"}"#),
+                )
+                .await;
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "deploy not found"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn approve_deploy(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(id): AxPath<i64>,
+) -> impl IntoResponse {
+    let action = "POST /v1/deploys/:id/approve";
+    let target = format!("deploy:{id}");
+    match state.deploys.approve(id, user.id).await {
+        Ok(Some(row)) => {
+            let details = Some(json!({"status": "approved"}).to_string());
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
+            (StatusCode::OK, Json(deploy_view(&row))).into_response()
+        }
+        Ok(None) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(r#"{"reason":"not pending"}"#),
+                )
+                .await;
+            (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "deploy is not pending"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RejectBody {
+    pub reason: Option<String>,
+}
+
+pub async fn reject_deploy(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(id): AxPath<i64>,
+    Json(req): Json<RejectBody>,
+) -> impl IntoResponse {
+    let action = "POST /v1/deploys/:id/reject";
+    let target = format!("deploy:{id}");
+    match state
+        .deploys
+        .reject(id, user.id, req.reason.as_deref())
+        .await
+    {
+        Ok(Some(row)) => {
+            let details = Some(
+                json!({
+                    "status": "rejected",
+                    "reason": req.reason,
+                })
+                .to_string(),
+            );
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
+            (StatusCode::OK, Json(deploy_view(&row))).into_response()
+        }
+        Ok(None) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(r#"{"reason":"not pending"}"#),
+                )
+                .await;
+            (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "deploy is not pending"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn mark_applied(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(id): AxPath<i64>,
+) -> impl IntoResponse {
+    let action = "POST /v1/deploys/:id/applied";
+    let target = format!("deploy:{id}");
+    match state.deploys.mark_applied(id).await {
+        Ok(Some(row)) => {
+            let _ = state
+                .audit
+                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .await;
+            (StatusCode::OK, Json(deploy_view(&row))).into_response()
+        }
+        Ok(None) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(r#"{"reason":"not approved"}"#),
+                )
+                .await;
+            (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "deploy is not approved"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
 fn default_db_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("AGENCY_SERVER_DATA_DIR") {
         if !p.trim().is_empty() {

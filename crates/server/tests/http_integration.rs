@@ -14,6 +14,7 @@ use std::sync::Arc;
 use agent_dep_core::infrastructure::repository::audit_log_repository::{
     AuditLogRepository, AuditOutcome,
 };
+use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
 use agent_dep_core::infrastructure::repository::users_repository::{Role, UserRepository};
 use agent_dep_core::infrastructure::sqlite::connect;
 use agent_dep_server::{router, ServerState};
@@ -58,10 +59,12 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
             created.token
         }
     };
+    let deploys = PendingDeployRepository::new(db.pool().clone());
     let state = ServerState {
         db,
         audit,
         users,
+        deploys,
         legacy_token: Arc::new(legacy.map(|s| s.to_string())),
     };
     let app = router(state);
@@ -212,10 +215,12 @@ spec:
         .await
         .unwrap();
     let token = created.token.clone();
+    let deploys = PendingDeployRepository::new(db.pool().clone());
     let state = ServerState {
         db,
         audit,
         users,
+        deploys,
         legacy_token: Arc::new(Some(token.clone())),
     };
     let app = router(state);
@@ -393,4 +398,158 @@ async fn legacy_token_migrates_to_admin_on_first_start() {
         ok_row["actor"], "admin",
         "legacy token's bearer must attribute rows to `admin`"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 2.2.0 — approvals workflow integration tests (ADR-0020).
+// ---------------------------------------------------------------------------
+
+const APPROVALS_SYS: &str = "apiVersion: agent-dep/v1
+kind: System
+metadata:
+  id: approval-sys
+  name: approval
+spec:
+  source: ./catalog
+  runtime_type: hermes
+  agents:
+    - ref: be@1.0.0
+";
+
+fn _write_approvals_catalog(cat: &std::path::Path) {
+    std::fs::create_dir_all(cat.join("agents").join("engineering")).unwrap();
+    std::fs::write(
+        cat.join("divisions.json"),
+        r#"{"divisions":[{"id":"engineering","label":"Eng","order":0}]}"#,
+    )
+    .unwrap();
+    let be_md = "---
+id: be
+name: Backend
+division: engineering
+role: backend
+description: be
+version: 1.0.0
+sensitive: false
+activation_phrases: []
+tools: []
+---
+
+You are be.
+";
+    std::fs::write(cat.join("agents").join("engineering").join("be.md"), be_md).unwrap();
+}
+
+async fn _request_deploy(srv: &TestServer, token: &str) -> (i64, serde_json::Value) {
+    // The catalog lives next to the test binary's
+    // own tempdir; we use a fresh subdir so the test
+    // is hermetic.
+    let cat = srv._dir.path().join("approvals_catalog");
+    std::fs::create_dir_all(&cat).unwrap();
+    _write_approvals_catalog(&cat);
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/deploys", srv.base))
+        .bearer_auth(token)
+        .json(&json!({
+            "catalog": cat.to_string_lossy(),
+            "system_yaml": APPROVALS_SYS,
+        }))
+        .send()
+        .await
+        .expect("post deploy");
+    assert_eq!(resp.status(), 201, "request deploy: {:?}", resp);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    (v["deploy"]["id"].as_i64().expect("id"), v)
+}
+
+#[tokio::test]
+async fn operator_creates_pending_deploy() {
+    let srv = boot().await;
+    let op_token = create_user(&srv, "op", Role::Operator).await;
+    let (id, _) = _request_deploy(&srv, &op_token).await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/deploys/{id}", srv.base))
+        .bearer_auth(&op_token)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["status"], "pending");
+}
+
+#[tokio::test]
+async fn viewer_reads_deploys() {
+    let srv = boot().await;
+    let op_token = create_user(&srv, "op", Role::Operator).await;
+    let vw_token = create_user(&srv, "vw", Role::Viewer).await;
+    let _ = _request_deploy(&srv, &op_token).await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/deploys", srv.base))
+        .bearer_auth(&vw_token)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let arr = v.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["status"], "pending");
+}
+
+#[tokio::test]
+async fn admin_approves_pending_deploy() {
+    let srv = boot().await;
+    let op_token = create_user(&srv, "op", Role::Operator).await;
+    let (id, _) = _request_deploy(&srv, &op_token).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/deploys/{id}/approve", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("approve");
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["status"], "approved");
+    assert!(v["approved_by"].is_i64());
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/audit?limit=200", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("get");
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let items = v["items"].as_array().expect("items");
+    let approve_row = items
+        .iter()
+        .find(|r| r["action"] == "POST /v1/deploys/:id/approve")
+        .unwrap_or_else(|| {
+            panic!(
+                "no approve audit row found; got actions: {:?}",
+                items
+                    .iter()
+                    .map(|r| r["action"].as_str().unwrap_or("?"))
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(approve_row["outcome"], "ok");
+    assert_eq!(approve_row["actor"], "admin");
+}
+
+#[tokio::test]
+async fn admin_rejects_pending_deploy() {
+    let srv = boot().await;
+    let op_token = create_user(&srv, "op", Role::Operator).await;
+    let (id, _) = _request_deploy(&srv, &op_token).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/deploys/{id}/reject", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({ "reason": "policy blocked" }))
+        .send()
+        .await
+        .expect("reject");
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["status"], "rejected");
+    assert_eq!(v["rejection_reason"], "policy blocked");
 }

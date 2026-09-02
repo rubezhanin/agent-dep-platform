@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_dep_core::infrastructure::repository::audit_log_repository::AuditLogRepository;
+use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
 use agent_dep_core::infrastructure::repository::users_repository::UserRepository;
 use agent_dep_core::infrastructure::sqlite::connect;
 use anyhow::{Context, Result};
@@ -48,7 +49,31 @@ pub fn router(state: ServerState) -> Router {
             get(handlers::list_systems)
                 .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
         )
+        .route(
+            "/v1/deploys",
+            get(handlers::list_deploys)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
+        )
+        .route(
+            "/v1/deploys/:id",
+            get(handlers::get_deploy)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
+        )
         // operator-or-higher
+        .route(
+            "/v1/deploys",
+            post(handlers::request_deploy).layer(middleware::from_fn_with_state(
+                state.clone(),
+                allow_operator,
+            )),
+        )
+        .route(
+            "/v1/deploys/:id/applied",
+            post(handlers::mark_applied).layer(middleware::from_fn_with_state(
+                state.clone(),
+                allow_operator,
+            )),
+        )
         .route(
             "/v1/systems/plan",
             post(handlers::plan_system).layer(middleware::from_fn_with_state(
@@ -64,6 +89,16 @@ pub fn router(state: ServerState) -> Router {
             )),
         )
         // admin-only
+        .route(
+            "/v1/deploys/:id/approve",
+            post(handlers::approve_deploy)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
+        .route(
+            "/v1/deploys/:id/reject",
+            post(handlers::reject_deploy)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
         .route(
             "/v1/users",
             get(handlers::list_users)
@@ -242,10 +277,12 @@ pub async fn boot_default_state() -> Result<ServerState> {
         token
     };
     let audit = AuditLogRepository::new(db.pool().clone());
+    let deploys = PendingDeployRepository::new(db.pool().clone());
     Ok(ServerState {
         db,
         audit,
         users,
+        deploys,
         legacy_token: Arc::new(Some(legacy_token)),
     })
 }

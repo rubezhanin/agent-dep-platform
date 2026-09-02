@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use agent_dep_core::infrastructure::repository::audit_log_repository::AuditLogRepository;
+use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
 use agent_dep_core::infrastructure::repository::users_repository::UserRepository;
 use agent_dep_core::infrastructure::sqlite::Db;
 
@@ -14,6 +15,8 @@ pub struct ServerState {
     /// field is gone — the `users` table is the only
     /// source of truth.
     pub users: UserRepository,
+    /// 2.2.0: approvals workflow state machine.
+    pub deploys: PendingDeployRepository,
     /// Retained for 2.0.0→2.1.0 migration: if the
     /// `users` table is empty on first start and this
     /// is `Some(legacy)`, the server creates an
