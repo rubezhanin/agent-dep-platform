@@ -39,9 +39,10 @@ pub struct IngestResult {
     pub snapshot: SourceSnapshot,
     pub divisions: DivisionIndex,
     pub agents: Vec<Agent>,
-    /// Skills resolved from the v2 catalog layout (`skills/<id>/skill.yaml`
-    /// + `SKILL.md`). Empty for the v1 reader; the v1 source tree
-    /// (MVP-3 `agents/<division>/*.md`) has no skills to resolve.
+    /// Skills resolved from the v2 catalog layout.
+    ///   - `skills/<id>/skill.yaml` + `SKILL.md`.
+    ///   - Empty for the v1 reader; the v1 source tree
+    ///     (MVP-3 `agents/<division>/*.md`) has no skills to resolve.
     pub skills: Vec<Skill>,
     /// Files that were observed and hashed, in sorted order. Useful
     /// for the SQLite persistence layer to record per-file entries.

@@ -89,7 +89,7 @@ impl DeploymentService {
         artifacts: &DeployedArtifactsRepository,
     ) -> CoreResult<DeployOutcome> {
         if !target.exists() {
-            std::fs::create_dir_all(target).map_err(|e| CoreError::ErrIo(e))?;
+            std::fs::create_dir_all(target).map_err(CoreError::ErrIo)?;
         }
         if !target.is_dir() {
             return Err(CoreError::ErrPathOutsideRoot {
@@ -117,10 +117,11 @@ impl DeploymentService {
             target: target.to_path_buf(),
             writes: writes.clone(),
         };
-        let effect_json = serde_json::to_value(&effect).map_err(|e| CoreError::ErrSchemaInvalid {
-            path: "operations.effect_json".to_string(),
-            reason: format!("effect is not serializable: {e}"),
-        })?;
+        let effect_json =
+            serde_json::to_value(&effect).map_err(|e| CoreError::ErrSchemaInvalid {
+                path: "operations.effect_json".to_string(),
+                reason: format!("effect is not serializable: {e}"),
+            })?;
 
         // 2. Plan hash: sha256 of the system metadata.id + resolved ids
         //    (stable across runs that target the same system).
@@ -235,10 +236,12 @@ enum WriteOutcome {
 /// different content, copy the old content to `<target>/.backups/`
 /// first. If the target exists with the same content, no-op.
 fn write_one(target_path: &Path, content: &[u8], expected_sha: &str) -> CoreResult<WriteOutcome> {
-    let parent = target_path.parent().ok_or_else(|| CoreError::ErrPathOutsideRoot {
-        path: target_path.display().to_string(),
-        root: String::new(),
-    })?;
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| CoreError::ErrPathOutsideRoot {
+            path: target_path.display().to_string(),
+            root: String::new(),
+        })?;
     if !parent.exists() {
         std::fs::create_dir_all(parent).map_err(CoreError::ErrIo)?;
     }
@@ -271,22 +274,26 @@ fn write_one(target_path: &Path, content: &[u8], expected_sha: &str) -> CoreResu
         f.sync_all().map_err(CoreError::ErrIo)?;
     }
     std::fs::rename(&tmp, target_path).map_err(CoreError::ErrIo)?;
-    Ok(if target_path
-        .parent()
-        .map(|p| p.join(".backups").exists())
-        .unwrap_or(false)
-    {
-        WriteOutcome::BackedUp
-    } else {
-        WriteOutcome::Wrote
-    })
+    Ok(
+        if target_path
+            .parent()
+            .map(|p| p.join(".backups").exists())
+            .unwrap_or(false)
+        {
+            WriteOutcome::BackedUp
+        } else {
+            WriteOutcome::Wrote
+        },
+    )
 }
 
 fn make_backup_path(target_path: &Path) -> CoreResult<PathBuf> {
-    let parent = target_path.parent().ok_or_else(|| CoreError::ErrPathOutsideRoot {
-        path: target_path.display().to_string(),
-        root: String::new(),
-    })?;
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| CoreError::ErrPathOutsideRoot {
+            path: target_path.display().to_string(),
+            root: String::new(),
+        })?;
     let backups_dir = parent.join(".backups");
     std::fs::create_dir_all(&backups_dir).map_err(CoreError::ErrIo)?;
     let stem = target_path

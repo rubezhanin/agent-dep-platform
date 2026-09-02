@@ -13,6 +13,7 @@ path = "src/main.rs"
 agent_dep_core = { path = "../core" }
 agent_dep_hermes_adapter = { path = "../hermes-adapter" }
 clap = { workspace = true }
+clap_complete = "4"
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

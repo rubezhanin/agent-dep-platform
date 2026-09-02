@@ -13,9 +13,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use agent_dep_core::application::compose::CompositionService;
-use agent_dep_core::application::deploy::DeploymentService;
 use agent_dep_core::application::ingest::IngestService;
-use agent_dep_core::application::journal::JournalService;
 use agent_dep_core::application::plan::{DeployedObservation, PlanService};
 use agent_dep_core::domain::plan::PlanOperationKind;
 use agent_dep_core::domain::source::{Source, SourceKind};
@@ -66,8 +64,12 @@ pub async fn plan_at(system_file: &Path, catalog_path: &Path) -> Result<PlanSumm
 
     let text = std::fs::read_to_string(system_file)
         .with_context(|| format!("read {}", system_file.display()))?;
-    let file = parse_system_file(&text)
-        .map_err(|e| anyhow::anyhow!("parse {} (expected a `system.yaml`): {e}", system_file.display()))?;
+    let file = parse_system_file(&text).map_err(|e| {
+        anyhow::anyhow!(
+            "parse {} (expected a `system.yaml`): {e}",
+            system_file.display()
+        )
+    })?;
 
     let source = Source::new(SourceKind::local(catalog_path.to_path_buf()));
     let (result, _report) = IngestService::new()
@@ -155,8 +157,7 @@ pub async fn plan_at_drift(
     for (target, expected_sha, observed_sha) in rows {
         let abs = target_dir.join(&target);
         let on_disk_sha = if abs.is_file() {
-            let bytes = std::fs::read(&abs)
-                .with_context(|| format!("read {}", abs.display()))?;
+            let bytes = std::fs::read(&abs).with_context(|| format!("read {}", abs.display()))?;
             let mut h = Sha256::new();
             h.update(&bytes);
             Some(hex::encode(h.finalize()))
@@ -246,7 +247,7 @@ fn backup_for_target(target_dir: &Path, target: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn print_summary(s: &PlanSummary) {
+pub fn print_summary(s: &PlanSummary) {
     output::header(&format!("Plan for system: {}", s.system_id));
     output::kv("system_file", &s.system_file.display().to_string());
     output::kv("catalog", &s.catalog_path.display().to_string());

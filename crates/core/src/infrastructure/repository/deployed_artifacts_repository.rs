@@ -30,6 +30,20 @@ pub struct DeployedArtifactsRepository {
     pool: SqlitePool,
 }
 
+/// Tuple shape returned by `sqlx::query_as` for
+/// `SELECT system_id, target, expected_sha256, actual_sha256,
+/// state, deployed_at, last_verified_at FROM deployed_artifacts`.
+/// The seven fields map 1:1 to [`DeployedArtifactRow`].
+type DeployedArtifactRowTuple = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+);
+
 impl DeployedArtifactsRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -98,15 +112,7 @@ impl DeployedArtifactsRepository {
         system_id: &str,
         target: &str,
     ) -> CoreResult<Option<DeployedArtifactRow>> {
-        let row: Option<(
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            String,
-            Option<String>,
-        )> = sqlx::query_as(
+        let row: Option<DeployedArtifactRowTuple> = sqlx::query_as(
             "SELECT system_id, target, expected_sha256, actual_sha256,
                     state, deployed_at, last_verified_at
              FROM deployed_artifacts
@@ -145,12 +151,11 @@ impl DeployedArtifactsRepository {
     /// the Svelte systems route to render a list of systems
     /// that have ever been deployed through the platform.
     pub async fn list_distinct_systems(&self) -> CoreResult<Vec<String>> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT system_id FROM deployed_artifacts ORDER BY system_id",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(CoreError::ErrSqlx)?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT DISTINCT system_id FROM deployed_artifacts ORDER BY system_id")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(CoreError::ErrSqlx)?;
         Ok(rows.into_iter().map(|(s,)| s).collect())
     }
 }

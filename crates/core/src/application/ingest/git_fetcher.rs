@@ -99,7 +99,7 @@ fn clone_or_update(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResu
 
 fn fresh_clone(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResult<FetchResult> {
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| CoreError::ErrIo(e))?;
+        std::fs::create_dir_all(parent).map_err(CoreError::ErrIo)?;
     }
     let mut builder = RepoBuilder::new();
     if let Some(r) = pinned_ref {
@@ -147,7 +147,11 @@ fn update_existing(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResu
     let mut fetch_opts = FetchOptions::new();
     fetch_opts.download_tags(git2::AutotagOption::All);
     remote
-        .fetch(&["refs/heads/*:refs/remotes/origin/*"], Some(&mut fetch_opts), None)
+        .fetch(
+            &["refs/heads/*:refs/remotes/origin/*"],
+            Some(&mut fetch_opts),
+            None,
+        )
         .map_err(|e| CoreError::ErrGitFetch {
             url: url.to_string(),
             reason: format!("{e}"),
@@ -172,21 +176,22 @@ fn update_existing(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResu
                     ref_name: r.to_string(),
                     reason: format!("{e}"),
                 })?;
-            resolved.target().ok_or_else(|| CoreError::ErrGitInvalidRef {
-                ref_name: r.to_string(),
-                reason: "reference has no target (annotated tag without object?)".to_string(),
-            })?
+            resolved
+                .target()
+                .ok_or_else(|| CoreError::ErrGitInvalidRef {
+                    ref_name: r.to_string(),
+                    reason: "reference has no target (annotated tag without object?)".to_string(),
+                })?
         }
         None => {
             // Default: the current HEAD. After a fetch
             // this is whatever we resolved at fetch time.
-            repo.head()
-                .ok()
-                .and_then(|h| h.target())
-                .ok_or_else(|| CoreError::ErrGitInvalidRef {
+            repo.head().ok().and_then(|h| h.target()).ok_or_else(|| {
+                CoreError::ErrGitInvalidRef {
                     ref_name: "HEAD".to_string(),
                     reason: "HEAD is unborn (no commits yet)".to_string(),
-                })?
+                }
+            })?
         }
     };
     let commit = repo
@@ -206,12 +211,10 @@ fn update_existing(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResu
 }
 
 fn resolve_head(repo: &Repository, url: &str) -> CoreResult<FetchResult> {
-    let head = repo
-        .head()
-        .map_err(|e| CoreError::ErrGitClone {
-            url: url.to_string(),
-            reason: format!("HEAD not found after clone: {e}"),
-        })?;
+    let head = repo.head().map_err(|e| CoreError::ErrGitClone {
+        url: url.to_string(),
+        reason: format!("HEAD not found after clone: {e}"),
+    })?;
     let commit = head
         .peel(git2::ObjectType::Commit)
         .map_err(|e| CoreError::ErrGitClone {
@@ -240,21 +243,35 @@ pub fn classify_url(url: &str) -> Result<crate::domain::source::SourceKind, Core
     if trimmed.contains("://") {
         let scheme = trimmed.split_once("://").map(|(s, _)| s).unwrap_or("");
         match scheme {
-            "https" => Ok(SourceKind::GitHttps { url: trimmed.to_string() }),
-            "http" => Ok(SourceKind::GitHttps { url: trimmed.to_string() }),
-            "file" => Ok(SourceKind::GitHttps { url: trimmed.to_string() }),
-            "ssh" => Ok(SourceKind::GitSsh { url: trimmed.to_string() }),
-            "git" => Ok(SourceKind::GitSsh { url: trimmed.to_string() }),
+            "https" => Ok(SourceKind::GitHttps {
+                url: trimmed.to_string(),
+            }),
+            "http" => Ok(SourceKind::GitHttps {
+                url: trimmed.to_string(),
+            }),
+            "file" => Ok(SourceKind::GitHttps {
+                url: trimmed.to_string(),
+            }),
+            "ssh" => Ok(SourceKind::GitSsh {
+                url: trimmed.to_string(),
+            }),
+            "git" => Ok(SourceKind::GitSsh {
+                url: trimmed.to_string(),
+            }),
             other => Err(CoreError::ErrSourceNotFound {
                 source_id: format!("unsupported URL scheme `{other}://`"),
             }),
         }
     } else if trimmed.starts_with("git@") {
         // `git@github.com:org/repo.git`
-        Ok(SourceKind::GitSsh { url: trimmed.to_string() })
+        Ok(SourceKind::GitSsh {
+            url: trimmed.to_string(),
+        })
     } else if let Some((_user_host, _path)) = trimmed.split_once(':') {
         // `host:path` without `git@` prefix — SCP-style SSH.
-        Ok(SourceKind::GitSsh { url: trimmed.to_string() })
+        Ok(SourceKind::GitSsh {
+            url: trimmed.to_string(),
+        })
     } else {
         Err(CoreError::ErrSourceNotFound {
             source_id: format!("cannot classify URL `{trimmed}`"),
@@ -274,8 +291,10 @@ pub fn classify_url(url: &str) -> Result<crate::domain::source::SourceKind, Core
 pub fn ingest_source(
     source: &Source,
     working_copy_root: &Path,
-) -> CoreResult<(crate::application::ingest::IngestResult, crate::application::ingest::IngestReport)>
-{
+) -> CoreResult<(
+    crate::application::ingest::IngestResult,
+    crate::application::ingest::IngestReport,
+)> {
     let dest = working_copy_root.join(source.id.to_string());
     let fetch = match &source.kind {
         crate::domain::source::SourceKind::GitHttps { .. } => {
@@ -288,8 +307,7 @@ pub fn ingest_source(
             // No fetch step; caller passes the local path
             // directly. Return a synthetic FetchResult so
             // the rest of the flow is uniform.
-            return crate::application::ingest::IngestService::new()
-                .ingest_local(source, None);
+            return crate::application::ingest::IngestService::new().ingest_local(source, None);
         }
     }?;
     let svc = crate::application::ingest::IngestService::new();

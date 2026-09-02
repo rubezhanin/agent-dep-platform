@@ -4,14 +4,9 @@ use uuid::Uuid;
 async fn make_db() -> (tempfile::TempDir, DeployedArtifactsRepository) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
-    let db = crate::infrastructure::sqlite::connect(&path)
-        .await
-        .unwrap();
+    let db = crate::infrastructure::sqlite::connect(&path).await.unwrap();
     db.migrate().await.unwrap();
-    (
-        dir,
-        DeployedArtifactsRepository::new(db.pool().clone()),
-    )
+    (dir, DeployedArtifactsRepository::new(db.pool().clone()))
 }
 
 async fn make_source(db: &DeployedArtifactsRepository) {
@@ -54,8 +49,10 @@ async fn upsert_and_list_round_trip() {
 
     let rows = repo.list_for_system("saas").await.unwrap();
     assert_eq!(rows.len(), 2);
-    let by_target: std::collections::HashMap<_, _> =
-        rows.iter().map(|(t, e, a)| (t.clone(), (e.clone(), a.clone()))).collect();
+    let by_target: std::collections::HashMap<_, _> = rows
+        .iter()
+        .map(|(t, e, a)| (t.clone(), (e.clone(), a.clone())))
+        .collect();
     assert_eq!(
         by_target.get("agents/be@1.0.0/be.md").unwrap(),
         &("aaa".to_string(), Some("aaa".to_string()))

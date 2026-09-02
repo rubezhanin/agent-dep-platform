@@ -4,8 +4,8 @@ use super::*;
 use crate::application::compose::CompositionService;
 use crate::domain::agent::Agent;
 use crate::domain::system::{
-    AgentRef, ParsedSystemFile, ResolvedAgent, System, SystemAgentRef, SystemFile,
-    SystemMetadata, SystemSpec, SystemSpecV1,
+    AgentRef, ParsedSystemFile, ResolvedAgent, System, SystemAgentRef, SystemFile, SystemMetadata,
+    SystemSpec, SystemSpecV1,
 };
 use crate::domain::version::Version;
 use uuid::Uuid;
@@ -70,7 +70,13 @@ fn make_system() -> crate::domain::system::System {
         },
     };
     CompositionService::new()
-        .compose(Uuid::nil(), Uuid::nil(), &agents, &[], &ParsedSystemFile::V1(file))
+        .compose(
+            Uuid::nil(),
+            Uuid::nil(),
+            &agents,
+            &[],
+            &ParsedSystemFile::V1(file),
+        )
         .expect("compose")
 }
 
@@ -231,12 +237,7 @@ fn plan_for_emits_noop_when_on_disk_sha_matches_expected() {
     use std::collections::BTreeMap;
     let sys = make_system();
     let mut obs_map: BTreeMap<String, DeployedObservation> = BTreeMap::new();
-    let (k, o) = make_obs(
-        "agents/be@0.9.0/be.md",
-        "abc123",
-        Some("abc123"),
-        true,
-    );
+    let (k, o) = make_obs("agents/be@0.9.0/be.md", "abc123", Some("abc123"), true);
     obs_map.insert(k, o);
     let plan = PlanService::new().plan_for(&sys, None, None, Some(&obs_map));
     // sha matches -> no Verify op for that target.
@@ -283,7 +284,7 @@ fn plan_for_emits_backup_when_backup_file_is_missing() {
         "agents/be@0.9.0/be.md",
         "abc123",
         Some("abc123"), // sha matches -> no Verify
-        false,           // but no backup
+        false,          // but no backup
     );
     obs_map.insert(k, o);
     let plan = PlanService::new().plan_for(&sys, None, None, Some(&obs_map));
@@ -310,12 +311,7 @@ fn plan_for_skips_drift_for_targets_already_in_plan() {
     // it is about to write, otherwise the operator
     // would see the same file as Add+Verify.
     let mut obs_map: BTreeMap<String, DeployedObservation> = BTreeMap::new();
-    let (k, o) = make_obs(
-        "agents/be@1.0.0/be.md",
-        "deadbeef",
-        Some("deadbeef"),
-        true,
-    );
+    let (k, o) = make_obs("agents/be@1.0.0/be.md", "deadbeef", Some("deadbeef"), true);
     obs_map.insert(k, o);
     let plan = PlanService::new().plan_for(&sys, None, None, Some(&obs_map));
     let be = plan

@@ -48,7 +48,11 @@ pub async fn list_backups(state: State<'_, AppState>) -> IpcResult<Vec<BackupSum
             })
             .unwrap_or_default();
         out.push(BackupSummary {
-            id: format!("{}|{}", parent.display(), path.file_name().and_then(|s| s.to_str()).unwrap_or("")),
+            id: format!(
+                "{}|{}",
+                parent.display(),
+                path.file_name().and_then(|s| s.to_str()).unwrap_or("")
+            ),
             path: rel_to_hermes(path, state.hermes.hermes_home()),
             created_at: mtime,
         });

@@ -130,11 +130,7 @@ pub async fn add(url: String) -> Result<()> {
 /// per-app-data-dir cache for Git working copies (typically
 /// `<app_data_dir>/sources/`). Tests can pass a tempdir to avoid
 /// polluting the real data dir.
-pub async fn add_at(
-    url: &str,
-    db_path: &Path,
-    working_copy_root: &Path,
-) -> Result<UpdateSummary> {
+pub async fn add_at(url: &str, db_path: &Path, working_copy_root: &Path) -> Result<UpdateSummary> {
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent)
             .await
@@ -165,8 +161,8 @@ pub async fn add_at(
     let mut source = source;
     source.id = source_id;
 
-    let (result, report) = ingest_source(&source, working_copy_root)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let (result, report) =
+        ingest_source(&source, working_copy_root).map_err(|e| anyhow::anyhow!("{e}"))?;
     repo.record_snapshot(source_id, &result, &report)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;

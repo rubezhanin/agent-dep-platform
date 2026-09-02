@@ -117,9 +117,9 @@ impl PlanService {
                 None => PlanOperationKind::Add,
             };
             let reason = match kind {
-                PlanOperationKind::Noop => format!(
-                    "agent `{agent_ref}` already at desired content; nothing to write"
-                ),
+                PlanOperationKind::Noop => {
+                    format!("agent `{agent_ref}` already at desired content; nothing to write")
+                }
                 PlanOperationKind::Update => format!(
                     "agent `{agent_ref}` content changed (actual != desired); back up + write"
                 ),

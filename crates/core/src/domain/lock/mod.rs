@@ -140,8 +140,7 @@ impl LockFile {
     /// (1.2.0+, supports exact pins, carets, tildes, and
     /// compound ranges).
     pub fn from_yaml(text: &str) -> Result<Self, String> {
-        let f: LockFile = serde_yaml::from_str(text)
-            .map_err(|e| format!("yaml parse: {e}"))?;
+        let f: LockFile = serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
         if f.lock_version != LOCK_FILE_VERSION {
             return Err(format!(
                 "unsupported lockVersion: got `{}`, expected `{}`",
@@ -158,22 +157,19 @@ impl LockFile {
             if id.is_empty() {
                 return Err("agents key must be non-empty".to_string());
             }
-            semver::VersionReq::parse(raw).map_err(|_| {
-                format!("agents.{id} has an invalid SemVer req (`{raw}`)")
-            })?;
+            semver::VersionReq::parse(raw)
+                .map_err(|_| format!("agents.{id} has an invalid SemVer req (`{raw}`)"))?;
         }
         for (id, raw) in &f.skills {
             if id.is_empty() {
                 return Err("skills key must be non-empty".to_string());
             }
-            semver::VersionReq::parse(raw).map_err(|_| {
-                format!("skills.{id} has an invalid SemVer req (`{raw}`)")
-            })?;
+            semver::VersionReq::parse(raw)
+                .map_err(|_| format!("skills.{id} has an invalid SemVer req (`{raw}`)"))?;
         }
         for (id, raw) in &f.renderers {
-            semver::VersionReq::parse(raw).map_err(|_| {
-                format!("renderers.{id} has an invalid SemVer req (`{raw}`)")
-            })?;
+            semver::VersionReq::parse(raw)
+                .map_err(|_| format!("renderers.{id} has an invalid SemVer req (`{raw}`)"))?;
         }
         Ok(f)
     }
@@ -194,15 +190,12 @@ impl LockFile {
         self.agents
             .iter()
             .map(|(id, raw)| {
-                let req = semver::VersionReq::parse(raw).map_err(|_| {
-                    format!("agents.{id} has an invalid SemVer req (`{raw}`)")
-                })?;
+                let req = semver::VersionReq::parse(raw)
+                    .map_err(|_| format!("agents.{id} has an invalid SemVer req (`{raw}`)"))?;
                 let req_str = req.to_string();
                 let exact = req_str.strip_prefix('=').unwrap_or(&req_str);
                 let v = Version::parse(exact).map_err(|_| {
-                    format!(
-                        "agents.{id} is a range (`{raw}`); deploy needs an exact version"
-                    )
+                    format!("agents.{id} is a range (`{raw}`); deploy needs an exact version")
                 })?;
                 Ok((id.clone(), v))
             })

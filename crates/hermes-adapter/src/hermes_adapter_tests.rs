@@ -112,14 +112,10 @@ fn health_reports_all_current_after_deploy() {
     // `Current` and the report's `ok` should be true.
     let mut baseline = BTreeMap::new();
     baseline.insert(
-        format!(
-            "plugins/{}/manifest.yaml",
-            inputs.plugin_id
-        ),
+        format!("plugins/{}/manifest.yaml", inputs.plugin_id),
         layout.manifest_sha256.clone(),
     );
-    let skill_entry = std::fs::read_to_string(&layout.entry_point_path)
-        .expect("read SKILL.md");
+    let skill_entry = std::fs::read_to_string(&layout.entry_point_path).expect("read SKILL.md");
     baseline.insert(
         format!("plugins/{}/SKILL.md", inputs.plugin_id),
         sha_of(&skill_entry),
@@ -146,7 +142,10 @@ fn health_reports_all_current_after_deploy() {
         .expect("health");
     assert!(report.ok, "report should be ok: {report:?}");
     assert_eq!(report.plugin_id, inputs.plugin_id);
-    assert!(report.artifacts.len() >= 3, "at least 3 artifacts: {report:?}");
+    assert!(
+        report.artifacts.len() >= 3,
+        "at least 3 artifacts: {report:?}"
+    );
     for a in &report.artifacts {
         assert_eq!(a.status, ArtifactHealthStatus::Current, "{a:?}");
     }
@@ -162,8 +161,7 @@ fn health_detects_modified_file() {
     // Mutate the manifest on disk.
     let manifest_path = layout.manifest_path.clone();
     let original = std::fs::read_to_string(&manifest_path).expect("read");
-    std::fs::write(&manifest_path, format!("{original}\n# tampered\n"))
-        .expect("write tampered");
+    std::fs::write(&manifest_path, format!("{original}\n# tampered\n")).expect("write tampered");
 
     // Build baseline from the *original* deploy hashes.
     let mut baseline = BTreeMap::new();
@@ -171,8 +169,7 @@ fn health_detects_modified_file() {
         format!("plugins/{}/manifest.yaml", inputs.plugin_id),
         layout.manifest_sha256.clone(),
     );
-    let skill_entry = std::fs::read_to_string(&layout.entry_point_path)
-        .expect("read SKILL.md");
+    let skill_entry = std::fs::read_to_string(&layout.entry_point_path).expect("read SKILL.md");
     baseline.insert(
         format!("plugins/{}/SKILL.md", inputs.plugin_id),
         sha_of(&skill_entry),
@@ -278,7 +275,10 @@ fn health_on_missing_plugin_dir_with_empty_baseline_is_ok() {
     let report = adapter
         .health("agency-agents-router", &BTreeMap::new())
         .expect("health");
-    assert!(report.ok, "empty baseline + missing dir is vacuously healthy");
+    assert!(
+        report.ok,
+        "empty baseline + missing dir is vacuously healthy"
+    );
     assert!(report.artifacts.is_empty());
 }
 
@@ -293,13 +293,10 @@ fn probe_reports_ok_after_fresh_deploy() {
     adapter.deploy(&sample_inputs()).expect("deploy");
     let report = adapter.probe("agency-agents-router").expect("probe");
     assert!(report.ok, "fresh deploy should pass: {report:?}");
-    assert!(report
-        .checks
-        .iter()
-        .all(|c| c.name == "plugin_dir"
-            || c.name == "manifest.yaml"
-            || c.name == "SKILL.md"
-            || c.name.starts_with("skills/")));
+    assert!(report.checks.iter().all(|c| c.name == "plugin_dir"
+        || c.name == "manifest.yaml"
+        || c.name == "SKILL.md"
+        || c.name.starts_with("skills/")));
     // One check per agent file plus the three fixed ones.
     // `sample_inputs` ships one agent, so 1 + 3 = 4.
     assert_eq!(report.checks.len(), 4);
@@ -360,9 +357,10 @@ fn probe_reports_mismatch_when_manifest_references_missing_agent() {
     let adapter = HermesAdapter::new(dir.path().to_path_buf());
     let mut inputs = sample_inputs();
     // Add a phantom agent the materializer does not write out.
-    inputs
-        .agent_files
-        .push(AgentFile { slug: "phantom".to_string(), body: "# phantom".to_string() });
+    inputs.agent_files.push(AgentFile {
+        slug: "phantom".to_string(),
+        body: "# phantom".to_string(),
+    });
     // The materializer writes skills/<slug>.md for every
     // agent, so to provoke a real mismatch we instead drop
     // one of the real skill files post-deploy.

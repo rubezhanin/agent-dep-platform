@@ -6,7 +6,7 @@ mod output;
 mod cli_tests;
 
 use clap::{Parser, Subcommand};
-use commands::{catalog, deploy, hermes, lock, mcp, rollback, status, system};
+use commands::{catalog, completion, deploy, hermes, lock, mcp, rollback, status, system};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -59,6 +59,13 @@ pub enum Command {
         #[command(subcommand)]
         action: HermesAction,
     },
+    /// Generate a shell completion script to stdout
+    /// (1.6.0, ADR-0015). Redirect the output to the
+    /// shell-specific completion directory.
+    Completion {
+        /// One of: bash, zsh, fish, elvish, powershell.
+        shell: String,
+    },
     /// Roll back a previous deploy by operation id.
     Rollback {
         /// Journal operation id (UUID) to roll back.
@@ -104,6 +111,22 @@ pub enum SystemAction {
         /// the DB by this command.
         #[arg(long)]
         catalog: PathBuf,
+        /// When set, the plan includes drift-detection
+        /// ops (`Verify` and `Backup`, ADR-0013). Requires
+        /// `--target` and `--db` so the plan service can
+        /// read `deployed_artifacts` and walk the
+        /// on-disk tree.
+        #[arg(long, requires = "target")]
+        drift: bool,
+        /// Path to a previously-deployed target tree
+        /// (the directory the operator passed to
+        /// `agency deploy apply`).
+        #[arg(long, value_name = "PATH")]
+        target: Option<PathBuf>,
+        /// Path to the SQLite database that holds the
+        /// previous `deployed_artifacts` rows.
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
     },
 }
 
@@ -146,6 +169,16 @@ pub enum McpAction {
         /// Path to a JSON file describing the server.
         #[arg(long, value_name = "PATH")]
         spec: PathBuf,
+    },
+    /// List every MCP server currently installed under
+    /// `<hermes_home>/optional-mcps/`. Each entry is
+    /// printed as `<name>  <manifest_sha256[:12]>`.
+    List,
+    /// Remove an installed MCP server. Deletes
+    /// `<hermes_home>/optional-mcps/<name>/` recursively.
+    Remove {
+        /// Name of the MCP server to remove.
+        name: String,
     },
 }
 
@@ -209,40 +242,64 @@ async fn main() -> ExitCode {
             CatalogAction::Add { url } => catalog::add(url).await.map_err(Into::into),
         },
         Command::System { action } => match action {
-            SystemAction::Plan { file, catalog } => {
-                system::plan(&file, &catalog).await.map_err(Into::into)
+            SystemAction::Plan {
+                file,
+                catalog,
+                drift,
+                target,
+                db,
+            } => {
+                if drift {
+                    let target = target.expect("--target is required with --drift");
+                    let db = db.expect("--db is required with --drift");
+                    match system::plan_at_drift(&file, &catalog, &target, &db).await {
+                        Ok(summary) => {
+                            system::print_summary(&summary);
+                            Ok(())
+                        }
+                        Err(e) => Err(e.into()),
+                    }
+                } else {
+                    system::plan(&file, &catalog).await.map_err(Into::into)
+                }
             }
         },
         Command::Deploy { action } => match action {
-            DeployAction::Apply { file, catalog, target } => {
-                deploy::deploy(&file, &catalog, &target)
-                    .await
-                    .map_err(Into::into)
-            }
-            DeployAction::Install { file, catalog, plugin_id, policy } => {
-                deploy::install(&file, &catalog, &plugin_id, policy.as_deref())
-                    .await
-                    .map_err(Into::into)
-            }
-        },
-        Command::Lock { action } => match action {
-            LockAction::Generate { file, catalog, range } => {
-                lock::generate_with_range(&file, &catalog, range.as_deref())
-                    .await
-                    .map(|_| ())
-                    .map_err(Into::into)
-            }
-        },
-        Command::Mcp { action } => match action {
-            McpAction::Add { name, spec } => {
-                mcp::add(name, &spec).await.map_err(Into::into)
-            }
-        },
-        Command::Hermes { action } => match action {
-            HermesAction::Probe { plugin_id } => hermes::probe(plugin_id)
+            DeployAction::Apply {
+                file,
+                catalog,
+                target,
+            } => deploy::deploy(&file, &catalog, &target)
+                .await
+                .map_err(Into::into),
+            DeployAction::Install {
+                file,
+                catalog,
+                plugin_id,
+                policy,
+            } => deploy::install(&file, &catalog, &plugin_id, policy.as_deref())
                 .await
                 .map_err(Into::into),
         },
+        Command::Lock { action } => match action {
+            LockAction::Generate {
+                file,
+                catalog,
+                range,
+            } => lock::generate_with_range(&file, &catalog, range.as_deref())
+                .await
+                .map(|_| ())
+                .map_err(Into::into),
+        },
+        Command::Mcp { action } => match action {
+            McpAction::Add { name, spec } => mcp::add(name, &spec).await.map_err(Into::into),
+            McpAction::List => mcp::list().map_err(Into::into),
+            McpAction::Remove { name } => mcp::remove(&name).map_err(Into::into),
+        },
+        Command::Hermes { action } => match action {
+            HermesAction::Probe { plugin_id } => hermes::probe(plugin_id).await.map_err(Into::into),
+        },
+        Command::Completion { shell } => completion::run(&shell).map_err(Into::into),
         Command::Rollback { operation_id } => match uuid::Uuid::parse_str(&operation_id) {
             Ok(id) => rollback::rollback(id).await.map_err(Into::into),
             Err(e) => {

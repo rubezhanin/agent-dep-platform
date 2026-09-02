@@ -91,9 +91,7 @@ pub fn validate_name(name: &str) -> CoreResult<()> {
     if !is_valid_name(name) {
         return Err(CoreError::ErrSchemaInvalid {
             path: "mcp.name".to_string(),
-            reason: format!(
-                "name `{name}` is invalid: must match ^[a-z][a-z0-9_-]{{0,63}}$"
-            ),
+            reason: format!("name `{name}` is invalid: must match ^[a-z][a-z0-9_-]{{0,63}}$"),
         });
     }
     Ok(())
@@ -187,8 +185,7 @@ fn write_manifest_atomic(path: &Path, contents: &str) -> CoreResult<String> {
     {
         use std::io::Write;
         let mut f = std::fs::File::create(&tmp).map_err(CoreError::ErrIo)?;
-        f.write_all(contents.as_bytes())
-            .map_err(CoreError::ErrIo)?;
+        f.write_all(contents.as_bytes()).map_err(CoreError::ErrIo)?;
         f.sync_all().map_err(CoreError::ErrIo)?;
     }
     std::fs::rename(&tmp, path).map_err(CoreError::ErrIo)?;
@@ -269,7 +266,10 @@ mod tests {
         assert!(layout.manifest_path.is_file());
         assert_eq!(
             layout.manifest_path,
-            dir.path().join("optional-mcps").join("linear").join("manifest.yaml")
+            dir.path()
+                .join("optional-mcps")
+                .join("linear")
+                .join("manifest.yaml")
         );
         assert_eq!(layout.manifest_sha256.len(), 64);
         // The on-disk file's sha must match the layout

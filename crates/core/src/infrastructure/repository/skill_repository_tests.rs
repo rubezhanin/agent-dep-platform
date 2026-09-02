@@ -5,9 +5,7 @@ use uuid::Uuid;
 async fn make_db_with_snapshot() -> (tempfile::TempDir, SkillRepository, Uuid) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
-    let db = crate::infrastructure::sqlite::connect(&path)
-        .await
-        .unwrap();
+    let db = crate::infrastructure::sqlite::connect(&path).await.unwrap();
     db.migrate().await.unwrap();
     // Create a minimal `sources` row so the FK on
     // `source_snapshots.source_id` is satisfied.
@@ -48,10 +46,7 @@ fn make_skill(id: &str, version: &str) -> Skill {
             id: "other".to_string(),
             version: Version::parse("1.0.0").unwrap(),
         }],
-        permissions: vec![
-            SkillPermission::ReadEnv,
-            SkillPermission::Filesystem,
-        ],
+        permissions: vec![SkillPermission::ReadEnv, SkillPermission::Filesystem],
     }
 }
 

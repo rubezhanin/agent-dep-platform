@@ -64,10 +64,7 @@ pub async fn rollback(operation_id: Uuid) -> Result<()> {
 /// operation, parse its `effect_json` as a `DeployEffect`,
 /// restore each file from `.backups/`, then flip the
 /// journal row to `rolled_back`.
-pub async fn rollback_at(
-    operation_id: Uuid,
-    db_path: &Path,
-) -> Result<RollbackSummary> {
+pub async fn rollback_at(operation_id: Uuid, db_path: &Path) -> Result<RollbackSummary> {
     let db = connect(db_path)
         .await
         .with_context(|| format!("connect {}", db_path.display()))?;
@@ -140,14 +137,12 @@ fn restore_one(target_path: &Path, write: &DeployWrite) -> Result<RestoreOutcome
     // with the original file's name (e.g. `be.md.<ts>.<rand>`).
     let file_name = target_path
         .file_name()
-        .ok_or_else(|| {
-            anyhow::anyhow!("target has no file name: {}", target_path.display())
-        })?
+        .ok_or_else(|| anyhow::anyhow!("target has no file name: {}", target_path.display()))?
         .to_string_lossy()
         .to_string();
-    let parent = target_path.parent().ok_or_else(|| {
-        anyhow::anyhow!("target has no parent: {}", target_path.display())
-    })?;
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("target has no parent: {}", target_path.display()))?;
     let backups_dir = parent.join(".backups");
     if !backups_dir.is_dir() {
         anyhow::bail!(
@@ -161,9 +156,8 @@ fn restore_one(target_path: &Path, write: &DeployWrite) -> Result<RestoreOutcome
     for entry in std::fs::read_dir(&backups_dir)
         .with_context(|| format!("read_dir {}", backups_dir.display()))?
     {
-        let entry = entry.with_context(|| {
-            format!("read_dir entry in {}", backups_dir.display())
-        })?;
+        let entry =
+            entry.with_context(|| format!("read_dir entry in {}", backups_dir.display()))?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if !name.starts_with(&prefix) {
@@ -183,10 +177,10 @@ fn restore_one(target_path: &Path, write: &DeployWrite) -> Result<RestoreOutcome
         );
     }
     // Newest first.
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.0));
     let backup = &candidates[0].1;
-    let bytes = std::fs::read(backup)
-        .with_context(|| format!("read backup {}", backup.display()))?;
+    let bytes =
+        std::fs::read(backup).with_context(|| format!("read backup {}", backup.display()))?;
     // Make sure the parent of the target exists (it should,
     // but a stray delete could have removed it).
     if !parent.is_dir() {
@@ -205,13 +199,8 @@ fn restore_one(target_path: &Path, write: &DeployWrite) -> Result<RestoreOutcome
         f.sync_all()
             .with_context(|| format!("sync temp {}", tmp.display()))?;
     }
-    std::fs::rename(&tmp, target_path).with_context(|| {
-        format!(
-            "rename {} -> {}",
-            tmp.display(),
-            target_path.display()
-        )
-    })?;
+    std::fs::rename(&tmp, target_path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), target_path.display()))?;
     Ok(RestoreOutcome::Restored)
 }
 
@@ -223,7 +212,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn print_summary(s: &RollbackSummary) {
     let i = agent_dep_core::i18n::I18n::from_env();
-    output::header(&i.tr("cli.rollback.header", &[("id", &s.operation_id.to_string())]));
+    output::header(&i.tr(
+        "cli.rollback.header",
+        &[("id", &s.operation_id.to_string())],
+    ));
     output::kv(
         &i.t("cli.rollback.kv.target_root"),
         &s.target_root.display().to_string(),
@@ -232,19 +224,13 @@ fn print_summary(s: &RollbackSummary) {
         &i.t("cli.rollback.kv.files_to_revert"),
         &s.files_to_revert.to_string(),
     );
-    output::kv(
-        &i.t("cli.rollback.kv.restored"),
-        &s.restored.to_string(),
-    );
+    output::kv(&i.t("cli.rollback.kv.restored"), &s.restored.to_string());
     output::kv(
         &i.t("cli.rollback.kv.kept_current"),
         &s.kept_current.to_string(),
     );
     if !s.failed.is_empty() {
-        output::kv(
-            &i.t("cli.rollback.kv.failed"),
-            &s.failed.len().to_string(),
-        );
+        output::kv(&i.t("cli.rollback.kv.failed"), &s.failed.len().to_string());
         for f in &s.failed {
             eprintln!("  - {}: {}", f.relative, f.reason);
         }

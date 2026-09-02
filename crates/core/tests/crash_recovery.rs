@@ -11,9 +11,7 @@
 //! test exercises a `Deploy` op but the recovery contract
 //! is identical for all four.
 
-use agent_dep_core::application::journal::{
-    JournalService, OperationStatus, OperationType,
-};
+use agent_dep_core::application::journal::{JournalService, OperationStatus, OperationType};
 use agent_dep_core::infrastructure::sqlite::connect;
 use serde_json::json;
 
@@ -31,7 +29,11 @@ async fn stale_writing_operation_is_force_failed_by_gc_stale() {
 
     // 1. A deploy operation is prepared and moved to Writing.
     let op = journal
-        .prepare(OperationType::Deploy, "plan-hash-abc", json!({"target": "/tmp"}))
+        .prepare(
+            OperationType::Deploy,
+            "plan-hash-abc",
+            json!({"target": "/tmp"}),
+        )
         .await
         .expect("prepare");
     journal.begin_writing(op.id).await.expect("begin_writing");
@@ -112,11 +114,18 @@ async fn completed_operation_is_never_force_failed() {
     // touch it under any keep value, even zero.
     let (_dir, journal) = fresh_journal().await;
     let op = journal
-        .prepare(OperationType::Deploy, "plan-hash-ok", json!({"target": "/tmp"}))
+        .prepare(
+            OperationType::Deploy,
+            "plan-hash-ok",
+            json!({"target": "/tmp"}),
+        )
         .await
         .expect("prepare");
     journal.begin_writing(op.id).await.expect("begin_writing");
-    journal.begin_committing(op.id).await.expect("begin_committing");
+    journal
+        .begin_committing(op.id)
+        .await
+        .expect("begin_committing");
     journal.complete(op.id).await.expect("complete");
 
     let failed = journal.gc_stale(0).await.expect("gc_stale");
@@ -131,7 +140,11 @@ async fn rolled_back_operation_is_never_force_failed() {
     // A `rolled_back` row is also terminal.
     let (_dir, journal) = fresh_journal().await;
     let op = journal
-        .prepare(OperationType::Rollback, "plan-hash-rb", json!({"target": "/tmp"}))
+        .prepare(
+            OperationType::Rollback,
+            "plan-hash-rb",
+            json!({"target": "/tmp"}),
+        )
         .await
         .expect("prepare");
     journal.rollback(op.id).await.expect("rollback");

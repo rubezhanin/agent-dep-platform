@@ -74,8 +74,9 @@ fn ingest_v2_parses_agents_and_skills() {
 
     let source = Source::new(SourceKind::local(dir.path().to_path_buf()));
     let policy = ScanPolicy::mvp_default();
-    let (result, report) =
-        IngestV2Service::new().ingest_v2(&source, &policy).expect("ingest v2");
+    let (result, report) = IngestV2Service::new()
+        .ingest_v2(&source, &policy)
+        .expect("ingest v2");
 
     assert_eq!(result.agents.len(), 1);
     assert_eq!(result.agents[0].id, "backend-architect");
@@ -96,11 +97,7 @@ fn ingest_v2_parses_agents_and_skills() {
 #[test]
 fn ingest_v2_rejects_agent_with_id_mismatch() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(
-        dir.path().join("divisions.json"),
-        r#"{"divisions": []}"#,
-    )
-    .unwrap();
+    fs::write(dir.path().join("divisions.json"), r#"{"divisions": []}"#).unwrap();
     let agents = dir.path().join("agents");
     fs::create_dir_all(agents.join("real-id")).unwrap();
     fs::write(
@@ -138,11 +135,7 @@ spec:
 #[test]
 fn ingest_v2_rejects_missing_instructions_md() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(
-        dir.path().join("divisions.json"),
-        r#"{"divisions": []}"#,
-    )
-    .unwrap();
+    fs::write(dir.path().join("divisions.json"), r#"{"divisions": []}"#).unwrap();
     let agents = dir.path().join("agents");
     fs::create_dir_all(agents.join("lonely")).unwrap();
     fs::write(

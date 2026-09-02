@@ -33,6 +33,7 @@ pub struct LockSummary {
 }
 
 /// CLI entry point.
+#[allow(dead_code)] // retained for future 1.x caller; today the CLI uses generate_with_range
 pub async fn generate(system_file: &Path, catalog_path: &Path) -> Result<()> {
     let summary = generate_at(system_file, catalog_path).await?;
     print_summary(&summary);
@@ -59,10 +60,8 @@ pub async fn generate_with_range(
 /// Pure orchestration: read the system file, re-ingest
 /// the catalog, compose, build the `LockFile`, and
 /// write it next to the system file as `agency.lock`.
-pub async fn generate_at(
-    system_file: &Path,
-    catalog_path: &Path,
-) -> Result<LockSummary> {
+#[allow(dead_code)] // retained for future 1.x caller; today the CLI uses generate_at_with_range
+pub async fn generate_at(system_file: &Path, catalog_path: &Path) -> Result<LockSummary> {
     generate_at_with_range(system_file, catalog_path, None).await
 }
 
@@ -82,13 +81,17 @@ pub async fn generate_at_with_range(
     }
     let text = std::fs::read_to_string(system_file)
         .with_context(|| format!("read {}", system_file.display()))?;
-    let file = parse_system_file(&text)
-        .map_err(|e| anyhow::anyhow!("parse {} (expected a `system.yaml`): {e}", system_file.display()))?;
+    let file = parse_system_file(&text).map_err(|e| {
+        anyhow::anyhow!(
+            "parse {} (expected a `system.yaml`): {e}",
+            system_file.display()
+        )
+    })?;
 
     let source = Source::new(SourceKind::local(catalog_path.to_path_buf()));
-    let (result, _report) = IngestService::new().ingest_local(&source, None).map_err(|e| {
-        anyhow::anyhow!("ingest {}: {e}", catalog_path.display())
-    })?;
+    let (result, _report) = IngestService::new()
+        .ingest_local(&source, None)
+        .map_err(|e| anyhow::anyhow!("ingest {}: {e}", catalog_path.display()))?;
 
     let placeholder_source_id = uuid::Uuid::new_v4();
     let composed = CompositionService::new()
@@ -122,15 +125,13 @@ pub async fn generate_at_with_range(
             // Sanity-check the template by rendering it for
             // the first resolved agent, if any.
             if let Some((_, v)) = agent_pins.first() {
-                let _ = render_range_template(tmpl, v).map_err(|e| {
-                    anyhow::anyhow!("invalid range template `{tmpl}`: {e}")
-                })?;
+                let _ = render_range_template(tmpl, v)
+                    .map_err(|e| anyhow::anyhow!("invalid range template `{tmpl}`: {e}"))?;
             }
             agent_pins
                 .iter()
                 .map(|(id, v)| {
-                    let rendered = render_range_template(tmpl, v)
-                        .unwrap_or_else(|_| v.to_string());
+                    let rendered = render_range_template(tmpl, v).unwrap_or_else(|_| v.to_string());
                     (id.clone(), rendered)
                 })
                 .collect()
@@ -165,8 +166,7 @@ pub async fn generate_at_with_range(
     let yaml = lock
         .to_yaml()
         .map_err(|e| anyhow::anyhow!("serialize lock: {e}"))?;
-    std::fs::write(&lock_path, yaml)
-        .with_context(|| format!("write {}", lock_path.display()))?;
+    std::fs::write(&lock_path, yaml).with_context(|| format!("write {}", lock_path.display()))?;
 
     Ok(LockSummary {
         system_id: composed.metadata.id.clone(),
@@ -193,16 +193,17 @@ fn render_range_template(tmpl: &str, v: &Version) -> Result<String, String> {
 }
 
 fn lock_path_for(system_file: &Path) -> PathBuf {
-    let parent = system_file
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
+    let parent = system_file.parent().unwrap_or_else(|| Path::new("."));
     parent.join("agency.lock")
 }
 
 fn print_summary(s: &LockSummary) {
     let i = agent_dep_core::i18n::I18n::from_env();
     output::header(&i.tr("cli.lock.header", &[("id", &s.system_id)]));
-    output::kv(&i.t("cli.lock.kv.lock_path"), &s.lock_path.display().to_string());
+    output::kv(
+        &i.t("cli.lock.kv.lock_path"),
+        &s.lock_path.display().to_string(),
+    );
     output::kv(&i.t("cli.lock.kv.agent_count"), &s.agent_count.to_string());
     output::kv(&i.t("cli.lock.kv.skill_count"), &s.skill_count.to_string());
     output::kv(&i.t("cli.lock.kv.catalog_commit"), &s.commit_sha);

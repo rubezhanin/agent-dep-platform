@@ -12,9 +12,8 @@
 use crate::domain::agent::Agent;
 use crate::domain::skill::Skill;
 use crate::domain::system::{
-    AgentOverride, ParsedSystemFile, ResolvedAgent, ResolvedSkill, SkillRef,
-    System, SystemAgentRef, SystemMetadata, SystemSpec,
-    RUNTIME_TYPE_HERMES, SYSTEM_FILE_API_VERSION_V1,
+    AgentOverride, ParsedSystemFile, ResolvedAgent, ResolvedSkill, SkillRef, System,
+    SystemAgentRef, SystemMetadata, SystemSpec, RUNTIME_TYPE_HERMES, SYSTEM_FILE_API_VERSION_V1,
 };
 use crate::error::{CoreError, CoreResult};
 use uuid::Uuid;
@@ -39,12 +38,8 @@ impl CompositionService {
         file: &ParsedSystemFile,
     ) -> CoreResult<System> {
         match file {
-            ParsedSystemFile::V1(f) => {
-                self.compose_v1(source_id, snapshot_id, agents, f)
-            }
-            ParsedSystemFile::V2(f) => {
-                self.compose_v2(source_id, snapshot_id, agents, skills, f)
-            }
+            ParsedSystemFile::V1(f) => self.compose_v1(source_id, snapshot_id, agents, f),
+            ParsedSystemFile::V2(f) => self.compose_v2(source_id, snapshot_id, agents, skills, f),
         }
     }
 
@@ -104,8 +99,7 @@ impl CompositionService {
                     .filter(|a| a.id == entry.agent_ref.id)
                     .map(|a| a.version.to_string())
                     .collect();
-                let requested =
-                    format!("agent:{}@{}", entry.agent_ref.id, entry.agent_ref.version);
+                let requested = format!("agent:{}@{}", entry.agent_ref.id, entry.agent_ref.version);
                 let dependency = if known.is_empty() {
                     requested
                 } else {
@@ -161,8 +155,7 @@ impl CompositionService {
         if f.spec.agents.is_empty() && f.spec.skills.is_empty() {
             return Err(CoreError::ErrSchemaInvalid {
                 path: "spec".to_string(),
-                reason: "spec must include at least one agent or one skill"
-                    .to_string(),
+                reason: "spec must include at least one agent or one skill".to_string(),
             });
         }
         if f.spec.runtime.runtime_type != RUNTIME_TYPE_HERMES {
@@ -190,17 +183,16 @@ impl CompositionService {
             }
             seen_agent_ids.push(entry.agent_ref.id.as_str());
 
-            let candidate = agents.iter().find(|a| {
-                a.id == entry.agent_ref.id && a.version == entry.agent_ref.version
-            });
+            let candidate = agents
+                .iter()
+                .find(|a| a.id == entry.agent_ref.id && a.version == entry.agent_ref.version);
             let Some(agent) = candidate else {
                 let known: Vec<String> = agents
                     .iter()
                     .filter(|a| a.id == entry.agent_ref.id)
                     .map(|a| a.version.to_string())
                     .collect();
-                let requested =
-                    format!("agent:{}@{}", entry.agent_ref.id, entry.agent_ref.version);
+                let requested = format!("agent:{}@{}", entry.agent_ref.id, entry.agent_ref.version);
                 let dependency = if known.is_empty() {
                     requested
                 } else {
@@ -222,24 +214,19 @@ impl CompositionService {
 
         // Resolve skills. v2 systems may declare skills without
         // declaring agents; skill-only systems are valid in MVP.
-        let mut resolved_skills: Vec<ResolvedSkill> =
-            Vec::with_capacity(f.spec.skills.len());
+        let mut resolved_skills: Vec<ResolvedSkill> = Vec::with_capacity(f.spec.skills.len());
         let mut seen_skill_ids: Vec<&str> = Vec::with_capacity(f.spec.skills.len());
         for skill_ref in &f.spec.skills {
             if seen_skill_ids.contains(&skill_ref.skill_ref.id.as_str()) {
                 return Err(CoreError::ErrSchemaInvalid {
                     path: "spec.skills[].ref".to_string(),
-                    reason: format!(
-                        "duplicate skill ref `{}`",
-                        skill_ref.skill_ref.id
-                    ),
+                    reason: format!("duplicate skill ref `{}`", skill_ref.skill_ref.id),
                 });
             }
             seen_skill_ids.push(skill_ref.skill_ref.id.as_str());
 
             let candidate = skills.iter().find(|s| {
-                s.id == skill_ref.skill_ref.id
-                    && s.version == skill_ref.skill_ref.version
+                s.id == skill_ref.skill_ref.id && s.version == skill_ref.skill_ref.version
             });
             let Some(skill) = candidate else {
                 let known: Vec<String> = skills
@@ -294,12 +281,7 @@ impl CompositionService {
                 r#override: a.r#override.clone(),
             })
             .collect();
-        let skills_v1: Vec<SkillRef> = f
-            .spec
-            .skills
-            .iter()
-            .map(|s| s.skill_ref.clone())
-            .collect();
+        let skills_v1: Vec<SkillRef> = f.spec.skills.iter().map(|s| s.skill_ref.clone()).collect();
 
         Ok(System {
             metadata,

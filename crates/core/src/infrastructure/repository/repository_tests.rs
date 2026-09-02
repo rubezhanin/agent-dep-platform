@@ -179,7 +179,9 @@ async fn record_snapshot_persists_divisions_agents_and_files() {
     let fx = Fixture::new();
     let src = make_source(&fx.root);
     let source_id = repo.upsert_source(&src, false).await.expect("upsert");
-    let (result, report) = IngestService::new().ingest_local(&src, None).expect("ingest");
+    let (result, report) = IngestService::new()
+        .ingest_local(&src, None)
+        .expect("ingest");
     repo.record_snapshot(source_id, &result, &report)
         .await
         .expect("record");
@@ -218,7 +220,9 @@ async fn record_snapshot_supersedes_previous_active() {
     let source_id = repo.upsert_source(&src, false).await.expect("upsert");
 
     // First ingest.
-    let (r1, rep1) = IngestService::new().ingest_local(&src, None).expect("ingest 1");
+    let (r1, rep1) = IngestService::new()
+        .ingest_local(&src, None)
+        .expect("ingest 1");
     repo.record_snapshot(source_id, &r1, &rep1)
         .await
         .expect("record 1");
@@ -240,7 +244,9 @@ async fn record_snapshot_supersedes_previous_active() {
     )
     .expect("rewrite be.md");
 
-    let (r2, rep2) = IngestService::new().ingest_local(&src, None).expect("ingest 2");
+    let (r2, rep2) = IngestService::new()
+        .ingest_local(&src, None)
+        .expect("ingest 2");
     assert_ne!(r1.snapshot.commit_sha, r2.snapshot.commit_sha);
     repo.record_snapshot(source_id, &r2, &rep2)
         .await
@@ -270,14 +276,18 @@ async fn record_snapshot_does_not_supersede_when_status_not_active() {
     let src = make_source(&fx.root);
     let source_id = repo.upsert_source(&src, false).await.expect("upsert");
 
-    let (mut r, rep) = IngestService::new().ingest_local(&src, None).expect("ingest");
+    let (mut r, rep) = IngestService::new()
+        .ingest_local(&src, None)
+        .expect("ingest");
     r.snapshot.status = crate::domain::source::SnapshotStatus::Blocked;
     repo.record_snapshot(source_id, &r, &rep)
         .await
         .expect("record blocked");
 
     // Now record a real Active — the Blocked one should stay Blocked.
-    let (r2, rep2) = IngestService::new().ingest_local(&src, None).expect("ingest 2");
+    let (r2, rep2) = IngestService::new()
+        .ingest_local(&src, None)
+        .expect("ingest 2");
     repo.record_snapshot(source_id, &r2, &rep2)
         .await
         .expect("record active");

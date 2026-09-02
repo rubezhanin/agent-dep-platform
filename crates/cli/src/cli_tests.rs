@@ -441,14 +441,9 @@ mod deploy_e2e {
         let sys_path = sys_file.path().join("system.yaml");
         write_system_yaml(&sys_path, &["be@1.0.0", "fe@1.0.0"]);
 
-        let s = crate::commands::deploy::deploy_at(
-            &sys_path,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect("deploy_at");
+        let s = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+            .await
+            .expect("deploy_at");
 
         assert_eq!(s.system_id, "saas");
         assert_eq!(s.wrote, 2, "both agents written");
@@ -488,25 +483,15 @@ mod deploy_e2e {
         let db_path: PathBuf = db_dir.path().join("agency.db");
         let target = tempfile::tempdir().unwrap().keep();
 
-        let s1 = crate::commands::deploy::deploy_at(
-            &sys_path,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect("first deploy");
+        let s1 = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+            .await
+            .expect("first deploy");
         assert_eq!(s1.wrote, 2);
         assert_eq!(s1.skipped, 0);
 
-        let s2 = crate::commands::deploy::deploy_at(
-            &sys_path,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect("second deploy");
+        let s2 = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+            .await
+            .expect("second deploy");
         assert_eq!(s2.wrote, 0, "no fresh writes on idempotent run");
         assert_eq!(s2.skipped, 2, "both agents skipped (content matches)");
         assert_eq!(s2.backed_up, 0, "no backup on idempotent run");
@@ -524,14 +509,9 @@ mod deploy_e2e {
         let target = tempfile::tempdir().unwrap().keep();
 
         // First deploy: 1 write, 0 backups.
-        let s1 = crate::commands::deploy::deploy_at(
-            &sys_path,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect("first deploy");
+        let s1 = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+            .await
+            .expect("first deploy");
         assert_eq!(s1.wrote, 1);
         assert_eq!(s1.backed_up, 0);
 
@@ -541,14 +521,9 @@ mod deploy_e2e {
         let be = target.join("agents/be@1.0.0/be.md");
         fs::write(&be, "---\nmanual edit\n---\n").unwrap();
 
-        let s2 = crate::commands::deploy::deploy_at(
-            &sys_path,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect("second deploy");
+        let s2 = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+            .await
+            .expect("second deploy");
         assert_eq!(s2.wrote, 1);
         assert_eq!(s2.backed_up, 1, "old content was backed up");
         assert_eq!(s2.skipped, 0);
@@ -574,14 +549,9 @@ mod deploy_e2e {
         let target = tempfile::tempdir().unwrap().keep();
         let missing = cat_dir.path().join("missing.yaml");
 
-        let err = crate::commands::deploy::deploy_at(
-            &missing,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect_err("should fail on missing system file");
+        let err = crate::commands::deploy::deploy_at(&missing, cat_dir.path(), &target, &db_path)
+            .await
+            .expect_err("should fail on missing system file");
         assert!(err.to_string().contains("not a file"));
     }
 
@@ -595,14 +565,9 @@ mod deploy_e2e {
         let target = tempfile::tempdir().unwrap().keep();
         let missing_cat = sys_file.path().join("nope");
 
-        let err = crate::commands::deploy::deploy_at(
-            &sys_path,
-            &missing_cat,
-            &target,
-            &db_path,
-        )
-        .await
-        .expect_err("should fail on missing catalog dir");
+        let err = crate::commands::deploy::deploy_at(&sys_path, &missing_cat, &target, &db_path)
+            .await
+            .expect_err("should fail on missing catalog dir");
         assert!(err.to_string().contains("not a directory"));
     }
 
@@ -852,14 +817,9 @@ mod rollback_e2e {
         let target = tempfile::tempdir().unwrap().keep();
 
         // First deploy: writes be.md and fe.md.
-        let s1 = crate::commands::deploy::deploy_at(
-            &sys_path,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect("first deploy");
+        let s1 = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+            .await
+            .expect("first deploy");
         assert_eq!(s1.wrote, 2);
 
         // Hand-edit be.md so the second deploy has a real
@@ -870,14 +830,9 @@ mod rollback_e2e {
         // Second deploy: backs up the manual edit, writes the
         // catalog body again. fe.md was untouched, so it is
         // reported as skipped (no backup).
-        let s2 = crate::commands::deploy::deploy_at(
-            &sys_path,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect("second deploy");
+        let s2 = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+            .await
+            .expect("second deploy");
         assert_eq!(s2.wrote, 1, "only be.md was rewritten");
         assert_eq!(s2.skipped, 1, "fe.md is unchanged");
         assert_eq!(s2.backed_up, 1, "the hand-edited be.md was backed up");
@@ -887,7 +842,10 @@ mod rollback_e2e {
         // The rollback must restore the backup (the manual
         // edit), not the catalog body.
         fs::write(&be, "totally different content\n").expect("tamper");
-        assert_eq!(fs::read_to_string(&be).unwrap(), "totally different content\n");
+        assert_eq!(
+            fs::read_to_string(&be).unwrap(),
+            "totally different content\n"
+        );
 
         // Roll back the SECOND operation.
         let r = crate::commands::rollback::rollback_at(s2.operation_id, &db_path)
@@ -942,14 +900,9 @@ mod rollback_e2e {
         let db_path: PathBuf = db_dir.path().join("agency.db");
         let target = tempfile::tempdir().unwrap().keep();
 
-        let s = crate::commands::deploy::deploy_at(
-            &sys_path,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect("deploy");
+        let s = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+            .await
+            .expect("deploy");
 
         // No edits, no deletions: rollback should report every
         // file as `kept_current` and still flip the journal
@@ -1016,14 +969,15 @@ mod mcp_e2e {
         let hermes_home = tempfile::tempdir().unwrap();
         let prev = env::var("AGENCY_HERMES_HOME").ok();
         // SAFETY: tests in this module are single-threaded.
-        unsafe { env::set_var("AGENCY_HERMES_HOME", hermes_home.path()); }
+        unsafe {
+            env::set_var("AGENCY_HERMES_HOME", hermes_home.path());
+        }
 
         let spec_dir = tempfile::tempdir().unwrap();
         let spec_path: PathBuf = spec_dir.path().join("linear.json");
         write_linear_spec(&spec_path);
 
-        let summary = crate::commands::mcp::add_at("linear", &spec_path)
-            .expect("mcp add");
+        let summary = crate::commands::mcp::add_at("linear", &spec_path).expect("mcp add");
 
         assert_eq!(summary.name, "linear");
         let manifest = hermes_home
@@ -1031,7 +985,11 @@ mod mcp_e2e {
             .join("optional-mcps")
             .join("linear")
             .join("manifest.yaml");
-        assert!(manifest.is_file(), "manifest should exist at {}", manifest.display());
+        assert!(
+            manifest.is_file(),
+            "manifest should exist at {}",
+            manifest.display()
+        );
         let text = fs::read_to_string(&manifest).unwrap();
         assert!(text.contains("manifest_version: 1"));
         assert!(text.contains("name: linear"));
@@ -1052,8 +1010,7 @@ mod mcp_e2e {
         let spec_dir = tempfile::tempdir().unwrap();
         let spec_path: PathBuf = spec_dir.path().join("linear.json");
         write_linear_spec(&spec_path);
-        let err = crate::commands::mcp::add_at("BadName", &spec_path)
-            .expect_err("invalid name");
+        let err = crate::commands::mcp::add_at("BadName", &spec_path).expect_err("invalid name");
         let s = err.to_string();
         assert!(s.contains("invalid") || s.contains("name"), "got: {s}");
     }
@@ -1066,8 +1023,8 @@ mod mcp_e2e {
 
 #[cfg(test)]
 mod system_drift_e2e {
-    use std::path::PathBuf;
     use std::fs;
+    use std::path::PathBuf;
 
     fn write_catalog(root: &std::path::Path) {
         fs::create_dir_all(root.join("agents/engineering")).unwrap();
@@ -1116,14 +1073,9 @@ mod system_drift_e2e {
 
         // 1. Deploy: writes be.md and a deployed_artifacts
         //    row recording expected sha.
-        let dep = crate::commands::deploy::deploy_at(
-            &sys_path,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect("deploy");
+        let dep = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+            .await
+            .expect("deploy");
         assert_eq!(dep.wrote, 1);
 
         // 2. Operator hand-edits be.md on disk.
@@ -1149,22 +1101,18 @@ mod system_drift_e2e {
         // runs without error and that the plan operations
         // are well-formed (no Backup because the deploy
         // path took a backup).
-        let plan = crate::commands::system::plan_at_drift(
-            &sys_path,
-            cat_dir.path(),
-            &target,
-            &db_path,
-        )
-        .await
-        .expect("plan_at_drift");
+        let plan =
+            crate::commands::system::plan_at_drift(&sys_path, cat_dir.path(), &target, &db_path)
+                .await
+                .expect("plan_at_drift");
         // The current system wants to write be@1.0.0, so
         // any Verify for that exact path is suppressed.
         // But if the user later removes e@1.0.0 from
         // the system, the next plan would emit Verify.
-        assert!(plan
-            .operations
-            .iter()
-            .all(|o| !o.target.starts_with("path:agents/be@1.0.0/be.md")),
+        assert!(
+            plan.operations
+                .iter()
+                .all(|o| !o.target.starts_with("path:agents/be@1.0.0/be.md")),
             "suppression of drift for the planned target must hold: {:?}",
             plan.operations
         );

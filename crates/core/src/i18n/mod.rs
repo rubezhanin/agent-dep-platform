@@ -30,8 +30,9 @@
 
 use std::sync::OnceLock;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Locale {
+    #[default]
     EnUs,
     RuRu,
 }
@@ -53,12 +54,6 @@ impl std::str::FromStr for Locale {
             "ru-RU" | "ru" => Ok(Locale::RuRu),
             other => Err(format!("unsupported locale `{other}`")),
         }
-    }
-}
-
-impl Default for Locale {
-    fn default() -> Self {
-        Locale::EnUs
     }
 }
 
@@ -160,7 +155,9 @@ impl I18n {
 
     fn lookup(&self, key: &str) -> Option<&'static str> {
         let bundle = bundle_for(self.locale);
-        bundle.get(key).or_else(|| bundle_for(Locale::EnUs).get(key))
+        bundle
+            .get(key)
+            .or_else(|| bundle_for(Locale::EnUs).get(key))
     }
 }
 
@@ -175,7 +172,10 @@ fn en_us_entries() -> &'static [(&'static str, &'static str)] {
     &[
         // CLI top-level
         ("cli.deploy.apply.ok", "Deployed system: {id}"),
-        ("cli.deploy.install.ok", "Installed router plugin for system: {id}"),
+        (
+            "cli.deploy.install.ok",
+            "Installed router plugin for system: {id}",
+        ),
         ("cli.deploy.kv.operation_id", "operation_id"),
         ("cli.deploy.kv.target", "target"),
         ("cli.deploy.kv.wrote", "wrote"),
@@ -188,7 +188,10 @@ fn en_us_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.deploy.kv.plugin_id", "plugin_id"),
         ("cli.deploy.kv.plugin_dir", "plugin_dir"),
         ("cli.deploy.kv.hermes_home", "hermes_home"),
-        ("cli.deploy.install.header", "Installed router plugin for system: {id}"),
+        (
+            "cli.deploy.install.header",
+            "Installed router plugin for system: {id}",
+        ),
         ("cli.deploy.apply.header", "Deployed system: {id}"),
         ("cli.lock.generate.ok", "Lock file for system: {id}"),
         ("cli.lock.kv.lock_path", "lock_path"),
@@ -202,7 +205,10 @@ fn en_us_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.rollback.kv.restored", "restored"),
         ("cli.rollback.kv.kept_current", "kept_current"),
         ("cli.rollback.kv.failed", "failed"),
-        ("cli.rollback.todo_cas", "  (Phase 5 TODO: actually re-write the pre-deploy bytes from CAS)"),
+        (
+            "cli.rollback.todo_cas",
+            "  (Phase 5 TODO: actually re-write the pre-deploy bytes from CAS)",
+        ),
         // MCP
         ("cli.mcp.add.header", "Installed MCP server: {name}"),
         ("cli.mcp.kv.server_dir", "server_dir"),
@@ -210,7 +216,10 @@ fn en_us_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.mcp.kv.manifest_sha256", "manifest_sha256"),
         // Hermes probe (1.4.0, ADR-0012)
         ("cli.hermes.probe.header", "Structural probe: {name}"),
-        ("cli.hermes.probe.failed", "Probe failed: at least one check is not OK"),
+        (
+            "cli.hermes.probe.failed",
+            "Probe failed: at least one check is not OK",
+        ),
         ("cli.hermes.kv.hermes_home", "hermes_home"),
         ("cli.hermes.kv.ok", "ok"),
         // Status
@@ -221,40 +230,52 @@ fn en_us_entries() -> &'static [(&'static str, &'static str)] {
 fn ru_ru_entries() -> &'static [(&'static str, &'static str)] {
     &[
         ("cli.deploy.apply.ok", "Развёрнута система: {id}"),
-        ("cli.deploy.install.ok", "Установлен плагин-роутер для системы: {id}"),
+        (
+            "cli.deploy.install.ok",
+            "Установлен плагин-роутер для системы: {id}",
+        ),
         ("cli.deploy.kv.operation_id", "operation_id"),
         ("cli.deploy.kv.target", "целевая директория"),
-        ("cli.deploy.kv.wrote", "записано"),
-        ("cli.deploy.kv.skipped", "пропущено"),
+        ("cli.deploy.kv.wrote", "записано файлов"),
+        ("cli.deploy.kv.skipped", "пропущено файлов"),
         ("cli.deploy.kv.backed_up", "резервных копий"),
         ("cli.deploy.kv.journaled_to", "журнал сохранён в"),
-        ("cli.deploy.kv.skill_count", "количество скиллов"),
+        ("cli.deploy.kv.skill_count", "количество навыков"),
         ("cli.deploy.kv.manifest_sha256", "sha256 манифеста"),
-        ("cli.deploy.kv.skills_sha256", "sha256 скиллов"),
+        ("cli.deploy.kv.skills_sha256", "sha256 навыков"),
         ("cli.deploy.kv.plugin_id", "идентификатор плагина"),
         ("cli.deploy.kv.plugin_dir", "каталог плагина"),
         ("cli.deploy.kv.hermes_home", "каталог Hermes"),
-        ("cli.deploy.install.header", "Установлен плагин-роутер для системы: {id}"),
+        (
+            "cli.deploy.install.header",
+            "Установлен плагин-роутер для системы: {id}",
+        ),
         ("cli.deploy.apply.header", "Развёрнута система: {id}"),
-        ("cli.lock.generate.ok", "Lock-файл для системы: {id}"),
+        ("cli.lock.generate.ok", "lock-файл для системы: {id}"),
         ("cli.lock.kv.lock_path", "путь к lock-файлу"),
         ("cli.lock.kv.agent_count", "количество агентов"),
-        ("cli.lock.kv.skill_count", "количество скиллов"),
+        ("cli.lock.kv.skill_count", "количество навыков"),
         ("cli.lock.kv.catalog_commit", "коммит каталога"),
-        ("cli.lock.header", "Lock-файл для системы: {id}"),
+        ("cli.lock.header", "lock-файл для системы: {id}"),
         ("cli.rollback.header", "План отката для операции: {id}"),
         ("cli.rollback.kv.target_root", "корневая директория"),
         ("cli.rollback.kv.files_to_revert", "файлов к откату"),
         ("cli.rollback.kv.restored", "восстановлено"),
-        ("cli.rollback.kv.kept_current", "уже актуально"),
+        ("cli.rollback.kv.kept_current", "без изменений"),
         ("cli.rollback.kv.failed", "ошибок"),
-        ("cli.rollback.todo_cas", "  (TODO Phase 5: записать байты до деплоя из CAS)"),
+        (
+            "cli.rollback.todo_cas",
+            "  (TODO Phase 5: записать байты до деплоя из CAS)",
+        ),
         ("cli.mcp.add.header", "Установлен MCP-сервер: {name}"),
         ("cli.mcp.kv.server_dir", "каталог сервера"),
         ("cli.mcp.kv.manifest_path", "путь к manifest"),
         ("cli.mcp.kv.manifest_sha256", "sha256 manifest"),
         ("cli.hermes.probe.header", "Структурная проверка: {name}"),
-        ("cli.hermes.probe.failed", "Проверка не прошла: хотя бы одна проверка вернула не OK"),
+        (
+            "cli.hermes.probe.failed",
+            "Проверка не прошла: хотя бы одна проверка вернула не OK",
+        ),
         ("cli.hermes.kv.hermes_home", "каталог Hermes"),
         ("cli.hermes.kv.ok", "ok"),
         ("cli.status.unknown", "развёртывание не найдено"),

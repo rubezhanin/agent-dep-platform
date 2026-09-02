@@ -8,8 +8,7 @@ use super::version::Version;
 
 pub const AGENT_API_VERSION: &str = "agency/v1";
 pub const AGENT_KIND: &str = "Agent";
-pub const AGENT_SCHEMA_URL: &str =
-    "https://schemas.agent-dep.platform/agent/v1.json";
+pub const AGENT_SCHEMA_URL: &str = "https://schemas.agent-dep.platform/agent/v1.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -66,8 +65,7 @@ pub struct AgentHermesRuntimeYaml {
 }
 
 pub fn parse_agent_yaml(text: &str) -> Result<AgentYaml, String> {
-    let y: AgentYaml =
-        serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
+    let y: AgentYaml = serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
     if y.schema_url != AGENT_SCHEMA_URL {
         return Err(format!(
             "unsupported $schema: got `{}`, expected `{}`",
@@ -86,13 +84,9 @@ pub fn parse_agent_yaml(text: &str) -> Result<AgentYaml, String> {
             y.kind, AGENT_KIND
         ));
     }
-    if y.metadata.id.is_empty()
-        || y.metadata.name.is_empty()
-        || y.metadata.description.is_empty()
-    {
+    if y.metadata.id.is_empty() || y.metadata.name.is_empty() || y.metadata.description.is_empty() {
         return Err(
-            "metadata.id, metadata.name, metadata.description must be non-empty"
-                .to_string(),
+            "metadata.id, metadata.name, metadata.description must be non-empty".to_string(),
         );
     }
     Version::parse(&y.metadata.version)

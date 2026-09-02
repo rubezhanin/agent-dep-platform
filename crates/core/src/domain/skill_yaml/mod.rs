@@ -34,8 +34,7 @@ pub const SKILL_KIND: &str = "Skill";
 /// `$schema:` URL we expect for v2 skill manifests. The
 /// `SchemaRegistry` resolves the actual document at validation
 /// time; the URL is the contract.
-pub const SKILL_SCHEMA_URL: &str =
-    "https://schemas.agent-dep.platform/skill/v1.json";
+pub const SKILL_SCHEMA_URL: &str = "https://schemas.agent-dep.platform/skill/v1.json";
 
 /// Canonical YAML shape of a skill manifest. Serialized in
 /// `examples/fixtures/v2/` and in tests.
@@ -106,8 +105,7 @@ impl From<SkillPermissionYaml> for SkillPermission {
 /// Parse a v2 skill manifest from a YAML string. Returns a
 /// structured error on any structural or contract violation.
 pub fn parse_skill_yaml(text: &str) -> Result<SkillYaml, String> {
-    let y: SkillYaml =
-        serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
+    let y: SkillYaml = serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
     if y.schema_url != SKILL_SCHEMA_URL {
         return Err(format!(
             "unsupported $schema: got `{}`, expected `{}`",
@@ -126,11 +124,10 @@ pub fn parse_skill_yaml(text: &str) -> Result<SkillYaml, String> {
             y.kind, SKILL_KIND
         ));
     }
-    if y.metadata.id.is_empty()
-        || y.metadata.name.is_empty()
-        || y.metadata.description.is_empty()
-    {
-        return Err("metadata.id, metadata.name, metadata.description must be non-empty".to_string());
+    if y.metadata.id.is_empty() || y.metadata.name.is_empty() || y.metadata.description.is_empty() {
+        return Err(
+            "metadata.id, metadata.name, metadata.description must be non-empty".to_string(),
+        );
     }
     Version::parse(&y.metadata.version)
         .map_err(|_| "metadata.version is not a valid SemVer".to_string())?;
@@ -138,9 +135,8 @@ pub fn parse_skill_yaml(text: &str) -> Result<SkillYaml, String> {
         return Err("spec.body must be a non-empty path".to_string());
     }
     for dep in &y.spec.dependencies {
-        Version::parse(&dep.version).map_err(|_| {
-            format!("dependency `{}` version is not a valid SemVer", dep.id)
-        })?;
+        Version::parse(&dep.version)
+            .map_err(|_| format!("dependency `{}` version is not a valid SemVer", dep.id))?;
     }
     Ok(y)
 }

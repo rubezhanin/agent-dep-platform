@@ -68,7 +68,11 @@ fn make_system(agents: Vec<(&str, &str)>) -> System {
     }
 }
 
-async fn make_journal() -> (tempfile::TempDir, JournalService, DeployedArtifactsRepository) {
+async fn make_journal() -> (
+    tempfile::TempDir,
+    JournalService,
+    DeployedArtifactsRepository,
+) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("journal.db");
     let db = connect(&path).await.expect("connect");
@@ -101,9 +105,15 @@ async fn apply_writes_each_resolved_agent_file() {
     assert!(fe_path.exists(), "fe.md should exist at {fe_path:?}");
 
     let be_content = std::fs::read_to_string(&be_path).expect("read be.md");
-    assert!(be_content.contains("You are be."), "be content: {be_content}");
+    assert!(
+        be_content.contains("You are be."),
+        "be content: {be_content}"
+    );
     let fe_content = std::fs::read_to_string(&fe_path).expect("read fe.md");
-    assert!(fe_content.contains("You are fe."), "fe content: {fe_content}");
+    assert!(
+        fe_content.contains("You are fe."),
+        "fe content: {fe_content}"
+    );
 }
 
 #[tokio::test]
@@ -157,11 +167,14 @@ async fn apply_creates_backup_when_content_changes() {
         .await
         .expect("v1 changed");
     assert_eq!(second.wrote, 1);
-    assert_eq!(second.backed_up, 1, "old content backed up before overwrite");
+    assert_eq!(
+        second.backed_up, 1,
+        "old content backed up before overwrite"
+    );
 
     // The new file has v2 content.
-    let new_content = std::fs::read_to_string(target.path().join("agents/be@1.0.0/be.md"))
-        .expect("read new");
+    let new_content =
+        std::fs::read_to_string(target.path().join("agents/be@1.0.0/be.md")).expect("read new");
     assert!(new_content.contains("v2 content"));
 
     // A backup file exists under .backups/, which lives next to the
@@ -193,8 +206,15 @@ async fn apply_records_operation_in_journal() {
         .apply(target.path(), &system, &journal, &artifacts)
         .await
         .expect("apply");
-    let op = journal.get(outcome.operation_id).await.expect("get").expect("some");
-    assert_eq!(op.status, crate::application::journal::OperationStatus::Committed);
+    let op = journal
+        .get(outcome.operation_id)
+        .await
+        .expect("get")
+        .expect("some");
+    assert_eq!(
+        op.status,
+        crate::application::journal::OperationStatus::Committed
+    );
     assert!(op.error.is_none());
     assert!(op.finished_at.is_some());
     let ops = journal.list_non_terminal().await.expect("list");
@@ -290,10 +310,7 @@ async fn apply_re_records_actual_sha_after_content_change() {
         .await
         .expect("v2");
 
-    let rows = artifacts
-        .list_for_system("test")
-        .await
-        .expect("list");
+    let rows = artifacts.list_for_system("test").await.expect("list");
     assert_eq!(rows.len(), 1, "upsert keeps a single row per target");
     let second = artifacts
         .get("test", "agents/be@1.0.0/be.md")
@@ -330,10 +347,7 @@ async fn apply_idempotent_run_does_not_grow_deployed_artifacts() {
         .await
         .expect("second");
 
-    let rows = artifacts
-        .list_for_system("test")
-        .await
-        .expect("list");
+    let rows = artifacts.list_for_system("test").await.expect("list");
     assert_eq!(
         rows.len(),
         1,

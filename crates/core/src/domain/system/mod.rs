@@ -26,8 +26,7 @@ pub const SYSTEM_FILE_API_VERSION_V1: &str = "agent-dep/v1";
 pub const SYSTEM_FILE_API_VERSION_V2: &str = "agency/v1";
 /// `$schema:` URL we expect on v2 manifests. Used by the
 /// `SchemaRegistry` to find the schema document.
-pub const SYSTEM_FILE_SCHEMA_URL_V2: &str =
-    "https://schemas.agent-dep.platform/system/v1.json";
+pub const SYSTEM_FILE_SCHEMA_URL_V2: &str = "https://schemas.agent-dep.platform/system/v1.json";
 /// `kind` discriminator on every system manifest.
 pub const SYSTEM_FILE_KIND: &str = "System";
 /// The only MVP runtime type. Other values are rejected until
@@ -338,8 +337,7 @@ impl SystemFile {
     /// Parse a v1 system file. Validates the structural contract
     /// (apiVersion, kind, non-empty id, ≥1 agent).
     pub fn from_yaml_v1(text: &str) -> Result<Self, String> {
-        let f: SystemFile =
-            serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
+        let f: SystemFile = serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
         if f.api_version != SYSTEM_FILE_API_VERSION_V1 {
             return Err(format!(
                 "unsupported apiVersion: got `{}`, expected `{}`",
@@ -353,14 +351,10 @@ impl SystemFile {
             ));
         }
         if f.metadata.id.is_empty() || f.metadata.name.is_empty() {
-            return Err(
-                "metadata.id and metadata.name must be non-empty".to_string(),
-            );
+            return Err("metadata.id and metadata.name must be non-empty".to_string());
         }
         if f.spec.agents.is_empty() {
-            return Err(
-                "spec.agents must contain at least one entry (v1)".to_string(),
-            );
+            return Err("spec.agents must contain at least one entry (v1)".to_string());
         }
         Ok(f)
     }
@@ -370,8 +364,7 @@ impl SystemFileV2 {
     /// Parse a v2 system file. Validates the structural contract
     /// ($schema, apiVersion, kind, runtime.type, non-empty id).
     pub fn from_yaml(text: &str) -> Result<Self, String> {
-        let f: SystemFileV2 =
-            serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
+        let f: SystemFileV2 = serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
         if f.schema_url != SYSTEM_FILE_SCHEMA_URL_V2 {
             return Err(format!(
                 "unsupported $schema: got `{}`, expected `{}`",
@@ -391,9 +384,7 @@ impl SystemFileV2 {
             ));
         }
         if f.metadata.id.is_empty() || f.metadata.name.is_empty() {
-            return Err(
-                "metadata.id and metadata.name must be non-empty".to_string(),
-            );
+            return Err("metadata.id and metadata.name must be non-empty".to_string());
         }
         if let Some(v) = &f.metadata.version {
             super::version::Version::parse(v)
@@ -406,9 +397,7 @@ impl SystemFileV2 {
             ));
         }
         if f.spec.agents.is_empty() && f.spec.skills.is_empty() {
-            return Err(
-                "spec must include at least one agent or one skill".to_string(),
-            );
+            return Err("spec must include at least one agent or one skill".to_string());
         }
         Ok(f)
     }
@@ -426,8 +415,7 @@ pub fn parse_system_file(text: &str) -> Result<ParsedSystemFile, String> {
         .lines()
         .find_map(|l| {
             let l = l.trim();
-            l.strip_prefix("apiVersion:")
-                .map(|v| v.trim().to_string())
+            l.strip_prefix("apiVersion:").map(|v| v.trim().to_string())
         })
         .ok_or_else(|| "system file is missing top-level `apiVersion:` field".to_string())?;
     match api_version.as_str() {

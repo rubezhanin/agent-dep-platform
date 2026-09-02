@@ -1,4 +1,5 @@
 pub mod catalog;
+pub mod completion;
 pub mod deploy;
 pub mod hermes;
 pub mod lock;

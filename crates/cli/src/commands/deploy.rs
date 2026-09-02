@@ -111,13 +111,17 @@ pub async fn deploy_at(
 
     let text = std::fs::read_to_string(system_file)
         .with_context(|| format!("read {}", system_file.display()))?;
-    let file = parse_system_file(&text)
-        .map_err(|e| anyhow::anyhow!("parse {} (expected a `system.yaml`): {e}", system_file.display()))?;
+    let file = parse_system_file(&text).map_err(|e| {
+        anyhow::anyhow!(
+            "parse {} (expected a `system.yaml`): {e}",
+            system_file.display()
+        )
+    })?;
 
     let source = Source::new(SourceKind::local(catalog_path.to_path_buf()));
-    let (result, _report) = IngestService::new().ingest_local(&source, None).map_err(|e| {
-        anyhow::anyhow!("ingest {}: {e}", catalog_path.display())
-    })?;
+    let (result, _report) = IngestService::new()
+        .ingest_local(&source, None)
+        .map_err(|e| anyhow::anyhow!("ingest {}: {e}", catalog_path.display()))?;
 
     let placeholder_source_id = uuid::Uuid::new_v4();
     let composed = CompositionService::new()
@@ -171,12 +175,16 @@ pub async fn install_at(
     }
     let text = std::fs::read_to_string(system_file)
         .with_context(|| format!("read {}", system_file.display()))?;
-    let file = parse_system_file(&text)
-        .map_err(|e| anyhow::anyhow!("parse {} (expected a `system.yaml`): {e}", system_file.display()))?;
+    let file = parse_system_file(&text).map_err(|e| {
+        anyhow::anyhow!(
+            "parse {} (expected a `system.yaml`): {e}",
+            system_file.display()
+        )
+    })?;
 
     if let Some(pp) = policy_path {
-        let policy = Policy::from_path(pp)
-            .map_err(|e| anyhow::anyhow!("policy {}: {e}", pp.display()))?;
+        let policy =
+            Policy::from_path(pp).map_err(|e| anyhow::anyhow!("policy {}: {e}", pp.display()))?;
         let location = catalog_path.to_string_lossy().to_string();
         if !policy.source_allowed(&location) {
             anyhow::bail!(
@@ -187,9 +195,9 @@ pub async fn install_at(
     }
 
     let source = Source::new(SourceKind::local(catalog_path.to_path_buf()));
-    let (result, _report) = IngestService::new().ingest_local(&source, None).map_err(|e| {
-        anyhow::anyhow!("ingest {}: {e}", catalog_path.display())
-    })?;
+    let (result, _report) = IngestService::new()
+        .ingest_local(&source, None)
+        .map_err(|e| anyhow::anyhow!("ingest {}: {e}", catalog_path.display()))?;
 
     let placeholder_source_id = uuid::Uuid::new_v4();
     let composed = CompositionService::new()
@@ -238,24 +246,14 @@ pub fn build_router_plugin_inputs(
         .collect();
     RouterPluginInputs {
         plugin_id: plugin_id.to_string(),
-        display_name: format!(
-            "{} router",
-            composed.metadata.name
-        ),
-        description: composed
-            .metadata
-            .description
-            .clone()
-            .unwrap_or_else(|| {
-                format!(
-                    "Routes the agency-agents catalog for system `{}`.",
-                    composed.metadata.id
-                )
-            }),
-        catalog_source: format!(
-            "local:{}",
-            composed.source_id
-        ),
+        display_name: format!("{} router", composed.metadata.name),
+        description: composed.metadata.description.clone().unwrap_or_else(|| {
+            format!(
+                "Routes the agency-agents catalog for system `{}`.",
+                composed.metadata.id
+            )
+        }),
+        catalog_source: format!("local:{}", composed.source_id),
         catalog_commit_sha: catalog_commit_sha.to_string(),
         router_skills: ROUTER_TOOLS.iter().map(|s| s.to_string()).collect(),
         agent_files,
@@ -279,8 +277,14 @@ async fn open_and_migrate(db_path: &Path) -> Result<Db> {
 fn print_summary(s: &DeploySummary) {
     let i = agent_dep_core::i18n::I18n::from_env();
     output::header(&i.tr("cli.deploy.apply.header", &[("id", &s.system_id)]));
-    output::kv(&i.t("cli.deploy.kv.operation_id"), &s.operation_id.to_string());
-    output::kv(&i.t("cli.deploy.kv.target"), &s.target.display().to_string());
+    output::kv(
+        &i.t("cli.deploy.kv.operation_id"),
+        &s.operation_id.to_string(),
+    );
+    output::kv(
+        &i.t("cli.deploy.kv.target"),
+        &s.target.display().to_string(),
+    );
     output::kv(&i.t("cli.deploy.kv.wrote"), &s.wrote.to_string());
     output::kv(&i.t("cli.deploy.kv.skipped"), &s.skipped.to_string());
     output::kv(&i.t("cli.deploy.kv.backed_up"), &s.backed_up.to_string());
@@ -294,15 +298,18 @@ fn print_install_summary(s: &InstallSummary) {
     let i = agent_dep_core::i18n::I18n::from_env();
     output::header(&i.tr("cli.deploy.install.header", &[("id", &s.system_id)]));
     output::kv(&i.t("cli.deploy.kv.plugin_id"), &s.plugin_id);
-    output::kv(&i.t("cli.deploy.kv.plugin_dir"), &s.plugin_dir.display().to_string());
+    output::kv(
+        &i.t("cli.deploy.kv.plugin_dir"),
+        &s.plugin_dir.display().to_string(),
+    );
     output::kv(
         &i.t("cli.deploy.kv.hermes_home"),
         &s.hermes_home.display().to_string(),
     );
-    output::kv(&i.t("cli.deploy.kv.skill_count"), &s.skill_count.to_string());
     output::kv(
-        &i.t("cli.deploy.kv.manifest_sha256"),
-        &s.manifest_sha256,
+        &i.t("cli.deploy.kv.skill_count"),
+        &s.skill_count.to_string(),
     );
+    output::kv(&i.t("cli.deploy.kv.manifest_sha256"), &s.manifest_sha256);
     output::kv(&i.t("cli.deploy.kv.skills_sha256"), &s.skills_sha256);
 }

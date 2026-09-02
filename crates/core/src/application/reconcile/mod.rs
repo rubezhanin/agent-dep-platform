@@ -107,17 +107,11 @@ pub fn classify(
         (None, None) => (ReconcileState::Unknown, DriftReason::Unknown),
         (None, Some(_)) => (ReconcileState::Foreign, DriftReason::Unknown),
         (Some(_), None) => (ReconcileState::Missing, DriftReason::TargetMissing),
-        (Some(d), Some(a)) if d == a => {
-            (ReconcileState::Current, DriftReason::Unknown)
+        (Some(d), Some(a)) if d == a => (ReconcileState::Current, DriftReason::Unknown),
+        (Some(_), Some(_)) if user_modified => {
+            (ReconcileState::Modified, DriftReason::UserModified)
         }
-        (Some(_), Some(_)) if user_modified => (
-            ReconcileState::Modified,
-            DriftReason::UserModified,
-        ),
-        (Some(_), Some(_)) => (
-            ReconcileState::Outdated,
-            DriftReason::SourceChanged,
-        ),
+        (Some(_), Some(_)) => (ReconcileState::Outdated, DriftReason::SourceChanged),
     }
 }
 

@@ -38,10 +38,7 @@ impl VersionResolver {
         // canonical SemVer order: major, minor, patch
         // (and pre-release precedence inside the same
         // major.minor.patch).
-        let mut matching: Vec<&Version> = candidates
-            .iter()
-            .filter(|v| req.matches(v))
-            .collect();
+        let mut matching: Vec<&Version> = candidates.iter().filter(|v| req.matches(v)).collect();
         matching.sort_by(|a, b| b.cmp(a)); // descending
         matching.into_iter().next().cloned()
     }
@@ -87,10 +84,8 @@ mod tests {
         // range in `semver` 1.x. The CLI must store the
         // `=` prefix when it wants a true exact pin.
         let r = req("1.0.0");
-        let chosen = VersionResolver::resolve(
-            &r,
-            &[v("0.9.0"), v("1.0.0"), v("1.5.0"), v("2.0.0")],
-        );
+        let chosen =
+            VersionResolver::resolve(&r, &[v("0.9.0"), v("1.0.0"), v("1.5.0"), v("2.0.0")]);
         assert_eq!(chosen, Some(v("1.5.0")));
     }
 
@@ -99,7 +94,14 @@ mod tests {
         let r = req("^1.0.0");
         let chosen = VersionResolver::resolve(
             &r,
-            &[v("0.9.0"), v("1.0.0"), v("1.0.5"), v("1.2.0"), v("1.10.0"), v("2.0.0")],
+            &[
+                v("0.9.0"),
+                v("1.0.0"),
+                v("1.0.5"),
+                v("1.2.0"),
+                v("1.10.0"),
+                v("2.0.0"),
+            ],
         );
         assert_eq!(chosen, Some(v("1.10.0")));
     }
@@ -117,10 +119,8 @@ mod tests {
     #[test]
     fn range_with_two_bounds() {
         let r = req(">=1.0.0, <2.0.0");
-        let chosen = VersionResolver::resolve(
-            &r,
-            &[v("0.9.0"), v("1.0.0"), v("1.5.0"), v("2.0.0")],
-        );
+        let chosen =
+            VersionResolver::resolve(&r, &[v("0.9.0"), v("1.0.0"), v("1.5.0"), v("2.0.0")]);
         assert_eq!(chosen, Some(v("1.5.0")));
     }
 
@@ -149,10 +149,7 @@ mod tests {
             Some(v("1.2.0"))
         );
         assert_eq!(
-            VersionResolver::resolve(
-                &r,
-                &[v("1.0.0"), v("1.2.0"), v("1.2.0"), v("1.5.0")]
-            ),
+            VersionResolver::resolve(&r, &[v("1.0.0"), v("1.2.0"), v("1.2.0"), v("1.5.0")]),
             Some(v("1.5.0"))
         );
     }
@@ -163,10 +160,7 @@ mod tests {
         // not include pre-releases unless explicitly
         // requested. We rely on that here.
         let r = req("^1.0.0");
-        let chosen = VersionResolver::resolve(
-            &r,
-            &[v("1.0.0"), v("1.0.0-rc.1"), v("1.1.0")],
-        );
+        let chosen = VersionResolver::resolve(&r, &[v("1.0.0"), v("1.0.0-rc.1"), v("1.1.0")]);
         assert_eq!(chosen, Some(v("1.1.0")));
     }
 }

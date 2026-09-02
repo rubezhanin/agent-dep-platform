@@ -175,13 +175,19 @@ fn build_manifest_yaml(inputs: &RouterPluginInputs) -> String {
     let mut out = String::new();
     out.push_str("manifest_version: 1\n\n");
     out.push_str(&format!("id: {}\n", yaml_scalar(&inputs.plugin_id)));
-    out.push_str(&format!("display_name: {}\n", yaml_scalar(&inputs.display_name)));
-    out.push_str(&format!("description: {}\n\n", yaml_scalar(&inputs.description)));
+    out.push_str(&format!(
+        "display_name: {}\n",
+        yaml_scalar(&inputs.display_name)
+    ));
+    out.push_str(&format!(
+        "description: {}\n\n",
+        yaml_scalar(&inputs.description)
+    ));
     out.push_str("privacy: open\n\n");
     out.push_str("plugin_meta:\n");
     out.push_str(&format!("  schema_version: {PLUGIN_META_SCHEMA_VERSION}\n"));
     out.push_str(&format!("  name: {}\n", yaml_scalar(&inputs.plugin_id)));
-    out.push_str(&format!("  version: 0.1.0\n"));
+    out.push_str("  version: 0.1.0\n");
     out.push_str("  author: agent-dep-platform\n");
     out.push_str(&format!(
         "  homepage: {}\n",
@@ -199,10 +205,7 @@ fn build_manifest_yaml(inputs: &RouterPluginInputs) -> String {
         "    ref: {}\n",
         yaml_scalar(&inputs.catalog_commit_sha)
     ));
-    out.push_str(&format!(
-        "    agents: {}\n\n",
-        inputs.agent_files.len()
-    ));
+    out.push_str(&format!("    agents: {}\n\n", inputs.agent_files.len()));
     out.push_str("agents:\n");
     let mut sorted = inputs.agent_files.clone();
     sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
@@ -230,7 +233,9 @@ fn build_entry_point_md(inputs: &RouterPluginInputs) -> String {
     out.push_str(&format!("{}\n\n", inputs.description));
     out.push_str("This plugin is a lazy router for the agency-agents catalog. ");
     out.push_str("Agents are not loaded into context until the user invokes a router tool. ");
-    out.push_str("The four router tools are listed below verbatim — Hermes discovers them by name.\n\n");
+    out.push_str(
+        "The four router tools are listed below verbatim — Hermes discovers them by name.\n\n",
+    );
     out.push_str("## Tools\n\n");
     for tool in &inputs.router_skills {
         out.push_str(&format!("- `{}`\n", tool));
@@ -244,7 +249,9 @@ fn build_entry_point_md(inputs: &RouterPluginInputs) -> String {
     ));
     out.push_str("\n## Routing\n\n");
     out.push_str("`agency_agents_search` — list agent slugs + one-line summaries.\n");
-    out.push_str("`agency_agents_inspect` — show the frontmatter + the first paragraph of a single agent.\n");
+    out.push_str(
+        "`agency_agents_inspect` — show the frontmatter + the first paragraph of a single agent.\n",
+    );
     out.push_str("`agency_agents_load` — read the full body of a single agent into context.\n");
     out.push_str("`agency_agents_delegate` — switch the active persona to the named agent.\n");
     out
@@ -258,9 +265,30 @@ fn yaml_scalar(s: &str) -> String {
     if s.is_empty() {
         return "\"\"".to_string();
     }
-    let needs_quote = s
-        .chars()
-        .any(|c| matches!(c, ':' | '#' | '"' | '\'' | '\n' | '\t' | '[' | ']' | '{' | '}' | ',' | '!' | '?' | '>' | '|' | '&' | '*' | '%' | '@' | '`'));
+    let needs_quote = s.chars().any(|c| {
+        matches!(
+            c,
+            ':' | '#'
+                | '"'
+                | '\''
+                | '\n'
+                | '\t'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | ','
+                | '!'
+                | '?'
+                | '>'
+                | '|'
+                | '&'
+                | '*'
+                | '%'
+                | '@'
+                | '`'
+        )
+    });
     if !needs_quote && !s.starts_with(' ') && !s.ends_with(' ') {
         return s.to_string();
     }
@@ -277,7 +305,10 @@ fn is_safe_slug(s: &str) -> bool {
         && s.len() <= 64
         && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-        && s.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false)
+        && s.chars()
+            .next()
+            .map(|c| c.is_ascii_lowercase())
+            .unwrap_or(false)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> CoreResult<()> {
@@ -291,9 +322,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> CoreResult<()> {
     })?;
     let tmp = parent.join(format!(
         ".{}.tmp.{}",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("write"),
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("write"),
         uuid::Uuid::new_v4()
     ));
     {

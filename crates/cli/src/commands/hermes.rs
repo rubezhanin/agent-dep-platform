@@ -2,7 +2,7 @@
 //! Hermes install. 1.4.0 ships only the `probe`
 //! subcommand (ADR-0012 structural probe).
 
-use std::path::{PathBuf};
+use std::path::PathBuf;
 
 use agent_dep_hermes_adapter::hermes_adapter::{HermesAdapter, ProbeReport, ProbeStatus};
 use anyhow::{Context, Result};
@@ -56,7 +56,10 @@ pub fn probe_at(plugin_id: &str, hermes_home: &PathBuf) -> Result<ProbeSummary> 
 fn print_report(s: &ProbeSummary) {
     let i = agent_dep_core::i18n::I18n::from_env();
     output::header(&i.tr("cli.hermes.probe.header", &[("name", &s.plugin_id)]));
-    output::kv(&i.t("cli.hermes.kv.hermes_home"), &s.hermes_home.display().to_string());
+    output::kv(
+        &i.t("cli.hermes.kv.hermes_home"),
+        &s.hermes_home.display().to_string(),
+    );
     output::kv(&i.t("cli.hermes.kv.ok"), &s.ok.to_string());
     for c in &s.report.checks {
         let status = match c.status {
@@ -73,9 +76,6 @@ fn print_report(s: &ProbeSummary) {
         println!("  [{}] {} — {}{}", status, c.name, c.detail, sha);
     }
     if !s.ok {
-        eprintln!(
-            "{}",
-            i.t("cli.hermes.probe.failed")
-        );
+        eprintln!("{}", i.t("cli.hermes.probe.failed"));
     }
 }

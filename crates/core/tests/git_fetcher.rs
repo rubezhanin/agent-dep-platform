@@ -40,7 +40,8 @@ fn make_fixture_repo() -> (tempfile::TempDir, String) {
     write_fixture(&path);
     let repo = Repository::init(&path).expect("git init");
     let mut idx = repo.index().expect("index");
-    idx.add_path(Path::new("divisions.json")).expect("add divisions");
+    idx.add_path(Path::new("divisions.json"))
+        .expect("add divisions");
     idx.add_path(Path::new("agents/engineering/be.md"))
         .expect("add be");
     let oid = idx.write_tree().expect("write tree");
@@ -76,7 +77,7 @@ async fn https_fetcher_clones_a_file_url_into_a_working_copy() {
     let source = Source::new(SourceKind::GitHttps { url: url.clone() });
 
     let result = HttpsFetcher
-        .clone_or_update(&source, &dest_dir.path().to_path_buf())
+        .clone_or_update(&source, dest_dir.path())
         .expect("clone_or_update");
 
     // We don't compare `result.working_copy == dest_dir.path()`
@@ -103,7 +104,7 @@ async fn https_fetcher_clones_a_file_url_into_a_working_copy() {
     // A subsequent re-fetch on the same working copy must
     // succeed and yield the same commit_sha (idempotent).
     let again = HttpsFetcher
-        .clone_or_update(&source, &dest_dir.path().to_path_buf())
+        .clone_or_update(&source, dest_dir.path())
         .expect("re-fetch");
     assert_eq!(again.commit_sha, result.commit_sha);
 }
@@ -132,7 +133,7 @@ async fn https_fetcher_rejects_an_ssh_url() {
     });
     let dest = tempfile::tempdir().expect("tempdir");
     let err = HttpsFetcher
-        .clone_or_update(&source, &dest.path().to_path_buf())
+        .clone_or_update(&source, dest.path())
         .expect_err("HttpsFetcher must not accept an SSH source");
     let s = format!("{err:?}");
     assert!(
@@ -148,7 +149,7 @@ async fn ssh_fetcher_rejects_an_https_url() {
     });
     let dest = tempfile::tempdir().expect("tempdir");
     let err = SshFetcher
-        .clone_or_update(&source, &dest.path().to_path_buf())
+        .clone_or_update(&source, dest.path())
         .expect_err("SshFetcher must not accept an HTTPS source");
     let s = format!("{err:?}");
     assert!(s.contains("ErrGitWrongKind"), "got: {s}");

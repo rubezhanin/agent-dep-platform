@@ -66,7 +66,7 @@ const RU_RU: Bundle = {
     "Подключение Git-репозиториев (TZ В§10). В MVP-1.0 доступен локальный импорт; SSH/HTTPS Git появится в 1.x.",
   "placeholder.title.catalog": "Каталог",
   "placeholder.hint.catalog":
-    "Просмотр агентов и скиллов (TZ В§28.1).",
+    "Просмотр агентов и навыков (TZ §28.1).",
   "placeholder.title.systems": "Системы",
   "placeholder.hint.systems":
     "Сборка систем агентов из зафиксированных снимков каталога.",

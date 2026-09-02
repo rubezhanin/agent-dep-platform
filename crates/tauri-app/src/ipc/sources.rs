@@ -1,8 +1,8 @@
 use crate::ipc_error::IpcResult;
 use crate::state::AppState;
+use agent_dep_core::domain::source::SourceKind;
 use agent_dep_core::dto::SourceSummary;
 use agent_dep_core::infrastructure::repository::IngestRepository;
-use agent_dep_core::domain::source::SourceKind;
 use tauri::State;
 
 #[tauri::command]

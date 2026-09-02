@@ -62,8 +62,7 @@ impl IngestV2Service {
             other => {
                 return Err(CoreError::ErrUntrustedSource {
                     source_id: format!("{other:?}"),
-                    reason: "IngestV2Service only supports Local sources in MVP"
-                        .to_string(),
+                    reason: "IngestV2Service only supports Local sources in MVP".to_string(),
                 });
             }
         };
@@ -73,11 +72,9 @@ impl IngestV2Service {
             });
         }
 
-        let divisions = read_divisions_v2(&root).map_err(|e| {
-            CoreError::ErrSchemaInvalid {
-                path: "divisions.json".to_string(),
-                reason: e,
-            }
+        let divisions = read_divisions_v2(&root).map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "divisions.json".to_string(),
+            reason: e,
         })?;
         let mut agents: Vec<Agent> = Vec::new();
         let mut rejected_agents: Vec<RejectedAgent> = Vec::new();
@@ -178,23 +175,21 @@ impl IngestV2Service {
                 // body and manifest are small, so scanning the
                 // whole root for every body is cheap.
                 let all_findings =
-                    RegexScanner.scan(&root, policy).map_err(|e| {
-                        CoreError::ErrSchemaInvalid {
+                    RegexScanner
+                        .scan(&root, policy)
+                        .map_err(|e| CoreError::ErrSchemaInvalid {
                             path: "scanner".to_string(),
                             reason: format!("{e}"),
-                        }
-                    })?;
+                        })?;
                 let body_rel = rel(&root, &body_path);
                 let body_findings: Vec<Finding> = all_findings
                     .into_iter()
                     .filter(|f| f.path == body_rel)
                     .collect();
-                if body_findings.iter().any(|f| {
-                    matches!(
-                        f.severity,
-                        crate::application::scanner::Severity::Block
-                    )
-                }) {
+                if body_findings
+                    .iter()
+                    .any(|f| matches!(f.severity, crate::application::scanner::Severity::Block))
+                {
                     rejected_agents.push(RejectedAgent {
                         relative_path: rel(&root, &manifest_path),
                         reason: "blocked by security scanner".to_string(),
@@ -233,13 +228,7 @@ impl IngestV2Service {
                     &mut total_bytes,
                     &Skill::sha256_hex(manifest_text.as_bytes()),
                 );
-                record_file(
-                    &mut files,
-                    &root,
-                    &body_path,
-                    &mut total_bytes,
-                    &body_hash,
-                );
+                record_file(&mut files, &root, &body_path, &mut total_bytes, &body_hash);
                 agents.push(agent);
             }
         }
@@ -295,10 +284,7 @@ impl IngestV2Service {
                 if !body_path.is_file() {
                     rejected_agents.push(RejectedAgent {
                         relative_path: rel(&root, &manifest_path),
-                        reason: format!(
-                            "spec.body `{}` is not a file",
-                            yaml.spec.body
-                        ),
+                        reason: format!("spec.body `{}` is not a file", yaml.spec.body),
                     });
                     continue;
                 }
@@ -315,12 +301,12 @@ impl IngestV2Service {
                 let body_hash = Skill::sha256_hex(body_text.as_bytes());
 
                 let body_findings_root =
-                    RegexScanner.scan(&root, policy).map_err(|e| {
-                        CoreError::ErrSchemaInvalid {
+                    RegexScanner
+                        .scan(&root, policy)
+                        .map_err(|e| CoreError::ErrSchemaInvalid {
                             path: "scanner".to_string(),
                             reason: format!("{e}"),
-                        }
-                    })?;
+                        })?;
                 let body_findings: Vec<Finding> = body_findings_root
                     .into_iter()
                     .filter(|f| f.path == rel(&root, &body_path))
@@ -373,13 +359,7 @@ impl IngestV2Service {
                     &mut total_bytes,
                     &Skill::sha256_hex(manifest_text.as_bytes()),
                 );
-                record_file(
-                    &mut files,
-                    &root,
-                    &body_path,
-                    &mut total_bytes,
-                    &body_hash,
-                );
+                record_file(&mut files, &root, &body_path, &mut total_bytes, &body_hash);
                 skills.push(skill);
             }
         }
@@ -399,30 +379,15 @@ impl IngestV2Service {
         // Apply scan policy verdict to the snapshot.
         let findings_block = findings
             .iter()
-            .filter(|f| {
-                matches!(
-                    f.severity,
-                    crate::application::scanner::Severity::Block
-                )
-            })
+            .filter(|f| matches!(f.severity, crate::application::scanner::Severity::Block))
             .count() as u32;
         let findings_warn = findings
             .iter()
-            .filter(|f| {
-                matches!(
-                    f.severity,
-                    crate::application::scanner::Severity::Warn
-                )
-            })
+            .filter(|f| matches!(f.severity, crate::application::scanner::Severity::Warn))
             .count() as u32;
         let findings_pass = findings
             .iter()
-            .filter(|f| {
-                matches!(
-                    f.severity,
-                    crate::application::scanner::Severity::Pass
-                )
-            })
+            .filter(|f| matches!(f.severity, crate::application::scanner::Severity::Pass))
             .count() as u32;
         if findings_block > 0 {
             snapshot.status = SnapshotStatus::Blocked;

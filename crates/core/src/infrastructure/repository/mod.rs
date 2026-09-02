@@ -715,9 +715,7 @@ impl IngestRepository {
     /// sources. Returns an empty Vec when no active snapshot
     /// exists (e.g. fresh install, no `agency catalog update`
     /// run yet). Used by the Svelte catalog route.
-    pub async fn list_agents_in_latest_snapshot(
-        &self,
-    ) -> CoreResult<Vec<StoredAgentListEntry>> {
+    pub async fn list_agents_in_latest_snapshot(&self) -> CoreResult<Vec<StoredAgentListEntry>> {
         let latest: Option<(String,)> = sqlx::query_as(
             "SELECT id FROM source_snapshots WHERE status = 'active' \
              ORDER BY created_at DESC LIMIT 1",

@@ -3,8 +3,8 @@
 use super::*;
 use crate::domain::agent::Agent;
 use crate::domain::system::{
-    parse_system_file, AgentRef, ParsedSystemFile, SystemAgentRef, SystemFile,
-    SystemMetadata, SystemSpecV1,
+    parse_system_file, AgentRef, ParsedSystemFile, SystemAgentRef, SystemFile, SystemMetadata,
+    SystemSpecV1,
 };
 use crate::domain::version::Version;
 use crate::error::CoreError;

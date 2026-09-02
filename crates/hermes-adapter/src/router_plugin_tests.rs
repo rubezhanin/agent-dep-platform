@@ -71,7 +71,10 @@ fn materialize_sorts_agent_files_by_slug() {
         .collect();
     assert_eq!(
         names,
-        vec!["backend-engineer.md".to_string(), "frontend-architect.md".to_string()]
+        vec![
+            "backend-engineer.md".to_string(),
+            "frontend-architect.md".to_string()
+        ]
     );
 }
 
@@ -92,7 +95,10 @@ fn materialize_rejects_unsafe_agent_slug() {
     inputs.agent_files[0].slug = "evil/../path".to_string();
     let err = materialize_router_plugin(home.path(), &inputs).expect_err("bad slug");
     let s = format!("{err:?}");
-    assert!(s.contains("agent.slug") || s.contains("outside"), "got: {s}");
+    assert!(
+        s.contains("agent.slug") || s.contains("outside"),
+        "got: {s}"
+    );
 }
 
 #[test]

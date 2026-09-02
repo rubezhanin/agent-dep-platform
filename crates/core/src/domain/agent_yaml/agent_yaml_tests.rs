@@ -82,8 +82,9 @@ spec:
     hermes: {}
 "#;
     let err = parse_agent_yaml(bad).expect_err("missing supported");
-    assert!(err.to_lowercase().contains("missing field")
-        || err.to_lowercase().contains("supported"));
+    assert!(
+        err.to_lowercase().contains("missing field") || err.to_lowercase().contains("supported")
+    );
 }
 
 #[test]

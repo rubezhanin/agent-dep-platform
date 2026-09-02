@@ -5,10 +5,19 @@ fn sample() -> LockFile {
         "git@github.com:rubezhanin/agency-agents",
         "5308f3fcb30a5c28d0da5d89c2aee90d9fdf9784ddb4a06931bc8b8bde6263b5",
         &[
-            ("backend-engineer".to_string(), Version::parse("1.0.0").unwrap()),
-            ("frontend-architect".to_string(), Version::parse("1.0.0").unwrap()),
+            (
+                "backend-engineer".to_string(),
+                Version::parse("1.0.0").unwrap(),
+            ),
+            (
+                "frontend-architect".to_string(),
+                Version::parse("1.0.0").unwrap(),
+            ),
         ],
-        &[("observability".to_string(), Version::parse("2.0.1").unwrap())],
+        &[(
+            "observability".to_string(),
+            Version::parse("2.0.1").unwrap(),
+        )],
     )
 }
 

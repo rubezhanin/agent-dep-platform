@@ -36,9 +36,10 @@ use crate::error::{CoreError, CoreResult};
 pub const POLICY_FILE_VERSION: u32 = 1;
 
 /// Three-way verdict. Matches TZ §24.1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyDecision {
+    #[default]
     Allow,
     Warn,
     Block,
@@ -53,12 +54,6 @@ pub struct SourcePolicy {
     /// constraint is opt-in).
     #[serde(default)]
     pub allowed_repositories: Vec<String>,
-}
-
-impl Default for PolicyDecision {
-    fn default() -> Self {
-        PolicyDecision::Allow
-    }
 }
 
 /// Security-side gates. Each field is the *minimum*
@@ -109,11 +104,9 @@ impl Policy {
     /// Parse from a YAML string. Validates the version
     /// and the structural contract.
     pub fn from_yaml(text: &str) -> CoreResult<Self> {
-        let p: Policy = serde_yaml::from_str(text).map_err(|e| {
-            CoreError::ErrSchemaInvalid {
-                path: "policy".to_string(),
-                reason: format!("yaml parse: {e}"),
-            }
+        let p: Policy = serde_yaml::from_str(text).map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "policy".to_string(),
+            reason: format!("yaml parse: {e}"),
         })?;
         if p.policy_version != POLICY_FILE_VERSION {
             return Err(CoreError::ErrSchemaInvalid {
@@ -128,11 +121,9 @@ impl Policy {
     }
 
     pub fn from_path(path: &Path) -> CoreResult<Self> {
-        let text = std::fs::read_to_string(path).map_err(|e| {
-            CoreError::ErrSchemaInvalid {
-                path: path.display().to_string(),
-                reason: format!("read: {e}"),
-            }
+        let text = std::fs::read_to_string(path).map_err(|e| CoreError::ErrSchemaInvalid {
+            path: path.display().to_string(),
+            reason: format!("read: {e}"),
         })?;
         Self::from_yaml(&text)
     }

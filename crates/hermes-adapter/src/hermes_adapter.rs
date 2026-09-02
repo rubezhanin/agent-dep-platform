@@ -8,9 +8,7 @@
 
 use crate::adapter::RuntimeAdapter;
 use crate::detection::detect_hermes;
-use crate::router_plugin::{
-    materialize_router_plugin, RouterPluginInputs, RouterPluginLayout,
-};
+use crate::router_plugin::{materialize_router_plugin, RouterPluginInputs, RouterPluginLayout};
 use crate::types::{ArtifactHealth, ArtifactHealthStatus, HealthReport, RuntimeInfo};
 use agent_dep_core::error::{CoreError, CoreResult};
 use serde::{Deserialize, Serialize};
@@ -371,7 +369,11 @@ impl HermesAdapter {
                 Err(_) => checks.push(ProbeCheck {
                     name: format!("skills/{}.md", agent.id),
                     status: ProbeStatus::Mismatch,
-                    detail: format!("manifest references `{}` but {} is missing", agent.id, skill_path.display()),
+                    detail: format!(
+                        "manifest references `{}` but {} is missing",
+                        agent.id,
+                        skill_path.display()
+                    ),
                     sha256: None,
                 }),
             }

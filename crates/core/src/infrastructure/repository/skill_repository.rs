@@ -38,34 +38,26 @@ impl SkillRepository {
         let mut tx = self.pool.begin().await?;
         for skill in skills {
             // Replace any previous row for this key.
-            sqlx::query(
-                "DELETE FROM skills WHERE snapshot_id = ?1 AND id = ?2",
-            )
-            .bind(snapshot_id.to_string())
-            .bind(&skill.id)
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                "DELETE FROM skill_tags WHERE snapshot_id = ?1 AND skill_id = ?2",
-            )
-            .bind(snapshot_id.to_string())
-            .bind(&skill.id)
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                "DELETE FROM skill_dependencies WHERE snapshot_id = ?1 AND skill_id = ?2",
-            )
-            .bind(snapshot_id.to_string())
-            .bind(&skill.id)
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                "DELETE FROM skill_permissions WHERE snapshot_id = ?1 AND skill_id = ?2",
-            )
-            .bind(snapshot_id.to_string())
-            .bind(&skill.id)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query("DELETE FROM skills WHERE snapshot_id = ?1 AND id = ?2")
+                .bind(snapshot_id.to_string())
+                .bind(&skill.id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM skill_tags WHERE snapshot_id = ?1 AND skill_id = ?2")
+                .bind(snapshot_id.to_string())
+                .bind(&skill.id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM skill_dependencies WHERE snapshot_id = ?1 AND skill_id = ?2")
+                .bind(snapshot_id.to_string())
+                .bind(&skill.id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM skill_permissions WHERE snapshot_id = ?1 AND skill_id = ?2")
+                .bind(snapshot_id.to_string())
+                .bind(&skill.id)
+                .execute(&mut *tx)
+                .await?;
 
             sqlx::query(
                 "INSERT INTO skills
@@ -127,27 +119,22 @@ impl SkillRepository {
     }
 
     /// Load all skills for a snapshot, ordered by id.
-    pub async fn list_skills_for_snapshot(
-        &self,
-        snapshot_id: Uuid,
-    ) -> CoreResult<Vec<Skill>> {
-        let rows: Vec<(String, String, String, String, String, String)> =
-            sqlx::query_as(
-                "SELECT id, name, version, description, body, body_hash
+    pub async fn list_skills_for_snapshot(&self, snapshot_id: Uuid) -> CoreResult<Vec<Skill>> {
+        let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
+            "SELECT id, name, version, description, body, body_hash
                  FROM skills
                  WHERE snapshot_id = ?1
                  ORDER BY id",
-            )
-            .bind(snapshot_id.to_string())
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .bind(snapshot_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
         let mut out: Vec<Skill> = Vec::with_capacity(rows.len());
         for (id, name, version, description, body, body_hash) in rows {
-            let version =
-                Version::parse(&version).map_err(|e| CoreError::ErrSchemaInvalid {
-                    path: "skills.version".to_string(),
-                    reason: format!("{e}"),
-                })?;
+            let version = Version::parse(&version).map_err(|e| CoreError::ErrSchemaInvalid {
+                path: "skills.version".to_string(),
+                reason: format!("{e}"),
+            })?;
             let tags: Vec<String> = sqlx::query_as::<_, (i64, String)>(
                 "SELECT position, tag FROM skill_tags
                  WHERE snapshot_id = ?1 AND skill_id = ?2
