@@ -676,3 +676,80 @@ async fn admin_deletes_secret_204_and_audit_logs_access() {
     assert!(has_create, "create must be in audit log: {items:?}");
     assert!(has_delete, "delete must be in audit log: {items:?}");
 }
+
+// ---------------------------------------------------------------------------
+// 2.4.0 — multi-environment integration tests (ADR-0022).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn environments_endpoint_lists_the_three_supported_envs() {
+    let srv = boot().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/environments", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let arr = v["environments"].as_array().expect("array");
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[0], "dev");
+    assert_eq!(arr[1], "staging");
+    assert_eq!(arr[2], "production");
+}
+
+#[tokio::test]
+async fn deploy_records_environment_and_list_filter_works() {
+    let srv = boot().await;
+    let op_token = create_user(&srv, "op", Role::Operator).await;
+    // Create one dev and one staging deploy.
+    let (id_dev, _) = _request_deploy_with_env(&srv, &op_token, "dev").await;
+    let (id_staging, _) = _request_deploy_with_env(&srv, &op_token, "staging").await;
+    // GET /v1/deploys?env=staging returns only the staging row.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/deploys?env=staging", srv.base))
+        .bearer_auth(&op_token)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let arr = v.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["environment"], "staging");
+    assert_eq!(arr[0]["id"].as_i64().unwrap(), id_staging);
+    // And the dev row's environment is recorded correctly.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/deploys/{id_dev}", srv.base))
+        .bearer_auth(&op_token)
+        .send()
+        .await
+        .expect("get");
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["environment"], "dev");
+}
+
+async fn _request_deploy_with_env(
+    srv: &TestServer,
+    token: &str,
+    env: &str,
+) -> (i64, serde_json::Value) {
+    let cat = srv._dir.path().join("env_catalog");
+    std::fs::create_dir_all(&cat).unwrap();
+    _write_approvals_catalog(&cat);
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/deploys", srv.base))
+        .bearer_auth(token)
+        .json(&json!({
+            "catalog": cat.to_string_lossy(),
+            "system_yaml": APPROVALS_SYS,
+            "environment": env,
+        }))
+        .send()
+        .await
+        .expect("post deploy");
+    assert_eq!(resp.status(), 201, "request deploy: {:?}", resp);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    (v["deploy"]["id"].as_i64().expect("id"), v)
+}

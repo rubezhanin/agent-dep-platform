@@ -11,6 +11,50 @@ use sqlx::SqlitePool;
 
 use crate::error::{CoreError, CoreResult};
 
+/// 2.4.0 — the three supported environments. A
+/// future 2.5.x may add a custom-environment
+/// field; for 2.4.0 the enum is hard-coded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Environment {
+    Dev,
+    Staging,
+    Production,
+}
+
+impl Environment {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Environment::Dev => "dev",
+            Environment::Staging => "staging",
+            Environment::Production => "production",
+        }
+    }
+
+    pub fn parse(s: &str) -> CoreResult<Self> {
+        match s {
+            "dev" => Ok(Environment::Dev),
+            "staging" => Ok(Environment::Staging),
+            "production" => Ok(Environment::Production),
+            other => Err(CoreError::ErrSchemaInvalid {
+                path: "environment".to_string(),
+                reason: format!("unknown environment `{other}`"),
+            }),
+        }
+    }
+
+    /// All known environments, in the order the
+    /// `GET /v1/environments` endpoint serves
+    /// them.
+    pub fn all() -> &'static [Environment] {
+        &[
+            Environment::Dev,
+            Environment::Staging,
+            Environment::Production,
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
@@ -52,6 +96,7 @@ pub struct PendingDeployRow {
     pub requested_by: i64,
     pub requested_at: String,
     pub status: Status,
+    pub environment: Environment,
     pub approved_by: Option<i64>,
     pub approved_at: Option<String>,
     pub rejection_reason: Option<String>,
@@ -78,18 +123,20 @@ impl PendingDeployRepository {
         system_id: &str,
         plan_summary: &str,
         requested_by: i64,
+        environment: Environment,
     ) -> CoreResult<PendingDeployRow> {
         let now: DateTime<Utc> = Utc::now();
         let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let row: (i64,) = sqlx::query_as(
             "INSERT INTO pending_deploys \
-             (system_id, plan_summary, requested_by, requested_at, status) \
-             VALUES (?1, ?2, ?3, ?4, 'pending') RETURNING id",
+             (system_id, plan_summary, requested_by, requested_at, status, environment) \
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5) RETURNING id",
         )
         .bind(system_id)
         .bind(plan_summary)
         .bind(requested_by)
         .bind(&now_str)
+        .bind(environment.as_str())
         .fetch_one(&self.pool)
         .await?;
         Ok(PendingDeployRow {
@@ -99,6 +146,7 @@ impl PendingDeployRepository {
             requested_by,
             requested_at: now_str,
             status: Status::Pending,
+            environment,
             approved_by: None,
             approved_at: None,
             rejection_reason: None,
@@ -110,7 +158,8 @@ impl PendingDeployRepository {
     pub async fn get(&self, id: i64) -> CoreResult<Option<PendingDeployRow>> {
         let row: Option<PendingDeployRowTuple> = sqlx::query_as(
             "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                    status, approved_by, approved_at, rejection_reason, applied_at \
+                    status, environment, approved_by, approved_at, \
+                    rejection_reason, applied_at \
              FROM pending_deploys WHERE id = ?1",
         )
         .bind(id)
@@ -119,34 +168,63 @@ impl PendingDeployRepository {
         row.map(decode_row).transpose()
     }
 
-    /// List rows, oldest-first. `status_filter = None`
-    /// returns every row; `Some(s)` filters by status.
+    /// List rows, oldest-first. `status_filter` and
+    /// `environment_filter` are both optional.
     pub async fn list(
         &self,
         status_filter: Option<Status>,
+        environment_filter: Option<Environment>,
         limit: u32,
     ) -> CoreResult<Vec<PendingDeployRow>> {
         let limit_i = limit.clamp(1, 500) as i64;
-        let rows: Vec<PendingDeployRowTuple> = match status_filter {
-            Some(s) => {
-                let s_str = s.as_str();
+        let rows: Vec<PendingDeployRowTuple> = match (status_filter, environment_filter) {
+            (None, None) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                            status, approved_by, approved_at, rejection_reason, applied_at \
-                     FROM pending_deploys WHERE status = ?1 \
-                     ORDER BY id ASC LIMIT ?2",
+                        status, environment, approved_by, approved_at, \
+                        rejection_reason, applied_at \
+                 FROM pending_deploys ORDER BY id ASC LIMIT ?1",
                 )
-                .bind(s_str)
                 .bind(limit_i)
                 .fetch_all(&self.pool)
                 .await?
             }
-            None => {
+            (Some(s), None) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, approved_by, approved_at, rejection_reason, applied_at \
-                 FROM pending_deploys ORDER BY id ASC LIMIT ?1",
+                        status, environment, approved_by, approved_at, \
+                        rejection_reason, applied_at \
+                 FROM pending_deploys WHERE status = ?1 \
+                 ORDER BY id ASC LIMIT ?2",
                 )
+                .bind(s.as_str())
+                .bind(limit_i)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (None, Some(e)) => {
+                sqlx::query_as(
+                    "SELECT id, system_id, plan_summary, requested_by, requested_at, \
+                        status, environment, approved_by, approved_at, \
+                        rejection_reason, applied_at \
+                 FROM pending_deploys WHERE environment = ?1 \
+                 ORDER BY id ASC LIMIT ?2",
+                )
+                .bind(e.as_str())
+                .bind(limit_i)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (Some(s), Some(e)) => {
+                sqlx::query_as(
+                    "SELECT id, system_id, plan_summary, requested_by, requested_at, \
+                        status, environment, approved_by, approved_at, \
+                        rejection_reason, applied_at \
+                 FROM pending_deploys WHERE status = ?1 AND environment = ?2 \
+                 ORDER BY id ASC LIMIT ?3",
+                )
+                .bind(s.as_str())
+                .bind(e.as_str())
                 .bind(limit_i)
                 .fetch_all(&self.pool)
                 .await?
@@ -238,6 +316,7 @@ type PendingDeployRowTuple = (
     i64,
     String,
     String,
+    String,
     Option<i64>,
     Option<String>,
     Option<String>,
@@ -252,6 +331,7 @@ fn decode_row(row: PendingDeployRowTuple) -> CoreResult<PendingDeployRow> {
         requested_by,
         requested_at,
         status,
+        environment,
         approved_by,
         approved_at,
         rejection_reason,
@@ -264,6 +344,7 @@ fn decode_row(row: PendingDeployRowTuple) -> CoreResult<PendingDeployRow> {
         requested_by,
         requested_at,
         status: Status::parse(&status)?,
+        environment: Environment::parse(&environment)?,
         approved_by,
         approved_at,
         rejection_reason,

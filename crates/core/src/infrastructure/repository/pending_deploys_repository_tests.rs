@@ -17,7 +17,12 @@ async fn request_inserts_a_pending_row() {
     let (_dir, pd, users) = fresh_db().await;
     let op = users.create("op", Role::Operator).await.expect("op");
     let row = pd
-        .request("saas-stack", r#"{"writes":[]}"#, op.user.id)
+        .request(
+            "saas-stack",
+            r#"{"writes":[]}"#,
+            op.user.id,
+            Environment::Dev,
+        )
         .await
         .expect("request");
     assert_eq!(row.status, Status::Pending);
@@ -32,13 +37,25 @@ async fn list_filters_by_status() {
     let op1 = users.create("op1", Role::Operator).await.expect("op1");
     let op2 = users.create("op2", Role::Operator).await.expect("op2");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
-    let r1 = pd.request("a", "{}", op1.user.id).await.expect("r1");
-    let _r2 = pd.request("b", "{}", op2.user.id).await.expect("r2");
+    let r1 = pd
+        .request("a", "{}", op1.user.id, Environment::Dev)
+        .await
+        .expect("r1");
+    let _r2 = pd
+        .request("b", "{}", op2.user.id, Environment::Dev)
+        .await
+        .expect("r2");
     pd.approve(r1.id, admin.user.id).await.expect("approve");
-    let pending = pd.list(Some(Status::Pending), 50).await.expect("list");
+    let pending = pd
+        .list(Some(Status::Pending), None, 50)
+        .await
+        .expect("list");
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].system_id, "b");
-    let approved = pd.list(Some(Status::Approved), 50).await.expect("list");
+    let approved = pd
+        .list(Some(Status::Approved), None, 50)
+        .await
+        .expect("list");
     assert_eq!(approved.len(), 1);
     assert_eq!(approved[0].system_id, "a");
 }
@@ -48,7 +65,10 @@ async fn approve_transitions_pending_to_approved() {
     let (_dir, pd, users) = fresh_db().await;
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
-    let row = pd.request("x", "{}", op.user.id).await.expect("request");
+    let row = pd
+        .request("x", "{}", op.user.id, Environment::Dev)
+        .await
+        .expect("request");
     let out = pd
         .approve(row.id, admin.user.id)
         .await
@@ -65,7 +85,10 @@ async fn reject_records_reason_and_blocks_replay() {
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin1 = users.create("admin1", Role::Admin).await.expect("admin1");
     let admin2 = users.create("admin2", Role::Admin).await.expect("admin2");
-    let row = pd.request("x", "{}", op.user.id).await.expect("request");
+    let row = pd
+        .request("x", "{}", op.user.id, Environment::Dev)
+        .await
+        .expect("request");
     let out = pd
         .reject(row.id, admin1.user.id, Some("policy says no"))
         .await
@@ -86,7 +109,10 @@ async fn mark_applied_only_works_on_approved_rows() {
     let (_dir, pd, users) = fresh_db().await;
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
-    let row = pd.request("x", "{}", op.user.id).await.expect("request");
+    let row = pd
+        .request("x", "{}", op.user.id, Environment::Dev)
+        .await
+        .expect("request");
     // Pending → cannot mark applied yet.
     let no = pd.mark_applied(row.id).await.expect("apply");
     assert!(no.is_none());
@@ -106,7 +132,10 @@ async fn approve_uses_real_user_foreign_key() {
     let (_dir, pd, users) = fresh_db().await;
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
-    let row = pd.request("x", "{}", op.user.id).await.expect("request");
+    let row = pd
+        .request("x", "{}", op.user.id, Environment::Dev)
+        .await
+        .expect("request");
     let out = pd
         .approve(row.id, admin.user.id)
         .await

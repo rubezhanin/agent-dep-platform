@@ -60,6 +60,12 @@ pub fn router(state: ServerState) -> Router {
             get(handlers::get_deploy)
                 .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
         )
+        // 2.4.0 multi-environment
+        .route(
+            "/v1/environments",
+            get(handlers::list_environments)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
+        )
         // operator-or-higher
         .route(
             "/v1/deploys",

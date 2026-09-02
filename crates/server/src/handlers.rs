@@ -498,7 +498,7 @@ pub async fn rotate_user_token(
 // ---------------------------------------------------------------------------
 
 use agent_dep_core::infrastructure::repository::pending_deploys_repository::{
-    PendingDeployRow, Status as DeployStatus,
+    Environment, PendingDeployRow, Status as DeployStatus,
 };
 
 #[derive(Debug, Serialize)]
@@ -509,6 +509,7 @@ pub struct DeployView {
     pub requested_by: i64,
     pub requested_at: String,
     pub status: DeployStatus,
+    pub environment: Environment,
     pub approved_by: Option<i64>,
     pub approved_at: Option<String>,
     pub rejection_reason: Option<String>,
@@ -523,6 +524,7 @@ fn deploy_view(r: &PendingDeployRow) -> DeployView {
         requested_by: r.requested_by,
         requested_at: r.requested_at.clone(),
         status: r.status,
+        environment: r.environment,
         approved_by: r.approved_by,
         approved_at: r.approved_at.clone(),
         rejection_reason: r.rejection_reason.clone(),
@@ -534,6 +536,10 @@ fn deploy_view(r: &PendingDeployRow) -> DeployView {
 pub struct DeployRequestBody {
     pub catalog: String,
     pub system_yaml: String,
+    /// 2.4.0 — optional. Defaults to `dev` when
+    /// omitted (the 2.2.0 behaviour).
+    #[serde(default)]
+    pub environment: Option<Environment>,
 }
 
 pub async fn request_deploy(
@@ -564,16 +570,21 @@ pub async fn request_deploy(
                         .into_response();
                 }
             };
+            let env = req.environment.unwrap_or(Environment::Dev);
             match state
                 .deploys
-                .request(&summary.system_id, &plan_json, user.id)
+                .request(&summary.system_id, &plan_json, user.id, env)
                 .await
             {
                 Ok(row) => {
                     let target = format!("deploy:{}", row.id);
                     let details = Some(
-                        json!({"system_id": row.system_id, "writes": summary.writes.len()})
-                            .to_string(),
+                        json!({
+                            "system_id": row.system_id,
+                            "writes": summary.writes.len(),
+                            "environment": row.environment.as_str(),
+                        })
+                        .to_string(),
                     );
                     let _ = state
                         .audit
@@ -637,6 +648,8 @@ pub async fn request_deploy(
 #[derive(Debug, Deserialize)]
 pub struct ListDeploysQuery {
     pub status: Option<DeployStatus>,
+    /// 2.4.0 — filter by environment.
+    pub env: Option<Environment>,
     pub limit: Option<u32>,
 }
 
@@ -647,12 +660,16 @@ pub async fn list_deploys(
 ) -> impl IntoResponse {
     let action = "GET /v1/deploys";
     let limit = q.limit.unwrap_or(50);
-    match state.deploys.list(q.status, limit).await {
+    match state.deploys.list(q.status, q.env, limit).await {
         Ok(rows) => {
             let views: Vec<DeployView> = rows.iter().map(deploy_view).collect();
             let details = Some(
-                json!({"count": views.len(), "status_filter": q.status.map(|s| s.as_str())})
-                    .to_string(),
+                json!({
+                    "count": views.len(),
+                    "status_filter": q.status.map(|s| s.as_str()),
+                    "env_filter": q.env.map(|e| e.as_str()),
+                })
+                .to_string(),
             );
             let _ = state
                 .audit
@@ -1177,4 +1194,21 @@ pub async fn delete_secret(
                 .into_response()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 2.4.0 — /v1/environments endpoint (ADR-0022).
+// ---------------------------------------------------------------------------
+
+pub async fn list_environments(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
+    let action = "GET /v1/environments";
+    let names: Vec<&'static str> = Environment::all().iter().map(|e| e.as_str()).collect();
+    let _ = state
+        .audit
+        .record(&user.name, action, None, AuditOutcome::Ok, None)
+        .await;
+    (StatusCode::OK, Json(json!({ "environments": names }))).into_response()
 }
