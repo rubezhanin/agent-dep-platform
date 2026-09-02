@@ -20,9 +20,13 @@ fn from_resolved_pins_all_versions() {
     assert_eq!(f.skills.len(), 1);
     assert_eq!(f.renderers.len(), 1);
     assert!(f.renderers.contains_key("hermes-router"));
+    // 1.2.0 (ADR-0010): exact pins carry the `=` prefix
+    // because `semver` 1.x treats a bare `1.0.0` as
+    // `^1.0.0`. The prefix is required for true exact
+    // pinning.
     assert_eq!(
         f.agents.get("backend-engineer").map(String::as_str),
-        Some("1.0.0")
+        Some("=1.0.0")
     );
 }
 
@@ -101,6 +105,9 @@ fn agent_versions_returns_typed_pairs() {
     let versions = f.agent_versions().expect("parse");
     assert_eq!(versions.len(), 2);
     for (id, v) in &versions {
-        assert_eq!(v.to_string(), f.agents.get(id).cloned().unwrap_or_default());
+        // The lockfile stores `=1.0.0`; `agent_versions`
+        // strips the `=` and returns the bare version.
+        let stored = f.agents.get(id).cloned().unwrap_or_default();
+        assert_eq!(format!("={v}"), stored);
     }
 }

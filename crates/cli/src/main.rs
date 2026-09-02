@@ -103,6 +103,16 @@ pub enum LockAction {
         /// Path to the local catalog root.
         #[arg(long)]
         catalog: PathBuf,
+        /// Optional SemVer range expression applied to every
+        /// resolved agent version (1.2.0+, ADR-0010).
+        /// Accepts `^X.Y.Z`, `~X.Y.Z`, `=X.Y.Z`,
+        /// `>=X.Y.Z, <A.B.C`, or a bare `X.Y.Z`
+        /// (treated as `^X.Y.Z` by the `semver` crate).
+        /// Placeholders `{major}` / `{minor}` / `{patch}`
+        /// are substituted from the resolved version, e.g.
+        /// `--range '^1.{minor}.0'`.
+        #[arg(long, value_name = "EXPR")]
+        range: Option<String>,
     },
 }
 
@@ -169,8 +179,11 @@ async fn main() -> ExitCode {
             }
         },
         Command::Lock { action } => match action {
-            LockAction::Generate { file, catalog } => {
-                lock::generate(&file, &catalog).await.map_err(Into::into)
+            LockAction::Generate { file, catalog, range } => {
+                lock::generate_with_range(&file, &catalog, range.as_deref())
+                    .await
+                    .map(|_| ())
+                    .map_err(Into::into)
             }
         },
         Command::Rollback { operation_id } => match uuid::Uuid::parse_str(&operation_id) {

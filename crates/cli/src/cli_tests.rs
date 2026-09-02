@@ -723,9 +723,64 @@ mod lock_e2e {
 
         let text = std::fs::read_to_string(&summary.lock_path).unwrap();
         assert!(text.contains("lockVersion: 1"));
-        assert!(text.contains("be: 1.0.0"));
-        assert!(text.contains("hermes-router: 1.0.0"));
+        // 1.2.0 (ADR-0010): the default exact pin is now
+        // emitted with the `=` prefix because `semver`
+        // 1.x treats a bare `1.0.0` as `^1.0.0`. The
+        // `=` is required for a true exact pin.
+        assert!(text.contains("be: =1.0.0"));
+        assert!(text.contains("hermes-router: =1.0.0"));
         assert!(text.contains(&format!("commit: {}", summary.commit_sha)));
+    }
+
+    #[tokio::test]
+    async fn lock_generate_with_caret_range_writes_range_expression() {
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_min_catalog(cat_dir.path());
+
+        let sys_dir = tempfile::tempdir().unwrap();
+        let sys_path = sys_dir.path().join("system.yaml");
+        write_system_yaml_local(&sys_path, &["be@1.0.0"]);
+
+        let summary = crate::commands::lock::generate_at_with_range(
+            &sys_path,
+            cat_dir.path(),
+            Some("^1.0.0"),
+        )
+        .await
+        .expect("generate with range");
+        assert_eq!(summary.agent_count, 1);
+
+        let text = std::fs::read_to_string(&summary.lock_path).unwrap();
+        // The exact agent version is 1.0.0; the template
+        // `^1.0.0` does not depend on the version, so the
+        // rendered value is the literal template.
+        assert!(text.contains("be: ^1.0.0"), "got: {text}");
+        // The renderer pin stays exact-pinned regardless
+        // of the agent `--range` (renderers are not user-
+        // templated in 1.2.0).
+        assert!(text.contains("hermes-router: =1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn lock_generate_with_minor_template_uses_resolved_version() {
+        // `^1.{minor}.0` against a resolved 1.0.0 should
+        // render as `^1.0.0` (placeholder substituted).
+        let cat_dir = tempfile::tempdir().unwrap();
+        write_min_catalog(cat_dir.path());
+
+        let sys_dir = tempfile::tempdir().unwrap();
+        let sys_path = sys_dir.path().join("system.yaml");
+        write_system_yaml_local(&sys_path, &["be@1.0.0"]);
+
+        let summary = crate::commands::lock::generate_at_with_range(
+            &sys_path,
+            cat_dir.path(),
+            Some("^1.{minor}.0"),
+        )
+        .await
+        .expect("generate with template");
+        let text = std::fs::read_to_string(&summary.lock_path).unwrap();
+        assert!(text.contains("be: ^1.0.0"), "got: {text}");
     }
 }
 

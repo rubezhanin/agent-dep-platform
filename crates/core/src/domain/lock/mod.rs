@@ -15,16 +15,21 @@
 //!   commit: abc123...
 //! agents:
 //!   backend-architect: 2.4.0
-//!   database-engineer: 1.3.0
+//!   database-engineer: ^1.3.0       # SemVer range (1.2.0+)
 //! skills:
 //!   observability: 2.0.1
 //! renderers:
 //!   hermes-router: 1.0.0
 //! ```
 //!
-//! SemVer ranges (TZ §9 MVP) are NOT supported in MVP-1.0 —
-//! exact versions only. That keeps the parser trivial and
-//! matches ADR-0003.
+//! MVP-1.0 stored exact versions only (ADR-0003). 1.2.0
+//! (ADR-0010) lifts that to `VersionReq` strings: the
+//! value is whatever `semver::VersionReq::parse` accepts,
+//! including exact pins (`=1.0.0`), carets (`^1.0.0`),
+//! tildes (`~1.0.0`), and compound ranges
+//! (`>=1.0.0, <2.0.0`). A bare `1.0.0` is treated as
+//! `^1.0.0` by the `semver` 1.x parser (the same input
+//! can also be written as `>=1.0.0, <2.0.0`).
 //!
 //! The file is a sibling of the system definition in the
 //! user's Git repo (per TZ §26.2 — SQLite is *not* the
@@ -74,9 +79,33 @@ pub struct LockFile {
 }
 
 impl LockFile {
+    /// Build a fresh `LockFile` with the given source
+    /// metadata and the default renderer pin. The agent
+    /// and skill maps are empty; the caller populates
+    /// them (used by `generate_at_with_range`, which
+    /// wants to insert SemVer range strings rather than
+    /// the exact-pinned strings `from_resolved`
+    /// produces).
+    pub fn new_for_test(catalog_repository: &str, catalog_commit: &str) -> Self {
+        let mut renderers: BTreeMap<String, String> = BTreeMap::new();
+        renderers.insert("hermes-router".to_string(), "=1.0.0".to_string());
+        Self {
+            lock_version: LOCK_FILE_VERSION,
+            source: LockSource {
+                repository: catalog_repository.to_string(),
+                commit: catalog_commit.to_string(),
+            },
+            agents: BTreeMap::new(),
+            skills: BTreeMap::new(),
+            renderers,
+        }
+    }
+
     /// Build a `LockFile` from a snapshot's `commit_sha` and
     /// the resolved agents/skills. Renderer pins are
-    /// defaulted to `hermes-router@1.0.0`.
+    /// defaulted to `hermes-router@=1.0.0` (explicit
+    /// exact pin — the `=` is required for true exact
+    /// pinning in `semver` 1.x, see ADR-0010).
     pub fn from_resolved(
         catalog_repository: &str,
         catalog_commit: &str,
@@ -85,14 +114,14 @@ impl LockFile {
     ) -> Self {
         let mut agent_map: BTreeMap<String, String> = BTreeMap::new();
         for (id, v) in agents {
-            agent_map.insert(id.clone(), v.to_string());
+            agent_map.insert(id.clone(), format!("={v}"));
         }
         let mut skill_map: BTreeMap<String, String> = BTreeMap::new();
         for (id, v) in skills {
-            skill_map.insert(id.clone(), v.to_string());
+            skill_map.insert(id.clone(), format!("={v}"));
         }
         let mut renderers: BTreeMap<String, String> = BTreeMap::new();
-        renderers.insert("hermes-router".to_string(), "1.0.0".to_string());
+        renderers.insert("hermes-router".to_string(), "=1.0.0".to_string());
         Self {
             lock_version: LOCK_FILE_VERSION,
             source: LockSource {
@@ -107,8 +136,9 @@ impl LockFile {
 
     /// Parse a lock file from a YAML string. Validates the
     /// lockVersion, non-empty source fields, and that every
-    /// version string is a valid SemVer (zero parts are
-    /// rejected).
+    /// version string is a valid `semver::VersionReq`
+    /// (1.2.0+, supports exact pins, carets, tildes, and
+    /// compound ranges).
     pub fn from_yaml(text: &str) -> Result<Self, String> {
         let f: LockFile = serde_yaml::from_str(text)
             .map_err(|e| format!("yaml parse: {e}"))?;
@@ -128,18 +158,21 @@ impl LockFile {
             if id.is_empty() {
                 return Err("agents key must be non-empty".to_string());
             }
-            Version::parse(raw).map_err(|_| {
-                format!("agents.{id} has an invalid SemVer (`{raw}`)")
+            semver::VersionReq::parse(raw).map_err(|_| {
+                format!("agents.{id} has an invalid SemVer req (`{raw}`)")
             })?;
         }
-        for (id, _raw) in &f.skills {
+        for (id, raw) in &f.skills {
             if id.is_empty() {
                 return Err("skills key must be non-empty".to_string());
             }
+            semver::VersionReq::parse(raw).map_err(|_| {
+                format!("skills.{id} has an invalid SemVer req (`{raw}`)")
+            })?;
         }
         for (id, raw) in &f.renderers {
-            Version::parse(raw).map_err(|_| {
-                format!("renderers.{id} has an invalid SemVer (`{raw}`)")
+            semver::VersionReq::parse(raw).map_err(|_| {
+                format!("renderers.{id} has an invalid SemVer req (`{raw}`)")
             })?;
         }
         Ok(f)
@@ -151,14 +184,41 @@ impl LockFile {
     }
 
     /// Convenience accessor for the typed `(id, Version)`
-    /// agent pins. Useful for the deploy loop.
+    /// agent pins. **Only** succeeds for exact versions
+    /// (a `VersionReq` of the form `=X.Y.Z`). A range
+    /// like `^1.0.0` returns an error pointing the
+    /// caller at `agent_version_reqs`. Used by the
+    /// deploy loop, which only knows how to install one
+    /// concrete version of each agent.
     pub fn agent_versions(&self) -> Result<Vec<(String, Version)>, String> {
         self.agents
             .iter()
             .map(|(id, raw)| {
-                Version::parse(raw)
-                    .map(|v| (id.clone(), v))
-                    .map_err(|_| format!("agents.{id} has an invalid SemVer"))
+                let req = semver::VersionReq::parse(raw).map_err(|_| {
+                    format!("agents.{id} has an invalid SemVer req (`{raw}`)")
+                })?;
+                let req_str = req.to_string();
+                let exact = req_str.strip_prefix('=').unwrap_or(&req_str);
+                let v = Version::parse(exact).map_err(|_| {
+                    format!(
+                        "agents.{id} is a range (`{raw}`); deploy needs an exact version"
+                    )
+                })?;
+                Ok((id.clone(), v))
+            })
+            .collect()
+    }
+
+    /// Range-aware accessor (1.2.0+). Returns the typed
+    /// `(id, VersionReq)` so callers like the plan
+    /// service can resolve against a snapshot.
+    pub fn agent_version_reqs(&self) -> Result<Vec<(String, semver::VersionReq)>, String> {
+        self.agents
+            .iter()
+            .map(|(id, raw)| {
+                semver::VersionReq::parse(raw)
+                    .map(|r| (id.clone(), r))
+                    .map_err(|_| format!("agents.{id} has an invalid SemVer req (`{raw}`)"))
             })
             .collect()
     }

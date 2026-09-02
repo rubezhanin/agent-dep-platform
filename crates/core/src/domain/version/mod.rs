@@ -88,3 +88,5 @@ mod tests {
         assert_eq!(json_v, Version::new(1, 2, 3));
     }
 }
+
+pub mod resolver;
