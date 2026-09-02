@@ -711,6 +711,100 @@ const TEXT_RULES: &[(&str, Severity, &Lazy<Regex>)] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// 2.6.4 SARIF output (ADR-0027)
+// ---------------------------------------------------------------------------
+
+/// Map our internal `Severity` to the SARIF
+/// `level` enum. We do NOT emit `note` (Pass)
+/// findings in the SARIF output — they would
+/// inflate the result count without providing
+/// signal to CI / IDE consumers.
+fn severity_to_sarif_level(sev: Severity) -> &'static str {
+    match sev {
+        Severity::Block => "error",
+        Severity::Warn => "warning",
+        Severity::Pass => "note",
+    }
+}
+
+/// Convert a slice of findings into a SARIF 2.1.0
+/// log. The output is a `serde_json::Value` so
+/// the caller can serialize it as JSON to stdout,
+/// to a file, or to an HTTP response. The
+/// `tool.driver` is `agency-scanner`; the version
+/// is the `CARGO_PKG_VERSION` of the crate.
+///
+/// Each unique `rule` becomes one entry in
+/// `runs[0].tool.driver.rules[]` with a stable
+/// `index`. Each `Finding` becomes one entry in
+/// `runs[0].results[]` whose `ruleIndex` points
+/// back into the rules table. The `locations`
+/// array uses a placeholder
+/// `physicalLocation.artifactLocation.uri` (the
+/// relative path) and a stub
+/// `physicalLocation.region` (line 1) — exact
+/// line tracking is a 2.6.x enhancement.
+pub fn findings_to_sarif(findings: &[Finding]) -> serde_json::Value {
+    // Build a stable (de-duplicated) rule table.
+    // The first finding for a given rule id sets
+    // the index; later findings for the same rule
+    // reference the same index.
+    let mut rule_index_by_id: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    let mut rules: Vec<serde_json::Value> = Vec::new();
+    for f in findings {
+        if rule_index_by_id.contains_key(&f.rule) {
+            continue;
+        }
+        let idx = rules.len();
+        rule_index_by_id.insert(f.rule.clone(), idx);
+        rules.push(serde_json::json!({
+            "id": f.rule,
+            "name": f.rule,
+            "shortDescription": { "text": f.rule },
+            "fullDescription": { "text": f.rule },
+            "defaultConfiguration": { "level": severity_to_sarif_level(f.severity) },
+        }));
+    }
+    let results: Vec<serde_json::Value> = findings
+        .iter()
+        .map(|f| {
+            let rule_index = rule_index_by_id
+                .get(&f.rule)
+                .copied()
+                .unwrap_or(0);
+            serde_json::json!({
+                "ruleId": f.rule,
+                "ruleIndex": rule_index,
+                "level": severity_to_sarif_level(f.severity),
+                "message": { "text": f.reason },
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": { "uri": f.path },
+                        "region": { "startLine": 1, "endLine": 1 }
+                    }
+                }]
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "version": "2.1.0",
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "agency-scanner",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "informationUri": "https://github.com/rubezhanin/agent-dep-platform",
+                    "rules": rules
+                }
+            },
+            "results": results
+        }]
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

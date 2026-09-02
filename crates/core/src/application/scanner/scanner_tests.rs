@@ -857,3 +857,81 @@ fn rule27_bidi_override_is_warn() {
     let findings = scan_str("no bidi here, just text", &ScanPolicy::mvp_default());
     assert!(!has_rule(&findings, "confusable.bidi-override"));
 }
+
+// -----------------------------------------------------------------------
+// 2.6.4 SARIF output (ADR-0027)
+// -----------------------------------------------------------------------
+
+#[test]
+fn findings_to_sarif_empty_input() {
+    let log = findings_to_sarif(&[]);
+    assert_eq!(log["version"], "2.1.0");
+    assert_eq!(log["runs"].as_array().unwrap().len(), 1);
+    let run = &log["runs"][0];
+    assert_eq!(run["tool"]["driver"]["name"], "agency-scanner");
+    assert!(run["tool"]["driver"]["rules"].as_array().unwrap().is_empty());
+    assert!(run["results"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn findings_to_sarif_maps_rules_and_levels() {
+    // Two findings: one Block (aws-access-key)
+    // and one Warn (prompt-injection.jailbreak-dan).
+    let f1 = Finding {
+        severity: Severity::Block,
+        rule: "secret.aws-access-key".to_string(),
+        path: "agents/be.md".to_string(),
+        reason: "matched `AKIA…`".to_string(),
+    };
+    let f2 = Finding {
+        severity: Severity::Warn,
+        rule: "prompt-injection.jailbreak-dan".to_string(),
+        path: "skills/devops/SKILL.md".to_string(),
+        reason: "DAN mode detected".to_string(),
+    };
+    let log = findings_to_sarif(&[f1, f2]);
+    let run = &log["runs"][0];
+    let rules = run["tool"]["driver"]["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0]["id"], "secret.aws-access-key");
+    assert_eq!(rules[0]["defaultConfiguration"]["level"], "error");
+    assert_eq!(rules[1]["id"], "prompt-injection.jailbreak-dan");
+    assert_eq!(rules[1]["defaultConfiguration"]["level"], "warning");
+    let results = run["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["level"], "error");
+    assert_eq!(results[0]["ruleIndex"], 0);
+    assert_eq!(results[1]["level"], "warning");
+    assert_eq!(results[1]["ruleIndex"], 1);
+    // Each result has a locations entry with a
+    // physicalLocation.artifactLocation.uri.
+    assert_eq!(results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "agents/be.md");
+    assert_eq!(results[1]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "skills/devops/SKILL.md");
+}
+
+#[test]
+fn findings_to_sarif_dedupes_rules() {
+    // Two findings of the same rule should share
+    // a single ruleIndex, with two result entries.
+    let f1 = Finding {
+        severity: Severity::Block,
+        rule: "secret.aws-access-key".to_string(),
+        path: "a.md".to_string(),
+        reason: "first".to_string(),
+    };
+    let f2 = Finding {
+        severity: Severity::Block,
+        rule: "secret.aws-access-key".to_string(),
+        path: "b.md".to_string(),
+        reason: "second".to_string(),
+    };
+    let log = findings_to_sarif(&[f1, f2]);
+    let run = &log["runs"][0];
+    assert_eq!(run["tool"]["driver"]["rules"].as_array().unwrap().len(), 1);
+    let results = run["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["ruleIndex"], 0);
+    assert_eq!(results[1]["ruleIndex"], 0);
+}

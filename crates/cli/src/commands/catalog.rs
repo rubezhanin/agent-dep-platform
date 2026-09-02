@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use agent_dep_core::application::ingest::git_fetcher::{classify_url, ingest_source};
 use agent_dep_core::application::ingest::IngestService;
+use agent_dep_core::application::scanner::{findings_to_sarif, Finding, RegexScanner, ScanPolicy, Scanner};
 use agent_dep_core::domain::source::{Source, SourceKind};
 use agent_dep_core::infrastructure::repository::IngestRepository;
 use agent_dep_core::infrastructure::sqlite::{connect, Db};
@@ -246,5 +247,92 @@ fn print_summary(path: &Path, s: &UpdateSummary) {
             "{} agent(s) rejected (see DB for details)",
             s.rejected
         ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2.6.4 (ADR-0027): `agency catalog scan` —
+// read-only scanner invocation.
+// ---------------------------------------------------------------------------
+
+/// CLI entry point. Runs the scanner over `path`
+/// with the default `ScanPolicy` and writes the
+/// results to stdout in the requested format.
+pub async fn scan(path: PathBuf, format: String) -> Result<()> {
+    let findings = scan_at(&path)?;
+    match format.as_str() {
+        "text" => {
+            print_findings_text(&findings);
+            Ok(())
+        }
+        "json" => {
+            // Flat array of findings (no SARIF
+            // wrapping). Useful for jq pipelines
+            // and for the existing
+            // `/v1/systems/plan` consumers.
+            let arr: Vec<_> = findings
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "severity": f.severity.as_str(),
+                        "rule": f.rule,
+                        "path": f.path,
+                        "reason": f.reason,
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&arr)
+                    .map_err(|e| anyhow::anyhow!("serialise json: {e}"))?
+            );
+            Ok(())
+        }
+        "sarif" => {
+            let log = findings_to_sarif(&findings);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&log)
+                    .map_err(|e| anyhow::anyhow!("serialise sarif: {e}"))?
+            );
+            Ok(())
+        }
+        other => {
+            anyhow::bail!(
+                "unknown --format `{other}` (expected: text, json, sarif)"
+            )
+        }
+    }
+}
+
+/// Pure orchestration for `catalog scan`. Runs
+/// the `RegexScanner` over `path` with the
+/// default policy and returns the findings.
+/// Exposed for tests.
+pub fn scan_at(path: &Path) -> Result<Vec<Finding>> {
+    if !path.is_dir() {
+        anyhow::bail!("not a directory: {}", path.display());
+    }
+    let scanner = RegexScanner;
+    let policy = ScanPolicy::mvp_default();
+    scanner
+        .scan(path, &policy)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+fn print_findings_text(findings: &[Finding]) {
+    if findings.is_empty() {
+        println!("no findings");
+        return;
+    }
+    output::header(&format!("Scanner findings: {}", findings.len()));
+    for f in findings {
+        println!(
+            "  [{}] {} on {}: {}",
+            f.severity.as_str(),
+            f.rule,
+            f.path,
+            f.reason
+        );
     }
 }

@@ -92,6 +92,20 @@ pub enum CatalogAction {
         /// HTTPS or SSH URL of the Git repository.
         url: String,
     },
+    /// 2.6.4 (ADR-0027): run the scanner over a
+    /// local directory without ingesting.
+    /// Supports `--format text|json|sarif` for
+    /// piping into CI / IDE viewers.
+    Scan {
+        /// Path to the local directory to scan.
+        path: PathBuf,
+        /// Output format. `text` is the
+        /// human-readable default; `json` is a
+        /// flat array of findings; `sarif` is
+        /// the SARIF 2.1.0 log.
+        #[arg(long, value_name = "FORMAT", default_value = "text")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
