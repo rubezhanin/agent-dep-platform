@@ -272,6 +272,20 @@ pub const RULES: &[RuleSpec] = &[
         id: "secret.jwt",
         default: Severity::Block,
     },
+    // 2.6.2 Unicode / confusable analysis
+    // (ADR-0026). The homoglyph rule is Block;
+    // the bidi-override rule is Warn because
+    // some legitimate content (Arabic / Hebrew
+    // text in skill descriptions) uses bidi
+    // control characters by design.
+    RuleSpec {
+        id: "confusable.homoglyph",
+        default: Severity::Block,
+    },
+    RuleSpec {
+        id: "confusable.bidi-override",
+        default: Severity::Warn,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -605,6 +619,23 @@ static SECRET_ANTHROPIC_RE: Lazy<Regex> =
 static SECRET_JWT_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").unwrap());
 
+// 2.6.2 Unicode / confusable analysis
+// (ADR-0026). The homoglyph set is curated to
+// the 13 most-common lookalikes from Cyrillic,
+// Greek, Hebrew, and Armenian. Full coverage
+// of confusables.txt is a 2.7.x release.
+static CONFUSABLE_HOMOGLYPH_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        "[\u{0430}\u{0435}\u{043E}\u{0440}\u{0441}\u{0445}\u{03BF}\u{03B1}\u{0399}\u{04B0}\u{04CF}\u{05E2}\u{0578}\u{057C}]",
+    )
+    .unwrap()
+});
+// Bidi control characters: LRE/RLE/PDF/LRO/RLO
+// (U+202A-U+202E) and LRI/RLI/FSI/PDI
+// (U+2066-U+2069).
+static CONFUSABLE_BIDI_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new("[\u{202A}-\u{202E}\u{2066}-\u{2069}]").unwrap());
+
 static URL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"https?://[A-Za-z0-9.\-_:]+(?:/[^"'\s<>)]*)?"#).unwrap());
 
@@ -665,6 +696,18 @@ const TEXT_RULES: &[(&str, Severity, &Lazy<Regex>)] = &[
         &SECRET_ANTHROPIC_RE,
     ),
     ("secret.jwt", Severity::Block, &SECRET_JWT_RE),
+    // 2.6.2 Unicode / confusable analysis
+    // (ADR-0026).
+    (
+        "confusable.homoglyph",
+        Severity::Block,
+        &CONFUSABLE_HOMOGLYPH_RE,
+    ),
+    (
+        "confusable.bidi-override",
+        Severity::Warn,
+        &CONFUSABLE_BIDI_RE,
+    ),
 ];
 
 // ---------------------------------------------------------------------------

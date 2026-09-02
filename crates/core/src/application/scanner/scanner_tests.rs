@@ -39,12 +39,13 @@ fn count_rule(findings: &[Finding], rule: &str) -> usize {
 // -----------------------------------------------------------------------
 
 #[test]
-fn rule_table_has_25_rules_per_adr_0005_0024_0025() {
+fn rule_table_has_27_rules_per_adr_0005_0024_0025_0026() {
     // 2.6.0 (ADR-0024) added 6 prompt-injection
     // rules. 2.6.1 (ADR-0025) added 6 more
-    // secret rules. MVP (ADR-0005) had 13.
-    // Total: 13 + 6 + 6 = 25.
-    assert_eq!(RULES.len(), 25);
+    // secret rules. 2.6.2 (ADR-0026) added 2
+    // Unicode / confusable rules. MVP (ADR-0005)
+    // had 13. Total: 13 + 6 + 6 + 2 = 27.
+    assert_eq!(RULES.len(), 27);
     let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
     for expected in [
         // MVP (ADR-0005)
@@ -75,6 +76,9 @@ fn rule_table_has_25_rules_per_adr_0005_0024_0025() {
         "secret.openai-key",
         "secret.anthropic-key",
         "secret.jwt",
+        // 2.6.2 (ADR-0026)
+        "confusable.homoglyph",
+        "confusable.bidi-override",
     ] {
         assert!(ids.contains(&expected), "missing rule `{expected}`");
     }
@@ -789,4 +793,67 @@ fn rule25_jwt_is_block() {
     // A non-JWT with similar shape does not match.
     let findings = scan_str("a.b.c", &ScanPolicy::mvp_default());
     assert!(!has_rule(&findings, "secret.jwt"));
+}
+
+// -----------------------------------------------------------------------
+// 2.6.2 Unicode / confusable analysis (ADR-0026)
+// -----------------------------------------------------------------------
+
+#[test]
+fn rule26_homoglyph_is_block() {
+    // Cyrillic 'а' (U+0430) in place of Latin 'a'
+    // (U+0061) — the classic example.
+    let findings = scan_str("id: b\u{0430}ckend-engineer", &ScanPolicy::mvp_default());
+    let f = findings
+        .iter()
+        .find(|f| f.rule == "confusable.homoglyph")
+        .expect("expected homoglyph finding");
+    assert_eq!(f.severity, Severity::Block);
+    // Cyrillic 'о' (U+043E) for Latin 'o' in
+    // a filename-style string.
+    let findings = scan_str("r\u{043E}uting-policy.md", &ScanPolicy::mvp_default());
+    assert!(has_rule(&findings, "confusable.homoglyph"));
+    // Greek 'ο' (U+03BF) for Latin 'o'.
+    let findings = scan_str("l\u{03BF}gic-engine.md", &ScanPolicy::mvp_default());
+    assert!(has_rule(&findings, "confusable.homoglyph"));
+    // Plain ASCII is a no-op.
+    let findings = scan_str("id: backend-engineer", &ScanPolicy::mvp_default());
+    assert!(!has_rule(&findings, "confusable.homoglyph"));
+    // Cyrillic letters in *non-spoofing* contexts
+    // (e.g. a Russian-language description) are
+    // still flagged because the curated set has
+    // no contextual awareness; operators who
+    // legitimately use Cyrillic identifiers
+    // should downgrade via rule_overrides.
+    let findings = scan_str(
+        "Описание: это описание на русском",
+        &ScanPolicy::mvp_default(),
+    );
+    assert!(has_rule(&findings, "confusable.homoglyph"));
+}
+
+#[test]
+fn rule27_bidi_override_is_warn() {
+    // LRE (U+202A) — the classic "looks like
+    // safe.exe but is exe.e…fas" attack.
+    let findings = scan_str(
+        "filename: \u{202A}safe.exe\u{202C}",
+        &ScanPolicy::mvp_default(),
+    );
+    let f = findings
+        .iter()
+        .find(|f| f.rule == "confusable.bidi-override")
+        .expect("expected bidi-override finding");
+    assert_eq!(f.severity, Severity::Warn);
+    // RLO (U+202E) and FSI (U+2068) also fire.
+    let findings = scan_str("check this: \u{202E}rcn.exe", &ScanPolicy::mvp_default());
+    assert!(has_rule(&findings, "confusable.bidi-override"));
+    let findings = scan_str(
+        "isolated: \u{2068}left\u{2069}right",
+        &ScanPolicy::mvp_default(),
+    );
+    assert!(has_rule(&findings, "confusable.bidi-override"));
+    // Plain ASCII is a no-op.
+    let findings = scan_str("no bidi here, just text", &ScanPolicy::mvp_default());
+    assert!(!has_rule(&findings, "confusable.bidi-override"));
 }
