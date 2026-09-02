@@ -211,6 +211,39 @@ pub const RULES: &[RuleSpec] = &[
         id: "manifest.foreign-executable",
         default: Severity::Warn,
     },
+    // 2.6.0 prompt-injection heuristics (ADR-0024).
+    // Block: unambiguous English/Russian patterns
+    // that almost never appear in legitimate
+    // agent / skill content.
+    // Warn:   patterns that are sometimes
+    // legitimate (a documentation file can have
+    // a ZWJ emoji sequence, a markdown file can
+    // have a "## System prompt" heading); the
+    // operator reviews.
+    RuleSpec {
+        id: "prompt-injection.ignore-previous",
+        default: Severity::Block,
+    },
+    RuleSpec {
+        id: "prompt-injection.role-override",
+        default: Severity::Block,
+    },
+    RuleSpec {
+        id: "prompt-injection.system-prompt-leak",
+        default: Severity::Block,
+    },
+    RuleSpec {
+        id: "prompt-injection.jailbreak-dan",
+        default: Severity::Block,
+    },
+    RuleSpec {
+        id: "prompt-injection.markdown-system-tag",
+        default: Severity::Warn,
+    },
+    RuleSpec {
+        id: "prompt-injection.zero-width-chars",
+        default: Severity::Warn,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -475,6 +508,49 @@ static CURL_BASH_RE: Lazy<Regex> =
 static EVAL_EXEC_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"\beval\s*\(\s*['"]\$\(|os\.system\s*\(\s*['"]\$\("#).unwrap());
 
+// 2.6.0 prompt-injection heuristics (ADR-0024).
+// All case-insensitive. The English patterns
+// are well-known from public AI red-team
+// datasets; the Cyrillic transliterations
+// (e.g. "игнорируй" for "ignore") are NOT
+// included in 2.6.0 — the ADR defers
+// multilingual coverage to 2.7.x because
+// adding a Cyrillic block per language
+// doubles the regex table.
+static PI_IGNORE_PREVIOUS_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)(ignore|disregard|forget)\s+(all\s+)?(the\s+)?(above|previous|prior|earlier)\s+(instructions?|prompts?|messages?|context)",
+    )
+    .unwrap()
+});
+static PI_ROLE_OVERRIDE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)\b(you\s+are\s+now|from\s+now\s+on\s+you\s+are|act\s+as|pretend\s+(to\s+be|you\s+are)|roleplay\s+as)\b",
+    )
+    .unwrap()
+});
+static PI_SYSTEM_PROMPT_LEAK_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)(reveal|show|print|leak|dump|expose)\s+(your\s+|the\s+)?(system\s+prompt|hidden\s+instructions?|internal\s+prompt|secret\s+instructions?)",
+    )
+    .unwrap()
+});
+static PI_JAILBREAK_DAN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)\b(do\s+anything\s+now|DAN\s+mode|jailbreak\s+mode|developer\s+mode\s+(enabled|on)|unlock\s+mode)\b",
+    )
+    .unwrap()
+});
+static PI_MARKDOWN_SYSTEM_TAG_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?im)(^|\n)\s*(\[system\]|###\s*system|<\|system\|>|\[\[system\]\]|##\s*system\s*prompt)",
+    )
+    .unwrap()
+});
+static PI_ZERO_WIDTH_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"[\u{200B}-\u{200F}\u{2028}-\u{202F}\u{205F}-\u{206F}\u{FEFF}]").unwrap()
+});
+
 static URL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"https?://[A-Za-z0-9.\-_:]+(?:/[^"'\s<>)]*)?"#).unwrap());
 
@@ -494,6 +570,36 @@ const TEXT_RULES: &[(&str, Severity, &Lazy<Regex>)] = &[
         &CURL_BASH_RE,
     ),
     ("shell.dangerous-eval-exec", Severity::Block, &EVAL_EXEC_RE),
+    (
+        "prompt-injection.ignore-previous",
+        Severity::Block,
+        &PI_IGNORE_PREVIOUS_RE,
+    ),
+    (
+        "prompt-injection.role-override",
+        Severity::Block,
+        &PI_ROLE_OVERRIDE_RE,
+    ),
+    (
+        "prompt-injection.system-prompt-leak",
+        Severity::Block,
+        &PI_SYSTEM_PROMPT_LEAK_RE,
+    ),
+    (
+        "prompt-injection.jailbreak-dan",
+        Severity::Block,
+        &PI_JAILBREAK_DAN_RE,
+    ),
+    (
+        "prompt-injection.markdown-system-tag",
+        Severity::Warn,
+        &PI_MARKDOWN_SYSTEM_TAG_RE,
+    ),
+    (
+        "prompt-injection.zero-width-chars",
+        Severity::Warn,
+        &PI_ZERO_WIDTH_RE,
+    ),
 ];
 
 // ---------------------------------------------------------------------------
