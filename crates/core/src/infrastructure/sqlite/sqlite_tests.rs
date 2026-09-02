@@ -3,7 +3,7 @@ use std::path::Path;
 
 /// Bump this assertion when a new migration is added. The migration
 /// runner advances `meta.schema_version` after the last .sql runs.
-const CURRENT_SCHEMA_VERSION: i64 = 6;
+const CURRENT_SCHEMA_VERSION: i64 = 7;
 
 #[tokio::test]
 async fn in_memory_db_migrates() {

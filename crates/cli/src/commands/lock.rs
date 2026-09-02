@@ -34,8 +34,8 @@ pub struct LockSummary {
 
 /// CLI entry point.
 #[allow(dead_code)] // retained for future 1.x caller; today the CLI uses generate_with_range
-pub async fn generate(system_file: &Path, catalog_path: &Path) -> Result<()> {
-    let summary = generate_at(system_file, catalog_path).await?;
+pub async fn generate(system_file: &Path, catalog_path: &Path, range: Option<&str>) -> Result<()> {
+    let summary = generate_with_range(system_file, catalog_path, range).await?;
     print_summary(&summary);
     Ok(())
 }

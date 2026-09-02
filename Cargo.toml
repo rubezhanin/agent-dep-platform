@@ -4,11 +4,12 @@ members = [
     "crates/core",
     "crates/hermes-adapter",
     "crates/cli",
+    "crates/server",
     "crates/tauri-app",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT OR Apache-2.0"
@@ -39,6 +40,11 @@ hex = "0.4"
 walkdir = "2"
 dunce = "1"
 semver = "1"
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["trace"] }
+rand = "0.8"
+base64 = "0.22"
 
 [profile.release]
 opt-level = 3

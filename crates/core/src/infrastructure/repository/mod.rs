@@ -15,6 +15,7 @@
 //! previous Active row is flipped to `Superseded` in the same
 //! transaction.
 
+pub mod audit_log_repository;
 pub mod deployed_artifacts_repository;
 pub mod skill_repository;
 

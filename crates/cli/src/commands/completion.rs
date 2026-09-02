@@ -11,7 +11,7 @@ use clap::CommandFactory;
 use clap_complete::{generate, Shell};
 use std::str::FromStr;
 
-use crate::Cli;
+use crate::cli_def::Cli;
 
 /// CLI entry point. Validates the shell name and
 /// writes the script to stdout. Returns an error if

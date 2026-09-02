@@ -1,15 +1,16 @@
+use crate::cli_def::Cli;
 use clap::CommandFactory;
 
 #[test]
 fn cli_parses_help() {
-    let cmd = crate::Cli::command();
+    let cmd = Cli::command();
     let help = cmd.clone().render_help();
     assert!(help.to_string().contains("agency"));
 }
 
 #[test]
 fn cli_has_deploy_status_and_catalog_system_subcommands() {
-    let cmd = crate::Cli::command();
+    let cmd = Cli::command();
     let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
     assert!(names.contains(&"deploy"));
     assert!(names.contains(&"status"));
@@ -19,7 +20,7 @@ fn cli_has_deploy_status_and_catalog_system_subcommands() {
 
 #[test]
 fn system_subcommand_has_plan() {
-    let cmd = crate::Cli::command();
+    let cmd = Cli::command();
     let system = cmd
         .get_subcommands()
         .find(|c| c.get_name() == "system")
@@ -30,7 +31,7 @@ fn system_subcommand_has_plan() {
 
 #[test]
 fn catalog_subcommand_has_update() {
-    let cmd = crate::Cli::command();
+    let cmd = Cli::command();
     let catalog = cmd
         .get_subcommands()
         .find(|c| c.get_name() == "catalog")
@@ -97,7 +98,7 @@ mod catalog_e2e {
 
         // Re-open the DB and verify state.
         let db = connect(&db_path).await.expect("reopen");
-        assert_eq!(schema_version(&db).await.unwrap(), 6);
+        assert_eq!(schema_version(&db).await.unwrap(), 7);
         let repo = IngestRepository::new(db.pool().clone());
         let source = repo
             .find_source_by_location("local", &cat_dir.path().to_string_lossy())

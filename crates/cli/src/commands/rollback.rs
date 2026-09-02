@@ -35,13 +35,14 @@ use agent_dep_core::application::journal::JournalService;
 use agent_dep_core::infrastructure::content_store::ContentStore;
 use agent_dep_core::infrastructure::sqlite::connect;
 use anyhow::{Context, Result};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::data_dir::default_cas_root;
 use crate::output;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RollbackSummary {
     pub operation_id: Uuid,
     pub target_root: PathBuf,
@@ -51,7 +52,7 @@ pub struct RollbackSummary {
     pub failed: Vec<FailedRevert>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FailedRevert {
     pub relative: String,
     pub reason: String,

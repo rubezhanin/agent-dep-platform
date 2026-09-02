@@ -5,5 +5,6 @@ pub mod hermes;
 pub mod lock;
 pub mod mcp;
 pub mod rollback;
+pub mod serve;
 pub mod status;
 pub mod system;

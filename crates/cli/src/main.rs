@@ -1,248 +1,47 @@
-mod commands;
-mod data_dir;
-mod output;
+//! `agency` CLI binary — 2.0.0 thin wrapper.
+//!
+//! The `Cli` / `Command` definition and the per-subcommand
+//! dispatch live in `agent_dep_cli::cli_def` and the
+//! `agent_dep_cli::commands` module. The binary here
+//! parses the argv, dispatches into the same code, and
+//! exits with `ExitCode` per the platform convention.
 
-#[cfg(test)]
-mod cli_tests;
-
-use clap::{Parser, Subcommand};
-use commands::{catalog, completion, deploy, hermes, lock, mcp, rollback, status, system};
-use std::path::PathBuf;
+use agent_dep_cli::cli_def::{Cli, Command};
+use agent_dep_cli::commands::{
+    catalog, completion, deploy, hermes, lock, mcp, rollback, serve, status, system,
+};
+use clap::Parser;
 use std::process::ExitCode;
 
-#[derive(Parser, Debug)]
-#[command(name = "agency", version, about = "Agent Deployment Platform CLI", long_about = None)]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Command,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum Command {
-    /// Show current deployment status.
-    Status,
-    /// Ingest and inspect a local catalog (MVP-3).
-    Catalog {
-        #[command(subcommand)]
-        action: CatalogAction,
-    },
-    /// Compose + plan a system from a `system.yaml` (MVP-3).
-    System {
-        #[command(subcommand)]
-        action: SystemAction,
-    },
-    /// Apply a `system.yaml` to a target directory through the
-    /// journal-backed `DeploymentService`. The journal records the
-    /// operation so a crash mid-flight leaves a non-terminal row
-    /// that `gc_stale` will force-fail on next startup.
-    Deploy {
-        #[command(subcommand)]
-        action: DeployAction,
-    },
-    /// Generate or inspect an `agency.lock` next to a system file.
-    Lock {
-        #[command(subcommand)]
-        action: LockAction,
-    },
-    /// Install / remove Hermes 0.19+ Flow B MCP server
-    /// manifests under `<hermes_home>/optional-mcps/<name>/`
-    /// (1.3.0, ADR-0011).
-    Mcp {
-        #[command(subcommand)]
-        action: McpAction,
-    },
-    /// Probe a Flow A router plugin under `<hermes_home>/plugins/`
-    /// (1.4.0, ADR-0012). Currently static-structural
-    /// only; the dynamic LLM probe lands in 2.x with
-    /// Hermes 0.19+ Flow B.
-    Hermes {
-        #[command(subcommand)]
-        action: HermesAction,
-    },
-    /// Generate a shell completion script to stdout
-    /// (1.6.0, ADR-0015). Redirect the output to the
-    /// shell-specific completion directory.
-    Completion {
-        /// One of: bash, zsh, fish, elvish, powershell.
-        shell: String,
-    },
-    /// Roll back a previous deploy by operation id.
-    Rollback {
-        /// Journal operation id (UUID) to roll back.
-        operation_id: String,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum CatalogAction {
-    /// Walk a local directory, parse + validate + scan, persist the
-    /// snapshot to the default SQLite DB, and print a summary.
-    Update {
-        /// Path to the catalog root (must contain `divisions.json`
-        /// and an `agents/<division>/*.md` subtree).
-        path: PathBuf,
-    },
-    /// Clone a Git repository (HTTPS or SSH) and ingest it as a
-    /// new catalog source. The working copy is cached at
-    /// `<data>/sources/<source_id>/` so subsequent
-    /// `agency catalog update <url>` calls only re-fetch
-    /// (1.1.0, ADR-0009).
-    Add {
-        /// URL of the Git repository. Accepts `https://…`,
-        /// `http://…`, `git@host:path`, or `host:path`
-        /// (SCP-style SSH). `file://…` is also accepted for
-        /// local testing.
-        url: String,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum SystemAction {
-    /// Compose a system.yaml against a local catalog and print the
-    /// resulting deployment plan. For MVP-3 every resolved agent
-    /// becomes one ADD operation; the diff against an existing
-    /// deployment state lands in 1.x.
-    Plan {
-        /// Path to the system definition (a `system.yaml`).
-        file: PathBuf,
-        /// Path to the local catalog root (must contain
-        /// `divisions.json` and `agents/<division>/*.md`). The
-        /// catalog is re-ingested in-memory; nothing is written to
-        /// the DB by this command.
-        #[arg(long)]
-        catalog: PathBuf,
-        /// When set, the plan includes drift-detection
-        /// ops (`Verify` and `Backup`, ADR-0013). Requires
-        /// `--target` and `--db` so the plan service can
-        /// read `deployed_artifacts` and walk the
-        /// on-disk tree.
-        #[arg(long, requires = "target")]
-        drift: bool,
-        /// Path to a previously-deployed target tree
-        /// (the directory the operator passed to
-        /// `agency deploy apply`).
-        #[arg(long, value_name = "PATH")]
-        target: Option<PathBuf>,
-        /// Path to the SQLite database that holds the
-        /// previous `deployed_artifacts` rows.
-        #[arg(long, value_name = "PATH")]
-        db: Option<PathBuf>,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum LockAction {
-    /// Generate `agency.lock` next to a `system.yaml` from
-    /// the resolved snapshot. Re-ingests the catalog; does
-    /// not write to the DB.
-    Generate {
-        /// Path to the system definition (a `system.yaml`).
-        file: PathBuf,
-        /// Path to the local catalog root.
-        #[arg(long)]
-        catalog: PathBuf,
-        /// Optional SemVer range expression applied to every
-        /// resolved agent version (1.2.0+, ADR-0010).
-        /// Accepts `^X.Y.Z`, `~X.Y.Z`, `=X.Y.Z`,
-        /// `>=X.Y.Z, <A.B.C`, or a bare `X.Y.Z`
-        /// (treated as `^X.Y.Z` by the `semver` crate).
-        /// Placeholders `{major}` / `{minor}` / `{patch}`
-        /// are substituted from the resolved version, e.g.
-        /// `--range '^1.{minor}.0'`.
-        #[arg(long, value_name = "EXPR")]
-        range: Option<String>,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum McpAction {
-    /// Materialize a `manifest.yaml` for a remote MCP
-    /// server under `<hermes_home>/optional-mcps/<name>/`.
-    /// The spec is read from a JSON file the operator
-    /// points at with `--spec <path>`. The directory
-    /// name in the filesystem is the CLI argument
-    /// (`<name>`), not the `name` field in the spec.
-    Add {
-        /// Name of the MCP server (also the directory
-        /// name). Must match `^[a-z][a-z0-9_-]{0,63}$`.
-        name: String,
-        /// Path to a JSON file describing the server.
-        #[arg(long, value_name = "PATH")]
-        spec: PathBuf,
-    },
-    /// List every MCP server currently installed under
-    /// `<hermes_home>/optional-mcps/`. Each entry is
-    /// printed as `<name>  <manifest_sha256[:12]>`.
-    List,
-    /// Remove an installed MCP server. Deletes
-    /// `<hermes_home>/optional-mcps/<name>/` recursively.
-    Remove {
-        /// Name of the MCP server to remove.
-        name: String,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum HermesAction {
-    /// Run the structural probe (1.4.0, ADR-0012) against
-    /// an installed Flow A plugin. Exits 0 if the plugin
-    /// passes every check, 1 otherwise. The report is
-    /// printed to stdout and (with `--json`) also as a
-    /// single-line JSON for piping.
-    Probe {
-        /// Plugin id (the directory name under
-        /// `<hermes_home>/plugins/`).
-        plugin_id: String,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum DeployAction {
-    /// Apply a composed `system.yaml` to a target directory. Agent
-    /// files are written to `<target>/agents/<id>@<version>/<id>.md`
-    /// with backup-before-overwrite and atomic temp+rename.
-    Apply {
-        /// Path to the system definition (a `system.yaml`).
-        file: PathBuf,
-        /// Path to the local catalog root.
-        #[arg(long)]
-        catalog: PathBuf,
-        /// Directory to write the deployed agent files into.
-        #[arg(long)]
-        target: PathBuf,
-    },
-    /// Install a router plugin into Hermes home. Writes
-    /// `manifest.yaml` + `SKILL.md` + `skills/<slug>.md` under
-    /// `<HERMES_HOME>/plugins/<plugin-id>/` (per ADR-0008). Does
-    /// NOT call `hermes mcp configure` — enable the plugin in
-    /// Hermes separately (e.g. via the Hermes UI or
-    /// `hermes plugin enable <id>` when available in your build).
-    Install {
-        /// Path to the system definition (a `system.yaml`).
-        file: PathBuf,
-        /// Path to the local catalog root.
-        #[arg(long)]
-        catalog: PathBuf,
-        /// Plugin slug under `<HERMES_HOME>/plugins/`.
-        #[arg(long, default_value = deploy::DEFAULT_PLUGIN_ID)]
-        plugin_id: String,
-        /// Optional policy file (`policy.yaml`).
-        #[arg(long)]
-        policy: Option<PathBuf>,
-    },
-}
-
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            // clap errors (help, version, bad args) print to
+            // stdout/stderr themselves; exit with the
+            // user-error code clap suggests.
+            e.exit();
+        }
+    };
+    match dispatch(cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+async fn dispatch(cli: Cli) -> anyhow::Result<()> {
+    match cli.command {
         Command::Status => status::run().await.map_err(Into::into),
         Command::Catalog { action } => match action {
-            CatalogAction::Update { path } => catalog::update(path).await.map_err(Into::into),
-            CatalogAction::Add { url } => catalog::add(url).await.map_err(Into::into),
+            agent_dep_cli::cli_def::CatalogAction::Update { path } => catalog::update(path).await,
+            agent_dep_cli::cli_def::CatalogAction::Add { url } => catalog::add(url).await,
         },
         Command::System { action } => match action {
-            SystemAction::Plan {
+            agent_dep_cli::cli_def::SystemAction::Plan {
                 file,
                 catalog,
                 drift,
@@ -257,63 +56,75 @@ async fn main() -> ExitCode {
                             system::print_summary(&summary);
                             Ok(())
                         }
-                        Err(e) => Err(e.into()),
+                        Err(e) => Err(e),
                     }
                 } else {
-                    system::plan(&file, &catalog).await.map_err(Into::into)
+                    system::plan(&file, &catalog).await
                 }
             }
         },
         Command::Deploy { action } => match action {
-            DeployAction::Apply {
+            agent_dep_cli::cli_def::DeployAction::Apply {
                 file,
                 catalog,
                 target,
-            } => deploy::deploy(&file, &catalog, &target)
-                .await
-                .map_err(Into::into),
-            DeployAction::Install {
+                db,
+            } => {
+                let db_path = match db {
+                    Some(p) => p.clone(),
+                    None => agent_dep_cli::data_dir::default_db_path(),
+                };
+                deploy::deploy(&file, &catalog, &target, &db_path).await
+            }
+            agent_dep_cli::cli_def::DeployAction::Install {
                 file,
                 catalog,
                 plugin_id,
                 policy,
-            } => deploy::install(&file, &catalog, &plugin_id, policy.as_deref())
-                .await
-                .map_err(Into::into),
+            } => deploy::install(&file, &catalog, &plugin_id, policy.as_deref()).await,
         },
         Command::Lock { action } => match action {
-            LockAction::Generate {
+            agent_dep_cli::cli_def::LockAction::Generate {
                 file,
                 catalog,
                 range,
-            } => lock::generate_with_range(&file, &catalog, range.as_deref())
-                .await
-                .map(|_| ())
-                .map_err(Into::into),
+            } => lock::generate(&file, &catalog, range.as_deref()).await,
         },
         Command::Mcp { action } => match action {
-            McpAction::Add { name, spec } => mcp::add(name, &spec).await.map_err(Into::into),
-            McpAction::List => mcp::list().map_err(Into::into),
-            McpAction::Remove { name } => mcp::remove(&name).map_err(Into::into),
+            agent_dep_cli::cli_def::McpAction::Add { name, spec } => mcp::add(name, &spec).await,
+            agent_dep_cli::cli_def::McpAction::List => mcp::list(),
+            agent_dep_cli::cli_def::McpAction::Remove { name } => mcp::remove(&name),
         },
         Command::Hermes { action } => match action {
-            HermesAction::Probe { plugin_id } => hermes::probe(plugin_id).await.map_err(Into::into),
-        },
-        Command::Completion { shell } => completion::run(&shell).map_err(Into::into),
-        Command::Rollback { operation_id } => match uuid::Uuid::parse_str(&operation_id) {
-            Ok(id) => rollback::rollback(id).await.map_err(Into::into),
-            Err(e) => {
-                let err: Box<dyn std::error::Error> =
-                    anyhow::anyhow!("invalid operation id `{operation_id}`: {e}").into();
-                Err(err)
+            agent_dep_cli::cli_def::HermesAction::Probe { plugin_id } => {
+                hermes::probe(plugin_id).await
             }
         },
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::from(1)
+        Command::Completion { shell } => completion::run(&shell),
+        Command::Rollback { operation_id } => {
+            let id = uuid::Uuid::parse_str(&operation_id)
+                .map_err(|e| anyhow::anyhow!("operation id is not a UUID: {e}"))?;
+            rollback::rollback(id).await
+        }
+        Command::Serve { port } => serve::run(port).await,
+        Command::Paths => {
+            println!(
+                "data dir  : {}",
+                agent_dep_cli::data_dir::default_data_dir().display()
+            );
+            println!(
+                "db path   : {}",
+                agent_dep_cli::data_dir::default_db_path().display()
+            );
+            println!(
+                "cas root  : {}",
+                agent_dep_cli::data_dir::default_cas_root().display()
+            );
+            println!(
+                "hermes home: {}",
+                agent_dep_cli::data_dir::default_hermes_home().display()
+            );
+            Ok(())
         }
     }
 }

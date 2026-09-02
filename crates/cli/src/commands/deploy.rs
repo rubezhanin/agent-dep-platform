@@ -64,9 +64,13 @@ pub struct InstallSummary {
 }
 
 /// CLI entry point for the file-materialization flow.
-pub async fn deploy(system_file: &Path, catalog_path: &Path, target: &Path) -> Result<()> {
-    let db_path = crate::data_dir::default_db_path();
-    let summary = deploy_at(system_file, catalog_path, target, &db_path).await?;
+pub async fn deploy(
+    system_file: &Path,
+    catalog_path: &Path,
+    target: &Path,
+    db_path: &Path,
+) -> Result<()> {
+    let summary = deploy_at(system_file, catalog_path, target, db_path).await?;
     print_summary(&summary);
     Ok(())
 }
@@ -75,9 +79,10 @@ pub async fn deploy(system_file: &Path, catalog_path: &Path, target: &Path) -> R
 pub async fn install(
     system_file: &Path,
     catalog_path: &Path,
-    plugin_id: &str,
+    plugin_id: &Option<String>,
     policy_path: Option<&Path>,
 ) -> Result<()> {
+    let plugin_id = plugin_id.as_deref().unwrap_or(DEFAULT_PLUGIN_ID);
     let summary = install_at(
         system_file,
         catalog_path,

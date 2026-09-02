@@ -11,6 +11,7 @@ use sqlx::SqlitePool;
 use std::path::Path;
 use std::str::FromStr;
 
+#[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
 }
