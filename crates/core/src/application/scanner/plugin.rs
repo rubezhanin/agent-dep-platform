@@ -241,6 +241,100 @@ fn parse_severity(s: &str) -> Option<Severity> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 2.7.2 plugin auto-discovery (ADR-0030)
+// ---------------------------------------------------------------------------
+
+/// A discovered plugin. The `name` is derived
+/// from the file basename (no extension); the
+/// `binary` is the absolute path to the
+/// executable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredPlugin {
+    pub name: String,
+    pub binary: PathBuf,
+}
+
+/// Discover plugin executables in a directory.
+/// Only files with the conventional script
+/// extensions (`.sh`, `.ps1`, `.bat`) OR no
+/// extension are considered. Non-executable
+/// files are silently skipped.
+///
+/// The returned vector is sorted by `name` for
+/// determinism (so two scans over the same
+/// directory produce the same order).
+pub fn discover_plugins(dir: &Path) -> std::io::Result<Vec<DiscoveredPlugin>> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<DiscoveredPlugin> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = plugin_name_from_path(&path) else {
+            continue;
+        };
+        // Skip non-executable files (the
+        // executable bit is what makes a script
+        // a plugin; a non-executable `README.md`
+        // is fine to drop into the directory).
+        let is_exec = {
+            let meta = std::fs::metadata(&path)?;
+            // On Windows the executable bit is
+            // meaningless; treat all `.ps1` /
+            // `.bat` files as runnable. On
+            // POSIX, require the user-exec bit.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                meta.permissions().mode() & 0o100 != 0
+            }
+            #[cfg(not(unix))]
+            {
+                let ext = path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                ext == "ps1" || ext == "bat" || ext == "exe"
+            }
+        };
+        if !is_exec {
+            continue;
+        }
+        out.push(DiscoveredPlugin {
+            name,
+            binary: path,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Derive the plugin name from a file path. The
+/// name is the basename with one conventional
+/// script extension stripped (`.sh`, `.ps1`,
+/// `.bat`, `.exe`). Returns `None` for files
+/// that don't have one of those extensions AND
+/// don't have no extension at all (so
+/// `README.md` returns `None` and is ignored).
+fn plugin_name_from_path(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?.to_string();
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "sh" | "ps1" | "bat" | "exe" | "" => Some(stem),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 #[path = "plugin_tests.rs"]
 mod tests;

@@ -140,3 +140,81 @@ exit 1
     assert_eq!(findings[0].severity, Severity::Warn);
     assert!(findings[0].reason.contains("exit"));
 }
+
+// -----------------------------------------------------------------------
+// 2.7.2 plugin auto-discovery (ADR-0030)
+// -----------------------------------------------------------------------
+
+#[test]
+fn discover_empty_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let found = discover_plugins(dir.path()).unwrap();
+    assert!(found.is_empty());
+}
+
+#[test]
+fn discover_nonexistent_dir_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("does-not-exist");
+    let found = discover_plugins(&missing).unwrap();
+    assert!(found.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn discover_picks_executable_sh() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("semgrep.sh");
+    std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(&p).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&p, perms).unwrap();
+    let found = discover_plugins(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].name, "semgrep");
+    assert_eq!(found[0].binary, p);
+}
+
+#[cfg(unix)]
+#[test]
+fn discover_skips_non_executable() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("not-exec.sh");
+    std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+    // Deliberately do NOT chmod_exec. The
+    // file is non-executable and must be
+    // skipped.
+    let found = discover_plugins(dir.path()).unwrap();
+    assert!(
+        found.is_empty(),
+        "non-executable must be skipped: {found:?}"
+    );
+}
+
+#[test]
+fn discover_skips_unknown_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("README.md");
+    std::fs::write(&p, "# docs").unwrap();
+    let found = discover_plugins(dir.path()).unwrap();
+    assert!(found.is_empty(), ".md must be ignored: {found:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn discover_name_uses_stem_not_full_basename() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("my-plugin.sh");
+    std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(&p).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&p, perms).unwrap();
+    let found = discover_plugins(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].name, "my-plugin",
+        "name must be the file stem, not the basename"
+    );
+}

@@ -4,7 +4,12 @@ use std::path::{Path, PathBuf};
 
 use agent_dep_core::application::ingest::git_fetcher::{classify_url, ingest_source};
 use agent_dep_core::application::ingest::IngestService;
-use agent_dep_core::application::scanner::{findings_to_sarif, Finding, RegexScanner, ScanPolicy, Scanner, Severity};
+use agent_dep_core::application::scanner::plugin::{
+    discover_plugins, DiscoveredPlugin, PluginScanner,
+};
+use agent_dep_core::application::scanner::{
+    findings_to_sarif, Finding, RegexScanner, ScanPolicy, Scanner, Severity,
+};
 use agent_dep_core::domain::source::{Source, SourceKind};
 use agent_dep_core::infrastructure::repository::IngestRepository;
 use agent_dep_core::infrastructure::sqlite::{connect, Db};
@@ -325,7 +330,7 @@ pub fn scan_at(path: &Path, plugins: &[String]) -> Result<Vec<Finding>> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     for spec in plugins {
         let (name, binary) = parse_plugin_spec(spec)?;
-        let scanner = agent_dep_core::application::scanner::plugin::PluginScanner::new(&name, binary);
+        let scanner = PluginScanner::new(&name, binary);
         match scanner.scan(path, &policy) {
             Ok(mut pf) => findings.append(&mut pf),
             Err(e) => {
@@ -339,6 +344,54 @@ pub fn scan_at(path: &Path, plugins: &[String]) -> Result<Vec<Finding>> {
                     path: String::new(),
                     reason: format!("{e}"),
                 });
+            }
+        }
+    }
+    // 2.7.2 (ADR-0030): auto-discover plugins
+    // from the default `~/.agency/scanners.d/`
+    // (or `AGENCY_SCANNERS_DIR` env var). The
+    // discovered set is merged with the
+    // explicit `--plugin` flags; the explicit
+    // flags win on name collision.
+    let scanners_dir = std::env::var("AGENCY_SCANNERS_DIR")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(default_scanners_dir);
+    if let Some(dir) = scanners_dir {
+        if dir.is_dir() {
+            let discovered = discover_plugins(&dir).unwrap_or_default();
+            // Build a set of explicit names so we
+            // skip collisions. The explicit
+            // `--plugin` flags were already
+            // processed above.
+            let explicit_names: std::collections::HashSet<String> = plugins
+                .iter()
+                .filter_map(|s| s.split(':').next().map(|n| n.to_string()))
+                .collect();
+            for d in discovered {
+                if explicit_names.contains(&d.name) {
+                    // Explicit flag wins; the
+                    // discovered entry is skipped
+                    // (operator's override).
+                    eprintln!(
+                        "agency: skipping discovered plugin `{}` from {} — explicit --plugin override",
+                        d.name,
+                        dir.display()
+                    );
+                    continue;
+                }
+                let scanner = PluginScanner::new(d.name.clone(), d.binary.clone());
+                match scanner.scan(path, &policy) {
+                    Ok(mut pf) => findings.append(&mut pf),
+                    Err(e) => {
+                        findings.push(Finding {
+                            severity: Severity::Warn,
+                            rule: format!("plugin.{}.exec-failed", d.name),
+                            path: String::new(),
+                            reason: format!("{e}"),
+                        });
+                    }
+                }
             }
         }
     }
@@ -359,6 +412,24 @@ fn parse_plugin_spec(spec: &str) -> Result<(String, PathBuf)> {
         anyhow::bail!("plugin spec must be `NAME:PATH` with non-empty parts, got `{spec}`");
     }
     Ok((name.to_string(), PathBuf::from(path)))
+}
+
+/// Default `~/.agency/scanners.d/` for plugin
+/// auto-discovery (2.7.2, ADR-0030). On
+/// Windows, `%USERPROFILE%\.agency\scanners.d`;
+/// on POSIX, `~/.agency/scanners.d/`.
+fn default_scanners_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE")
+            .map(|p| PathBuf::from(p).join(".agency").join("scanners.d"))
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(|p| {
+            PathBuf::from(p).join(".agency").join("scanners.d")
+        })
+    }
 }
 
 fn print_findings_text(findings: &[Finding]) {
