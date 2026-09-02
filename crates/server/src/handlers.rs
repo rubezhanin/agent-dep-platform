@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use agent_dep_core::infrastructure::repository::targets_repository::PathKind;
+
 use crate::auth::AuthenticatedUser;
 use crate::plan;
 use crate::ServerState;
@@ -1289,6 +1291,12 @@ pub struct CreateTargetBody {
     pub name: String,
     pub environment: Environment,
     pub path: String,
+    /// 2.5.1 (ADR-0029): POSIX vs Windows path
+    /// discriminator. Defaults to `posix` for
+    /// backwards compatibility with 2.5.0
+    /// callers that don't send the field.
+    #[serde(default)]
+    pub path_kind: Option<PathKind>,
     #[serde(default)]
     pub description: Option<String>,
 }
@@ -1406,12 +1414,14 @@ pub async fn create_target(
 ) -> impl IntoResponse {
     let action = "POST /v1/targets";
     let target = format!("target:{}:{}", req.environment.as_str(), req.name);
+    let path_kind = req.path_kind.unwrap_or(PathKind::Posix);
     match state
         .targets
         .create(
             &req.name,
             req.environment,
             &req.path,
+            path_kind,
             req.description.as_deref(),
         )
         .await

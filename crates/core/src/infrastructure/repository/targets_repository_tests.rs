@@ -18,6 +18,7 @@ async fn create_then_get_round_trips() {
             "prod-blue",
             Environment::Production,
             "/srv/hermes/blue",
+            PathKind::Posix,
             None,
         )
         .await
@@ -37,6 +38,7 @@ async fn find_by_env_name_resolves_correctly() {
             "laptop",
             Environment::Dev,
             "/home/op/hermes",
+            PathKind::Posix,
             Some("personal"),
         )
         .await
@@ -46,6 +48,7 @@ async fn find_by_env_name_resolves_correctly() {
             "laptop",
             Environment::Production,
             "/srv/hermes/blue",
+            PathKind::Posix,
             Some("prod laptop"),
         )
         .await
@@ -69,11 +72,11 @@ async fn find_by_env_name_resolves_correctly() {
 async fn unique_per_environment_name() {
     let (_dir, targets) = fresh_db().await;
     targets
-        .create("prod-blue", Environment::Production, "/srv/a", None)
+        .create("prod-blue", Environment::Production, "/srv/a", PathKind::Posix, None)
         .await
         .expect("first");
     let err = targets
-        .create("prod-blue", Environment::Production, "/srv/b", None)
+        .create("prod-blue", Environment::Production, "/srv/b", PathKind::Posix, None)
         .await
         .expect_err("duplicate must fail");
     let msg = format!("{err:?}");
@@ -84,11 +87,11 @@ async fn unique_per_environment_name() {
 async fn list_filters_by_env() {
     let (_dir, targets) = fresh_db().await;
     targets
-        .create("a", Environment::Dev, "/tmp/a", None)
+        .create("a", Environment::Dev, "/tmp/a", PathKind::Posix, None)
         .await
         .unwrap();
     targets
-        .create("b", Environment::Staging, "/tmp/b", None)
+        .create("b", Environment::Staging, "/tmp/b", PathKind::Posix, None)
         .await
         .unwrap();
     let prod = targets.list(Some(Environment::Production)).await.unwrap();
@@ -104,7 +107,7 @@ async fn list_filters_by_env() {
 async fn delete_is_hard_and_idempotent() {
     let (_dir, targets) = fresh_db().await;
     let row = targets
-        .create("x", Environment::Dev, "/tmp/x", None)
+        .create("x", Environment::Dev, "/tmp/x", PathKind::Posix, None)
         .await
         .unwrap();
     let first = targets.delete(row.id).await.unwrap();
@@ -118,7 +121,7 @@ async fn delete_is_hard_and_idempotent() {
 async fn rejects_empty_path() {
     let (_dir, targets) = fresh_db().await;
     let err = targets
-        .create("x", Environment::Dev, "", None)
+        .create("x", Environment::Dev, "", PathKind::Posix, None)
         .await
         .expect_err("must reject");
     let msg = format!("{err:?}");
@@ -126,26 +129,58 @@ async fn rejects_empty_path() {
 }
 
 #[tokio::test]
-async fn accepts_any_non_empty_path_for_cross_platform() {
-    // 2.5.0 server stores the path verbatim.
-    // Cross-platform absolute-path validation
-    // happens on the operator's CLI side.
+async fn accepts_paths_with_matching_path_kind() {
+    // 2.5.0 stored paths verbatim without
+    // validation; 2.5.1 (ADR-0029) added the
+    // `PathKind` discriminator. Each path
+    // must match its declared kind.
     let (_dir, targets) = fresh_db().await;
-    for (i, path) in [
-        "/srv/hermes/blue",
-        "C:\\Users\\op\\hermes",
-        "relative/looking/path",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let name = format!("t{i}");
-        let row = targets
-            .create(&name, Environment::Dev, path, None)
-            .await
-            .unwrap_or_else(|e| panic!("path `{path}` was rejected: {e:?}"));
-        assert_eq!(row.path, path);
-    }
+    // POSIX path with `PathKind::Posix` — accepted.
+    let row = targets
+        .create(
+            "posix-target",
+            Environment::Dev,
+            "/srv/hermes/blue",
+            PathKind::Posix,
+            None,
+        )
+        .await
+        .expect("posix path on posix kind");
+    assert_eq!(row.path_kind, PathKind::Posix);
+    // Windows path with `PathKind::Windows` — accepted.
+    let row = targets
+        .create(
+            "windows-target",
+            Environment::Dev,
+            "C:\\Users\\op\\hermes",
+            PathKind::Windows,
+            None,
+        )
+        .await
+        .expect("windows path on windows kind");
+    assert_eq!(row.path_kind, PathKind::Windows);
+    // POSIX path on Windows kind — rejected.
+    let err = targets
+        .create(
+            "mismatch-1",
+            Environment::Dev,
+            "/srv/hermes",
+            PathKind::Windows,
+            None,
+        )
+        .await
+        .expect_err("posix path on windows kind must be rejected");
+    // Windows path on POSIX kind — rejected.
+    let err = targets
+        .create(
+            "mismatch-2",
+            Environment::Dev,
+            "C:\\hermes",
+            PathKind::Posix,
+            None,
+        )
+        .await
+        .expect_err("windows path on posix kind must be rejected");
 }
 
 #[tokio::test]
@@ -153,12 +188,91 @@ async fn count_tracks_rows() {
     let (_dir, targets) = fresh_db().await;
     assert_eq!(targets.count().await.unwrap(), 0);
     targets
-        .create("a", Environment::Dev, "/tmp/a", None)
+        .create("a", Environment::Dev, "/tmp/a", PathKind::Posix, None)
         .await
         .unwrap();
     targets
-        .create("b", Environment::Staging, "/tmp/b", None)
+        .create("b", Environment::Staging, "/tmp/b", PathKind::Posix, None)
         .await
         .unwrap();
     assert_eq!(targets.count().await.unwrap(), 2);
 }
+
+// -----------------------------------------------------------------------
+// 2.5.1 (ADR-0029) — PathKind discriminator tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn path_kind_parse_round_trip() {
+    assert_eq!(PathKind::Posix.as_str(), "posix");
+    assert_eq!(PathKind::Windows.as_str(), "windows");
+    assert_eq!(PathKind::parse("posix").unwrap(), PathKind::Posix);
+    assert_eq!(PathKind::parse("windows").unwrap(), PathKind::Windows);
+    assert!(PathKind::parse("wsl").is_err());
+}
+
+#[test]
+fn path_kind_validate_posix() {
+    PathKind::Posix.validate_path("/srv/hermes").unwrap();
+    PathKind::Posix.validate_path("/").unwrap();
+    // POSIX rejects Windows-style paths.
+    let err = PathKind::Posix.validate_path("C:\\hermes").unwrap_err();
+    let msg = format!("{err:?}");
+    assert!(msg.contains("not a POSIX absolute path"), "msg: {msg}");
+    // And rejects bare relative paths.
+    let err = PathKind::Posix.validate_path("srv/hermes").unwrap_err();
+    let msg = format!("{err:?}");
+    assert!(msg.contains("not a POSIX absolute path"), "msg: {msg}");
+}
+
+#[test]
+fn path_kind_validate_windows() {
+    // Drive letter with backslash.
+    PathKind::Windows
+        .validate_path("C:\\Users\\op\\hermes")
+        .unwrap();
+    // Drive letter with forward slash (the
+    // scanner's `\\` OR `/` branch handles it).
+    PathKind::Windows.validate_path("D:/srv/hermes").unwrap();
+    // UNC path with double backslash.
+    PathKind::Windows
+        .validate_path("\\\\server\\share\\dir")
+        .unwrap();
+    // UNC path with double forward slash.
+    PathKind::Windows.validate_path("//server/share/dir").unwrap();
+    // POSIX is rejected.
+    let err = PathKind::Windows.validate_path("/srv/hermes").unwrap_err();
+    let msg = format!("{err:?}");
+    assert!(msg.contains("not a Windows absolute path"), "msg: {msg}");
+}
+
+#[tokio::test]
+async fn create_windows_target_rejects_posix_path() {
+    let (_dir, targets) = fresh_db().await;
+    let err = targets
+        .create("win", Environment::Dev, "/srv/hermes", PathKind::Windows, None)
+        .await
+        .expect_err("must reject POSIX path on Windows kind");
+    let msg = format!("{err:?}");
+    assert!(msg.contains("not a Windows absolute path"), "msg: {msg}");
+}
+
+#[tokio::test]
+async fn create_windows_target_accepts_windows_path() {
+    let (_dir, targets) = fresh_db().await;
+    let row = targets
+        .create(
+            "win",
+            Environment::Dev,
+            "C:\\Users\\op\\hermes",
+            PathKind::Windows,
+            None,
+        )
+        .await
+        .expect("create");
+    assert_eq!(row.path_kind, PathKind::Windows);
+    let get = targets.get(row.id).await.unwrap().expect("present");
+    assert_eq!(get.path_kind, PathKind::Windows);
+    assert_eq!(get.path, "C:\\Users\\op\\hermes");
+}
+
