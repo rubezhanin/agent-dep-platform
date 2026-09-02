@@ -49,6 +49,19 @@ pub fn default_hermes_home() -> PathBuf {
     default_data_dir().join("hermes")
 }
 
+/// 1.5.1 (ADR-0016) — content-addressed backup store root.
+/// Per `ContentStore` layout, content lives at
+/// `<root>/sha256/ab/cd/abcdef...`. Override with
+/// `AGENCY_CAS_ROOT` for tests.
+pub fn default_cas_root() -> PathBuf {
+    if let Ok(p) = std::env::var("AGENCY_CAS_ROOT") {
+        if !p.trim().is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    default_data_dir().join("cas")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

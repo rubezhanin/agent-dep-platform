@@ -15,6 +15,7 @@
 use crate::application::journal::{JournalService, OperationType};
 use crate::domain::system::System;
 use crate::error::{CoreError, CoreResult};
+use crate::infrastructure::content_store::ContentStore;
 use crate::infrastructure::repository::deployed_artifacts_repository::{
     DeployedArtifactRow, DeployedArtifactsRepository,
 };
@@ -40,6 +41,23 @@ pub struct DeployWrite {
     pub relative: String,  // POSIX, relative to target root
     pub expected_sha256: String,
     pub body_sha256: String, // hash of the body bytes
+}
+
+/// 1.5.1 (ADR-0016) — pointer from a `.backups/<file>.<ts>.<rand>.json`
+/// file to the pre-deploy bytes stored in the CAS. Replaces the
+/// pre-1.5.1 literal-copy scheme so identical pre-deploy content
+/// across N deploys is stored once.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupRecord {
+    /// Filename of the original target (no parent path; the rollback
+    /// flow joins it with the per-target parent it discovered).
+    pub target: String,
+    /// Lowercase-hex sha256 of the captured pre-deploy bytes. This
+    /// is the CAS key (`ContentStore::put` returns the same form).
+    pub sha256: String,
+    /// Unix seconds at capture time. Used for ordering within a
+    /// single target (newest wins) and for operator inspection.
+    pub captured_at: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -81,12 +99,23 @@ impl DeploymentService {
     /// failed write leaves no row — the next `apply` will retry
     /// from scratch and, if the agent body is unchanged, mark the
     /// row as `current` then.
+    ///
+    /// `cas` is the optional 1.5.1 content-addressed backup store
+    /// (ADR-0016). When `Some`, every overwrite of a pre-existing
+    /// file writes the old bytes to the CAS and creates a JSON
+    /// `BackupRecord` pointer at
+    /// `<parent>/.backups/<name>.<ts>.<rand>.json`. When `None`,
+    /// the legacy 1.5.0 literal-copy scheme is used (the deploy
+    /// tests pass `None` to keep the per-file write path simple).
+    /// Both forms are readable by the 1.5.1 rollback CLI; the
+    /// pointer extension (`.json`) is the discriminator.
     pub async fn apply(
         &self,
         target: &Path,
         system: &System,
         journal: &JournalService,
         artifacts: &DeployedArtifactsRepository,
+        cas: Option<&ContentStore>,
     ) -> CoreResult<DeployOutcome> {
         if !target.exists() {
             std::fs::create_dir_all(target).map_err(CoreError::ErrIo)?;
@@ -157,7 +186,7 @@ impl DeploymentService {
                 continue;
             };
             let target_path = target.join(&w.relative);
-            match write_one(&target_path, ra.agent.body.as_bytes(), &w.body_sha256) {
+            match write_one(&target_path, ra.agent.body.as_bytes(), &w.body_sha256, cas) {
                 Ok(WriteOutcome::Wrote) => wrote += 1,
                 Ok(WriteOutcome::Skipped) => skipped += 1,
                 Ok(WriteOutcome::BackedUp) => {
@@ -233,9 +262,22 @@ enum WriteOutcome {
 
 /// Write `content` to `target_path` atomically (temp file in the
 /// same directory, then rename). If the target already exists with
-/// different content, copy the old content to `<target>/.backups/`
-/// first. If the target exists with the same content, no-op.
-fn write_one(target_path: &Path, content: &[u8], expected_sha: &str) -> CoreResult<WriteOutcome> {
+/// different content, back up the old bytes first. If the target
+/// exists with the same content, no-op.
+///
+/// Backup strategy depends on `cas`:
+/// - `Some(store)`: write the old bytes to the CAS and drop a
+///   `BackupRecord` JSON pointer at
+///   `<parent>/.backups/<name>.<ts>.<rand>.json` (1.5.1, ADR-0016).
+///   Identical content is deduped by `ContentStore::put`.
+/// - `None`: copy the old bytes to a literal file at
+///   `<parent>/.backups/<name>.<ts>.<rand>` (1.5.0, ADR-0013).
+fn write_one(
+    target_path: &Path,
+    content: &[u8],
+    expected_sha: &str,
+    cas: Option<&ContentStore>,
+) -> CoreResult<WriteOutcome> {
     let parent = target_path
         .parent()
         .ok_or_else(|| CoreError::ErrPathOutsideRoot {
@@ -252,9 +294,15 @@ fn write_one(target_path: &Path, content: &[u8], expected_sha: &str) -> CoreResu
         if existing_sha == expected_sha {
             return Ok(WriteOutcome::Skipped);
         }
-        // Backup the old file under .backups/<name>.<unix_ts>.<rand>.
-        let backup_path = make_backup_path(target_path)?;
-        std::fs::copy(target_path, &backup_path).map_err(CoreError::ErrIo)?;
+        match cas {
+            Some(store) => {
+                make_backup_pointer(target_path, &existing, store)?;
+            }
+            None => {
+                let backup_path = make_backup_path(target_path)?;
+                std::fs::copy(target_path, &backup_path).map_err(CoreError::ErrIo)?;
+            }
+        }
         // Fall through to overwrite.
     }
 
@@ -306,6 +354,62 @@ fn make_backup_path(target_path: &Path) -> CoreResult<PathBuf> {
         .unwrap_or(0);
     let suffix: String = Uuid::new_v4().to_string().chars().take(8).collect();
     Ok(backups_dir.join(format!("{stem}.{ts}.{suffix}")))
+}
+
+/// 1.5.1 (ADR-0016) — CAS-indexed backup materialisation.
+///
+/// Writes `bytes` to the CAS (de-duplicated by sha256) and drops
+/// a `BackupRecord` JSON pointer at
+/// `<parent>/.backups/<name>.<ts>.<rand>.json`. The pointer file
+/// is written atomically (temp+rename) so a crash mid-write
+/// cannot leave a half-parsable JSON file in `.backups/`.
+fn make_backup_pointer(
+    target_path: &Path,
+    bytes: &[u8],
+    cas: &ContentStore,
+) -> CoreResult<PathBuf> {
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| CoreError::ErrPathOutsideRoot {
+            path: target_path.display().to_string(),
+            root: String::new(),
+        })?;
+    let backups_dir = parent.join(".backups");
+    std::fs::create_dir_all(&backups_dir).map_err(CoreError::ErrIo)?;
+    let stem = target_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let suffix: String = Uuid::new_v4().to_string().chars().take(8).collect();
+
+    // 1. Write the content to the CAS. The store is content-keyed,
+    //    so two pointers for the same pre-deploy bytes converge on
+    //    one CAS entry.
+    let sha = cas.put(bytes)?;
+
+    // 2. Serialise the pointer and write it atomically.
+    let target_name = target_path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let record = BackupRecord {
+        target: target_name,
+        sha256: sha,
+        captured_at: ts,
+    };
+    let json = serde_json::to_vec_pretty(&record).map_err(|e| CoreError::ErrSchemaInvalid {
+        path: "BackupRecord".to_string(),
+        reason: format!("serialise: {e}"),
+    })?;
+    let pointer_path = backups_dir.join(format!("{stem}.{ts}.{suffix}.json"));
+    let tmp = backups_dir.join(format!(".{}.{}.tmp", stem, suffix));
+    std::fs::write(&tmp, &json).map_err(CoreError::ErrIo)?;
+    std::fs::rename(&tmp, &pointer_path).map_err(CoreError::ErrIo)?;
+    Ok(pointer_path)
 }
 
 fn compute_plan_hash(system: &System) -> String {

@@ -353,6 +353,7 @@ mod system_e2e {
 // -----------------------------------------------------------------------
 
 mod deploy_e2e {
+    use std::env;
     use std::fs;
     use std::path::PathBuf;
 
@@ -499,45 +500,97 @@ mod deploy_e2e {
 
     #[tokio::test]
     async fn deploy_at_creates_backup_when_system_changes() {
-        let cat_dir = tempfile::tempdir().unwrap();
-        write_catalog(cat_dir.path());
-        let sys_file = tempfile::tempdir().unwrap();
-        let sys_path = sys_file.path().join("system.yaml");
-        write_system_yaml(&sys_path, &["be@1.0.0"]);
-        let db_dir = tempfile::tempdir().unwrap();
-        let db_path: PathBuf = db_dir.path().join("agency.db");
-        let target = tempfile::tempdir().unwrap().keep();
+        // 1.5.1 (ADR-0016): point AGENCY_CAS_ROOT at a tempdir
+        // so the deploy writes a JSON pointer into `.backups/`
+        // and the pre-deploy bytes into the isolated CAS.
+        let prev_cas = env::var("AGENCY_CAS_ROOT").ok();
+        let prev_data = env::var("AGENCY_DATA_DIR").ok();
+        let cas_dir = tempfile::tempdir().unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        unsafe {
+            env::set_var(
+                "AGENCY_CAS_ROOT",
+                cas_dir.path().to_string_lossy().into_owned(),
+            );
+            env::set_var(
+                "AGENCY_DATA_DIR",
+                data_dir.path().to_string_lossy().into_owned(),
+            );
+        }
+        let result: anyhow::Result<()> = async {
+            let cat_dir = tempfile::tempdir().unwrap();
+            write_catalog(cat_dir.path());
+            let sys_file = tempfile::tempdir().unwrap();
+            let sys_path = sys_file.path().join("system.yaml");
+            write_system_yaml(&sys_path, &["be@1.0.0"]);
+            let db_dir = tempfile::tempdir().unwrap();
+            let db_path: PathBuf = db_dir.path().join("agency.db");
+            let target = tempfile::tempdir().unwrap().keep();
 
-        // First deploy: 1 write, 0 backups.
-        let s1 = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
-            .await
-            .expect("first deploy");
-        assert_eq!(s1.wrote, 1);
-        assert_eq!(s1.backed_up, 0);
+            // First deploy: 1 write, 0 backups.
+            let s1 =
+                crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+                    .await
+                    .expect("first deploy");
+            assert_eq!(s1.wrote, 1);
+            assert_eq!(s1.backed_up, 0);
 
-        // Mutate the agent file in place so the second deploy sees a
-        // content mismatch. This simulates "someone hand-edited the
-        // deployed copy" and forces the backup-before-overwrite path.
-        let be = target.join("agents/be@1.0.0/be.md");
-        fs::write(&be, "---\nmanual edit\n---\n").unwrap();
+            // Mutate the agent file in place so the second
+            // deploy sees a content mismatch. This simulates
+            // "someone hand-edited the deployed copy" and
+            // forces the backup-before-overwrite path.
+            let be = target.join("agents/be@1.0.0/be.md");
+            fs::write(&be, "---\nmanual edit\n---\n").unwrap();
 
-        let s2 = crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
-            .await
-            .expect("second deploy");
-        assert_eq!(s2.wrote, 1);
-        assert_eq!(s2.backed_up, 1, "old content was backed up");
-        assert_eq!(s2.skipped, 0);
+            let s2 =
+                crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+                    .await
+                    .expect("second deploy");
+            assert_eq!(s2.wrote, 1);
+            assert_eq!(s2.backed_up, 1, "old content was backed up");
+            assert_eq!(s2.skipped, 0);
 
-        // The backup directory now contains exactly one snapshot file.
-        let backups = target.join("agents/be@1.0.0/.backups");
-        assert!(backups.is_dir(), ".backups directory created");
-        let entries: Vec<_> = fs::read_dir(&backups)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .collect();
-        assert_eq!(entries.len(), 1);
-        let backup_body = fs::read_to_string(entries[0].path()).unwrap();
-        assert!(backup_body.contains("manual edit"));
+            // The backup directory now contains exactly one
+            // 1.5.1 JSON pointer file.
+            let backups = target.join("agents/be@1.0.0/.backups");
+            assert!(backups.is_dir(), ".backups directory created");
+            let entries: Vec<_> = fs::read_dir(&backups)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .collect();
+            assert_eq!(entries.len(), 1);
+            let entry = &entries[0];
+            assert_eq!(
+                entry.path().extension().and_then(|e| e.to_str()),
+                Some("json"),
+                "1.5.1 backup must be a JSON pointer"
+            );
+            let rec: agent_dep_core::application::deploy::BackupRecord =
+                serde_json::from_str(&fs::read_to_string(entry.path()).unwrap()).unwrap();
+            // Read the pre-deploy bytes from the isolated CAS.
+            let cas_path = cas_dir
+                .path()
+                .join("sha256")
+                .join(&rec.sha256[..2])
+                .join(&rec.sha256[2..4])
+                .join(&rec.sha256);
+            let backup_body = fs::read_to_string(&cas_path).unwrap();
+            assert!(
+                backup_body.contains("manual edit"),
+                "CAS bytes must contain the pre-deploy body"
+            );
+            Ok(())
+        }
+        .await;
+        match prev_cas {
+            Some(v) => unsafe { env::set_var("AGENCY_CAS_ROOT", v) },
+            None => unsafe { env::remove_var("AGENCY_CAS_ROOT") },
+        }
+        match prev_data {
+            Some(v) => unsafe { env::set_var("AGENCY_DATA_DIR", v) },
+            None => unsafe { env::remove_var("AGENCY_DATA_DIR") },
+        }
+        result.expect("deploy_at_creates_backup_when_system_changes");
     }
 
     #[tokio::test]
@@ -754,6 +807,7 @@ mod lock_e2e {
 // -----------------------------------------------------------------------
 
 mod rollback_e2e {
+    use std::env;
     use std::fs;
     use std::path::PathBuf;
 
@@ -934,6 +988,167 @@ mod rollback_e2e {
             .await
             .expect_err("unknown id");
         assert!(err.to_string().contains("operation not found"));
+    }
+
+    /// 1.5.1 (ADR-0016) — end-to-end deploy-then-rollback using
+    /// the CAS-indexed backup path. The test points
+    /// `AGENCY_CAS_ROOT` at a tempdir so it does not touch the
+    /// real `<data>/cas/`. After the second deploy, the
+    /// `.backups/` dir holds a `*.json` `BackupRecord` pointer
+    /// (not a 1.5.0 literal copy), and the CAS tempdir holds the
+    /// pre-deploy bytes. The rollback reads the pointer and
+    /// resolves the pre-deploy content from the CAS, restoring
+    /// the manual edit on disk.
+    #[tokio::test]
+    async fn rollback_uses_cas_indexed_pointer_for_1_5_1_backup() {
+        // SAFETY: this test sets AGENCY_CAS_ROOT and AGENCY_DATA_DIR
+        // for the duration of the call. tokio::test gives us a
+        // single-threaded runtime, so no other test reads these
+        // env vars concurrently.
+        let prev_cas = env::var("AGENCY_CAS_ROOT").ok();
+        let prev_data = env::var("AGENCY_DATA_DIR").ok();
+        let cas_dir = tempfile::tempdir().unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        unsafe {
+            env::set_var(
+                "AGENCY_CAS_ROOT",
+                cas_dir.path().to_string_lossy().into_owned(),
+            );
+            env::set_var(
+                "AGENCY_DATA_DIR",
+                data_dir.path().to_string_lossy().into_owned(),
+            );
+        }
+
+        let result: anyhow::Result<()> = async {
+            let cat_dir = tempfile::tempdir().unwrap();
+            write_catalog(cat_dir.path());
+            let sys_file = tempfile::tempdir().unwrap();
+            let sys_path = sys_file.path().join("system.yaml");
+            write_system_yaml(&sys_path);
+            let db_dir = tempfile::tempdir().unwrap();
+            let db_path: PathBuf = db_dir.path().join("agency.db");
+            let target = tempfile::tempdir().unwrap().keep();
+
+            // First deploy: writes be.md and fe.md.
+            let s1 =
+                crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+                    .await
+                    .expect("first deploy");
+            assert_eq!(s1.wrote, 2);
+
+            // No backup expected for the first deploy (target was
+            // empty). `.backups/` is created lazily by write_one
+            // on the *second* deploy.
+            let backups_dir = target.join("agents/be@1.0.0/.backups");
+            assert!(
+                !backups_dir.is_dir(),
+                "no .backups/ until a file is overwritten"
+            );
+
+            // Hand-edit be.md.
+            let be = target.join("agents/be@1.0.0/be.md");
+            fs::write(&be, "---\nmanual edit v1\n---\n").expect("write be");
+
+            // Second deploy: must write a JSON pointer into
+            // .backups/ and the CAS tempdir must hold the
+            // pre-deploy bytes.
+            let s2 =
+                crate::commands::deploy::deploy_at(&sys_path, cat_dir.path(), &target, &db_path)
+                    .await
+                    .expect("second deploy");
+            assert_eq!(s2.wrote, 1);
+            assert_eq!(s2.backed_up, 1);
+
+            // 1.5.1 invariant: the newest backup under
+            // `.backups/` is a JSON pointer, not a 1.5.0
+            // literal copy.
+            let pointers: Vec<PathBuf> = fs::read_dir(&backups_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+                .collect();
+            assert_eq!(
+                pointers.len(),
+                1,
+                "expected exactly one JSON pointer, got {:?}",
+                pointers
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+            );
+            let literal: Vec<PathBuf> = fs::read_dir(&backups_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension()
+                        .and_then(|x| x.to_str())
+                        .map(|x| x != "json")
+                        .unwrap_or(true)
+                })
+                .collect();
+            assert!(
+                literal.is_empty(),
+                "1.5.1 must not create a literal backup; got {:?}",
+                literal
+            );
+
+            // Pointer body must reference the pre-deploy bytes
+            // (the manual edit) and the CAS must contain those
+            // bytes at the referenced sha.
+            let pointer = &pointers[0];
+            let rec: agent_dep_core::application::deploy::BackupRecord =
+                serde_json::from_str(&fs::read_to_string(pointer).unwrap()).unwrap();
+            assert_eq!(rec.target, "be.md");
+            let cas_path = cas_dir
+                .path()
+                .join("sha256")
+                .join(&rec.sha256[..2])
+                .join(&rec.sha256[2..4])
+                .join(&rec.sha256);
+            assert!(
+                cas_path.is_file(),
+                "CAS entry at {} must exist",
+                cas_path.display()
+            );
+            let cas_bytes = fs::read(&cas_path).unwrap();
+            assert_eq!(
+                cas_bytes, b"---\nmanual edit v1\n---\n",
+                "CAS must hold the pre-deploy bytes"
+            );
+
+            // Tamper with the on-disk file. Rollback must
+            // restore the manual edit by reading the CAS via
+            // the JSON pointer.
+            fs::write(&be, "tampered content\n").expect("tamper");
+            let r = crate::commands::rollback::rollback_at(s2.operation_id, &db_path)
+                .await
+                .expect("rollback");
+            assert_eq!(r.restored, 1);
+            assert_eq!(r.kept_current, 1);
+            assert!(r.failed.is_empty());
+            let restored = fs::read_to_string(&be).unwrap();
+            assert_eq!(
+                restored, "---\nmanual edit v1\n---\n",
+                "rollback must restore pre-deploy bytes from CAS"
+            );
+            Ok(())
+        }
+        .await;
+
+        // Restore env vars before asserting — even if the
+        // test body failed.
+        match prev_cas {
+            Some(v) => unsafe { env::set_var("AGENCY_CAS_ROOT", v) },
+            None => unsafe { env::remove_var("AGENCY_CAS_ROOT") },
+        }
+        match prev_data {
+            Some(v) => unsafe { env::set_var("AGENCY_DATA_DIR", v) },
+            None => unsafe { env::remove_var("AGENCY_DATA_DIR") },
+        }
+        result.expect("rollback_uses_cas_indexed_pointer_for_1_5_1_backup");
     }
 }
 

@@ -12,6 +12,7 @@ use agent_dep_core::application::journal::JournalService;
 use agent_dep_core::application::policy::Policy;
 use agent_dep_core::domain::source::{Source, SourceKind};
 use agent_dep_core::domain::system::parse_system_file;
+use agent_dep_core::infrastructure::content_store::ContentStore;
 use agent_dep_core::infrastructure::repository::deployed_artifacts_repository::DeployedArtifactsRepository;
 use agent_dep_core::infrastructure::sqlite::{connect, Db};
 use agent_dep_hermes_adapter::paths::default_hermes_home;
@@ -20,6 +21,7 @@ use agent_dep_hermes_adapter::{HermesAdapter, RuntimeAdapter};
 use anyhow::{Context, Result};
 use tokio::fs;
 
+use crate::data_dir::default_cas_root;
 use crate::output;
 
 /// Default plugin id used by `agency deploy install` when
@@ -138,8 +140,23 @@ pub async fn deploy_at(
     let journal = JournalService::new(db.pool().clone());
     let artifacts = DeployedArtifactsRepository::new(db.pool().clone());
 
+    // 1.5.1 (ADR-0016) — wire the per-app CAS into the
+    // deployment service so every overwrite of a pre-existing
+    // file writes the old bytes into the CAS and drops a
+    // JSON `BackupRecord` pointer under `<parent>/.backups/`.
+    // The CAS lives at `<data>/cas/` by default and is
+    // shared with the Tauri app so backups survive across
+    // CLI ↔ Tauri sessions.
+    let cas_root = default_cas_root();
+    if let Some(parent) = cas_root.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create_dir_all {}", parent.display()))?;
+    }
+    let cas = ContentStore::new(cas_root).map_err(|e| anyhow::anyhow!("cas: {e}"))?;
+
     let outcome = DeploymentService::new()
-        .apply(target, &composed, &journal, &artifacts)
+        .apply(target, &composed, &journal, &artifacts, Some(&cas))
         .await
         .map_err(|e| anyhow::anyhow!("deploy: {e}"))?;
 

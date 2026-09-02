@@ -12,8 +12,11 @@
 //!    the entry is a no-op.
 //! 2. Otherwise, look for a backup under
 //!    `<parent>/.backups/`. The most recent backup whose
-//!    name starts with `<file_name>.` is copied back to
-//!    the target, atomically (temp+rename).
+//!    name starts with `<file_name>.` is used to restore
+//!    the target, atomically (temp+rename). 1.5.1 (ADR-0016)
+//!    also accepts a `*.json` pointer in `.backups/`, in
+//!    which case the actual pre-deploy bytes are read from
+//!    the per-app CAS at `<data>/cas/`.
 //! 3. If no backup exists for a write that was modified
 //!    after the deploy, the entry is reported as failed
 //!    and the operation is left in `committed` state so
@@ -27,13 +30,15 @@
 
 use std::path::{Path, PathBuf};
 
-use agent_dep_core::application::deploy::{DeployEffect, DeployWrite};
+use agent_dep_core::application::deploy::{BackupRecord, DeployEffect, DeployWrite};
 use agent_dep_core::application::journal::JournalService;
+use agent_dep_core::infrastructure::content_store::ContentStore;
 use agent_dep_core::infrastructure::sqlite::connect;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::data_dir::default_cas_root;
 use crate::output;
 
 #[derive(Debug, Clone)]
@@ -179,8 +184,31 @@ fn restore_one(target_path: &Path, write: &DeployWrite) -> Result<RestoreOutcome
     // Newest first.
     candidates.sort_by_key(|c| std::cmp::Reverse(c.0));
     let backup = &candidates[0].1;
-    let bytes =
-        std::fs::read(backup).with_context(|| format!("read backup {}", backup.display()))?;
+
+    // 1.5.1 (ADR-0016) — if the newest backup is a JSON
+    // `BackupRecord` pointer, resolve the pre-deploy bytes
+    // from the per-app CAS. Otherwise treat the file as a
+    // legacy 1.5.0 literal backup and read it directly.
+    let bytes = if backup.extension().and_then(|e| e.to_str()) == Some("json") {
+        let text = std::fs::read_to_string(backup)
+            .with_context(|| format!("read backup pointer {}", backup.display()))?;
+        let record: BackupRecord = serde_json::from_str(&text).with_context(|| {
+            format!("parse backup pointer {} as BackupRecord", backup.display())
+        })?;
+        let cas_root = default_cas_root();
+        let cas = ContentStore::new(cas_root.clone())
+            .with_context(|| format!("cas: {}", cas_root.display()))?;
+        match cas.get(&record.sha256)? {
+            Some(b) => b,
+            None => anyhow::bail!(
+                "CAS missing sha256 {} (referenced by {})",
+                record.sha256,
+                backup.display()
+            ),
+        }
+    } else {
+        std::fs::read(backup).with_context(|| format!("read backup {}", backup.display()))?
+    };
     // Make sure the parent of the target exists (it should,
     // but a stray delete could have removed it).
     if !parent.is_dir() {

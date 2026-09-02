@@ -206,8 +206,8 @@ fn en_us_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.rollback.kv.kept_current", "kept_current"),
         ("cli.rollback.kv.failed", "failed"),
         (
-            "cli.rollback.todo_cas",
-            "  (Phase 5 TODO: actually re-write the pre-deploy bytes from CAS)",
+            "cli.rollback.note_cas",
+            "  (1.5.1: CAS-indexed backups — pointer JSON under .backups/ points to <data>/cas/)",
         ),
         // MCP
         ("cli.mcp.add.header", "Installed MCP server: {name}"),
@@ -264,8 +264,8 @@ fn ru_ru_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.rollback.kv.kept_current", "без изменений"),
         ("cli.rollback.kv.failed", "ошибок"),
         (
-            "cli.rollback.todo_cas",
-            "  (TODO Phase 5: записать байты до деплоя из CAS)",
+            "cli.rollback.note_cas",
+            "  (1.5.1: CAS-индексированные бэкапы — JSON-указатель в .backups/ ссылается на <data>/cas/)",
         ),
         ("cli.mcp.add.header", "Установлен MCP-сервер: {name}"),
         ("cli.mcp.kv.server_dir", "каталог сервера"),
