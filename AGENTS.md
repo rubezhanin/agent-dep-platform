@@ -53,8 +53,19 @@ scripts/             local CI scripts (PowerShell)
 ```powershell
 cargo build --workspace
 cargo test --workspace
-.\scripts\ci.ps1
+.\scripts\ci.ps1          # full CI gates (use before commit)
+.\scripts\dev-test.ps1   # fast local loop (test + regen + svelte-check)
 ```
+
+The full CI gates: `cargo fmt --check`, `cargo clippy -D warnings`,
+`cargo test --workspace`, `cargo test -p agent_dep_core --test
+ts_export` (regenerate TS), `npm install`, `npm run check`
+(svelte-check), `git diff --exit-code src/lib/types.generated.ts`
+(ts-rs drift guard). `scripts/dev-test.ps1` is the lightweight
+local loop that runs only the test-related steps in the right
+order; see the comment at the top of that file for why the
+explicit `cargo test -p agent_dep_core --test ts_export` must
+run AFTER `cargo test --workspace`.
 
 The full CI gates: `cargo fmt --check`, `cargo clippy -D warnings`,
 `cargo test --workspace`, `cargo test -p agent_dep_core --test

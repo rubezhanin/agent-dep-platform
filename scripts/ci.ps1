@@ -5,11 +5,17 @@ Set-Location $PSScriptRoot\..
 # `%USERPROFILE%\.cargo\bin` (PowerShell session) or `~/.cargo/bin`
 # (POSIX shells). We probe a few standard locations and prepend
 # the first one that exists, falling back to the existing PATH.
-$candidateCargoDirs = @(
-    (Join-Path $env:USERPROFILE '.cargo\bin')
-    (Join-Path $env:HOME        '.cargo/bin')
-    '/usr/local/cargo/bin'
-)
+# Guarded against null env vars — `$env:HOME` is null on a stock
+# Windows box and `Join-Path null` would throw under
+# `$ErrorActionPreference = 'Stop'`.
+$candidateCargoDirs = @()
+if ($env:USERPROFILE) {
+    $candidateCargoDirs += (Join-Path $env:USERPROFILE '.cargo\bin')
+}
+if ($env:HOME) {
+    $candidateCargoDirs += (Join-Path $env:HOME '.cargo/bin')
+}
+$candidateCargoDirs += '/usr/local/cargo/bin'
 foreach ($d in $candidateCargoDirs) {
     if ($d -and (Test-Path -LiteralPath $d)) {
         $env:PATH = "$d;$env:PATH"
