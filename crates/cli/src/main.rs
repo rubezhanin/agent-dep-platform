@@ -6,7 +6,7 @@ mod output;
 mod cli_tests;
 
 use clap::{Parser, Subcommand};
-use commands::{catalog, deploy, lock, mcp, rollback, status, system};
+use commands::{catalog, deploy, hermes, lock, mcp, rollback, status, system};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -50,6 +50,14 @@ pub enum Command {
     Mcp {
         #[command(subcommand)]
         action: McpAction,
+    },
+    /// Probe a Flow A router plugin under `<hermes_home>/plugins/`
+    /// (1.4.0, ADR-0012). Currently static-structural
+    /// only; the dynamic LLM probe lands in 2.x with
+    /// Hermes 0.19+ Flow B.
+    Hermes {
+        #[command(subcommand)]
+        action: HermesAction,
     },
     /// Roll back a previous deploy by operation id.
     Rollback {
@@ -142,6 +150,20 @@ pub enum McpAction {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum HermesAction {
+    /// Run the structural probe (1.4.0, ADR-0012) against
+    /// an installed Flow A plugin. Exits 0 if the plugin
+    /// passes every check, 1 otherwise. The report is
+    /// printed to stdout and (with `--json`) also as a
+    /// single-line JSON for piping.
+    Probe {
+        /// Plugin id (the directory name under
+        /// `<hermes_home>/plugins/`).
+        plugin_id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum DeployAction {
     /// Apply a composed `system.yaml` to a target directory. Agent
     /// files are written to `<target>/agents/<id>@<version>/<id>.md`
@@ -215,6 +237,11 @@ async fn main() -> ExitCode {
             McpAction::Add { name, spec } => {
                 mcp::add(name, &spec).await.map_err(Into::into)
             }
+        },
+        Command::Hermes { action } => match action {
+            HermesAction::Probe { plugin_id } => hermes::probe(plugin_id)
+                .await
+                .map_err(Into::into),
         },
         Command::Rollback { operation_id } => match uuid::Uuid::parse_str(&operation_id) {
             Ok(id) => rollback::rollback(id).await.map_err(Into::into),

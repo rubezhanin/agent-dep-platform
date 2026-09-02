@@ -13,9 +13,11 @@ use crate::router_plugin::{
 };
 use crate::types::{ArtifactHealth, ArtifactHealthStatus, HealthReport, RuntimeInfo};
 use agent_dep_core::error::{CoreError, CoreResult};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use ts_rs::TS;
 
 pub struct HermesAdapter {
     hermes_home: PathBuf,
@@ -201,5 +203,185 @@ impl RuntimeAdapter for HermesAdapter {
             }
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Structural probe (1.4.0, ADR-0012)
+// ---------------------------------------------------------------------------
+
+/// Status of a single check inside a `ProbeReport`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/lib/types.generated.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeStatus {
+    Ok,
+    Missing,
+    Mismatch,
+    Error,
+}
+
+/// One named check inside a `ProbeReport`. `sha256` is
+/// `Some` for file-content checks; `None` for
+/// directory-existence checks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/lib/types.generated.ts")]
+pub struct ProbeCheck {
+    pub name: String,
+    pub status: ProbeStatus,
+    pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+/// The full structural probe result for a single plugin.
+/// `ok` is `true` iff every check is `Ok`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/lib/types.generated.ts")]
+pub struct ProbeReport {
+    pub plugin_id: String,
+    pub ok: bool,
+    pub checks: Vec<ProbeCheck>,
+}
+
+impl HermesAdapter {
+    /// Structural probe (1.4.0, ADR-0012). Verifies that
+    /// the plugin directory, `manifest.yaml`, `SKILL.md`,
+    /// and every `skills/<agent_id>.md` referenced in the
+    /// manifest are present and non-empty. Pure
+    /// filesystem inspection; never spawns `hermes`.
+    pub fn probe(&self, plugin_id: &str) -> CoreResult<ProbeReport> {
+        let mut checks = Vec::new();
+        let plugin_dir = self.hermes_home.join("plugins").join(plugin_id);
+
+        if !plugin_dir.is_dir() {
+            checks.push(ProbeCheck {
+                name: "plugin_dir".to_string(),
+                status: ProbeStatus::Missing,
+                detail: format!("plugin directory not found: {}", plugin_dir.display()),
+                sha256: None,
+            });
+            return Ok(ProbeReport {
+                plugin_id: plugin_id.to_string(),
+                ok: false,
+                checks,
+            });
+        }
+        checks.push(ProbeCheck {
+            name: "plugin_dir".to_string(),
+            status: ProbeStatus::Ok,
+            detail: format!("{}", plugin_dir.display()),
+            sha256: None,
+        });
+
+        // Manifest.
+        let manifest_path = plugin_dir.join("manifest.yaml");
+        let manifest_text = match std::fs::read_to_string(&manifest_path) {
+            Ok(t) => t,
+            Err(e) => {
+                checks.push(ProbeCheck {
+                    name: "manifest.yaml".to_string(),
+                    status: ProbeStatus::Error,
+                    detail: format!("read {}: {e}", manifest_path.display()),
+                    sha256: None,
+                });
+                return Ok(ProbeReport {
+                    plugin_id: plugin_id.to_string(),
+                    ok: false,
+                    checks,
+                });
+            }
+        };
+        checks.push(ProbeCheck {
+            name: "manifest.yaml".to_string(),
+            status: ProbeStatus::Ok,
+            detail: format!("{} bytes", manifest_text.len()),
+            sha256: Some(sha256_hex(manifest_text.as_bytes())),
+        });
+
+        // SKILL.md.
+        let skill_path = plugin_dir.join("SKILL.md");
+        match std::fs::read_to_string(&skill_path) {
+            Ok(t) if !t.trim().is_empty() => checks.push(ProbeCheck {
+                name: "SKILL.md".to_string(),
+                status: ProbeStatus::Ok,
+                detail: format!("{} bytes", t.len()),
+                sha256: Some(sha256_hex(t.as_bytes())),
+            }),
+            Ok(_) => checks.push(ProbeCheck {
+                name: "SKILL.md".to_string(),
+                status: ProbeStatus::Missing,
+                detail: "file is empty".to_string(),
+                sha256: None,
+            }),
+            Err(e) => checks.push(ProbeCheck {
+                name: "SKILL.md".to_string(),
+                status: ProbeStatus::Error,
+                detail: format!("read {}: {e}", skill_path.display()),
+                sha256: None,
+            }),
+        }
+
+        // Every `agents[].id` mentioned in the manifest
+        // must have a corresponding `skills/<id>.md`.
+        // We parse the manifest with serde_yaml (1.4.0
+        // is the first release that pulls serde_yaml into
+        // hermes-adapter; it is already an indirect
+        // dep via the router-plugin module).
+        #[derive(Deserialize)]
+        struct ManifestProbe {
+            agents: Option<Vec<AgentProbe>>,
+        }
+        #[derive(Deserialize)]
+        struct AgentProbe {
+            id: String,
+        }
+        let parsed: ManifestProbe = match serde_yaml::from_str(&manifest_text) {
+            Ok(m) => m,
+            Err(e) => {
+                checks.push(ProbeCheck {
+                    name: "manifest.agents".to_string(),
+                    status: ProbeStatus::Error,
+                    detail: format!("parse manifest: {e}"),
+                    sha256: None,
+                });
+                return Ok(ProbeReport {
+                    plugin_id: plugin_id.to_string(),
+                    ok: false,
+                    checks,
+                });
+            }
+        };
+        let skills_dir = plugin_dir.join("skills");
+        for agent in parsed.agents.unwrap_or_default() {
+            let skill_path = skills_dir.join(format!("{}.md", agent.id));
+            match std::fs::read(&skill_path) {
+                Ok(bytes) if !bytes.is_empty() => checks.push(ProbeCheck {
+                    name: format!("skills/{}.md", agent.id),
+                    status: ProbeStatus::Ok,
+                    detail: format!("{} bytes", bytes.len()),
+                    sha256: Some(sha256_hex(&bytes)),
+                }),
+                Ok(_) => checks.push(ProbeCheck {
+                    name: format!("skills/{}.md", agent.id),
+                    status: ProbeStatus::Missing,
+                    detail: "file is empty".to_string(),
+                    sha256: None,
+                }),
+                Err(_) => checks.push(ProbeCheck {
+                    name: format!("skills/{}.md", agent.id),
+                    status: ProbeStatus::Mismatch,
+                    detail: format!("manifest references `{}` but {} is missing", agent.id, skill_path.display()),
+                    sha256: None,
+                }),
+            }
+        }
+
+        let ok = checks.iter().all(|c| c.status == ProbeStatus::Ok);
+        Ok(ProbeReport {
+            plugin_id: plugin_id.to_string(),
+            ok,
+            checks,
+        })
     }
 }

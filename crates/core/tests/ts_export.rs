@@ -8,6 +8,7 @@ use agent_dep_core::dto::{
     AgentSummary, BackupSummary, DeploymentSummary, Finding, LogLine, Plan, PlanOperation,
     ScanResult, SourceSummary, SystemSummary,
 };
+use agent_dep_hermes_adapter::hermes_adapter::{ProbeCheck, ProbeReport, ProbeStatus};
 use agent_dep_hermes_adapter::mcp_server::{McpAuth, McpServerSpec, McpTransport};
 use agent_dep_hermes_adapter::types::RuntimeInfo;
 use ts_rs::TS;
@@ -31,4 +32,7 @@ fn export_all_types() {
     let _ = McpServerSpec::export_all();
     let _ = McpTransport::export_all();
     let _ = McpAuth::export_all();
+    let _ = ProbeReport::export_all();
+    let _ = ProbeCheck::export_all();
+    let _ = ProbeStatus::export_all();
 }

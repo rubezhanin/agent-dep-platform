@@ -208,6 +208,11 @@ fn en_us_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.mcp.kv.server_dir", "server_dir"),
         ("cli.mcp.kv.manifest_path", "manifest_path"),
         ("cli.mcp.kv.manifest_sha256", "manifest_sha256"),
+        // Hermes probe (1.4.0, ADR-0012)
+        ("cli.hermes.probe.header", "Structural probe: {name}"),
+        ("cli.hermes.probe.failed", "Probe failed: at least one check is not OK"),
+        ("cli.hermes.kv.hermes_home", "hermes_home"),
+        ("cli.hermes.kv.ok", "ok"),
         // Status
         ("cli.status.unknown", "no deployment found"),
     ]
@@ -248,6 +253,10 @@ fn ru_ru_entries() -> &'static [(&'static str, &'static str)] {
         ("cli.mcp.kv.server_dir", "каталог сервера"),
         ("cli.mcp.kv.manifest_path", "путь к manifest"),
         ("cli.mcp.kv.manifest_sha256", "sha256 manifest"),
+        ("cli.hermes.probe.header", "Структурная проверка: {name}"),
+        ("cli.hermes.probe.failed", "Проверка не прошла: хотя бы одна проверка вернула не OK"),
+        ("cli.hermes.kv.hermes_home", "каталог Hermes"),
+        ("cli.hermes.kv.ok", "ok"),
         ("cli.status.unknown", "развёртывание не найдено"),
     ]
 }

@@ -64,4 +64,22 @@ export type McpServerSpec = { name: string, description: string, source_url: str
  */
 export type McpTransport = { "type": "http", url: string, };
 
+/**
+ * One named check inside a `ProbeReport`. `sha256` is
+ * `Some` for file-content checks; `None` for
+ * directory-existence checks.
+ */
+export type ProbeCheck = { name: string, status: ProbeStatus, detail: string, sha256: string | null, };
+
+/**
+ * The full structural probe result for a single plugin.
+ * `ok` is `true` iff every check is `Ok`.
+ */
+export type ProbeReport = { plugin_id: string, ok: boolean, checks: Array<ProbeCheck>, };
+
+/**
+ * Status of a single check inside a `ProbeReport`.
+ */
+export type ProbeStatus = "ok" | "missing" | "mismatch" | "error";
+
 export type RuntimeInfo = { version: string, home: string, plugin_dir: string, };

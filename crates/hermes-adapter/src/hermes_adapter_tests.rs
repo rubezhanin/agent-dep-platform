@@ -1,7 +1,7 @@
 use crate::adapter::RuntimeAdapter;
 use crate::detection::detect_hermes;
+use crate::hermes_adapter::{HermesAdapter, ProbeStatus};
 use crate::router_plugin::{AgentFile, RouterPluginInputs};
-use crate::hermes_adapter::HermesAdapter;
 use crate::types::ArtifactHealthStatus;
 use std::collections::BTreeMap;
 
@@ -280,4 +280,119 @@ fn health_on_missing_plugin_dir_with_empty_baseline_is_ok() {
         .expect("health");
     assert!(report.ok, "empty baseline + missing dir is vacuously healthy");
     assert!(report.artifacts.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Structural probe (1.4.0, ADR-0012)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn probe_reports_ok_after_fresh_deploy() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = HermesAdapter::new(dir.path().to_path_buf());
+    adapter.deploy(&sample_inputs()).expect("deploy");
+    let report = adapter.probe("agency-agents-router").expect("probe");
+    assert!(report.ok, "fresh deploy should pass: {report:?}");
+    assert!(report
+        .checks
+        .iter()
+        .all(|c| c.name == "plugin_dir"
+            || c.name == "manifest.yaml"
+            || c.name == "SKILL.md"
+            || c.name.starts_with("skills/")));
+    // One check per agent file plus the three fixed ones.
+    // `sample_inputs` ships one agent, so 1 + 3 = 4.
+    assert_eq!(report.checks.len(), 4);
+}
+
+#[test]
+fn probe_reports_missing_when_plugin_dir_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = HermesAdapter::new(dir.path().to_path_buf());
+    let report = adapter.probe("nope").expect("probe");
+    assert!(!report.ok);
+    assert_eq!(report.checks.len(), 1);
+    assert_eq!(report.checks[0].name, "plugin_dir");
+    assert_eq!(report.checks[0].status, ProbeStatus::Missing);
+}
+
+#[test]
+fn probe_reports_error_when_manifest_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = HermesAdapter::new(dir.path().to_path_buf());
+    adapter.deploy(&sample_inputs()).expect("deploy");
+    // Remove the manifest but leave the dir + SKILL.md.
+    std::fs::remove_file(
+        dir.path()
+            .join("plugins/agency-agents-router/manifest.yaml"),
+    )
+    .expect("remove manifest");
+    let report = adapter.probe("agency-agents-router").expect("probe");
+    assert!(!report.ok);
+    let manifest_check = report
+        .checks
+        .iter()
+        .find(|c| c.name == "manifest.yaml")
+        .expect("manifest check present");
+    assert_eq!(manifest_check.status, ProbeStatus::Error);
+}
+
+#[test]
+fn probe_reports_missing_when_skill_md_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = HermesAdapter::new(dir.path().to_path_buf());
+    adapter.deploy(&sample_inputs()).expect("deploy");
+    let path = dir.path().join("plugins/agency-agents-router/SKILL.md");
+    std::fs::write(&path, "").expect("truncate");
+    let report = adapter.probe("agency-agents-router").expect("probe");
+    assert!(!report.ok);
+    let check = report
+        .checks
+        .iter()
+        .find(|c| c.name == "SKILL.md")
+        .expect("SKILL.md check");
+    assert_eq!(check.status, ProbeStatus::Missing);
+}
+
+#[test]
+fn probe_reports_mismatch_when_manifest_references_missing_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = HermesAdapter::new(dir.path().to_path_buf());
+    let mut inputs = sample_inputs();
+    // Add a phantom agent the materializer does not write out.
+    inputs
+        .agent_files
+        .push(AgentFile { slug: "phantom".to_string(), body: "# phantom".to_string() });
+    // The materializer writes skills/<slug>.md for every
+    // agent, so to provoke a real mismatch we instead drop
+    // one of the real skill files post-deploy.
+    adapter.deploy(&inputs).expect("deploy");
+    let removed = dir
+        .path()
+        .join("plugins/agency-agents-router/skills/backend-engineer.md");
+    std::fs::remove_file(&removed).expect("remove");
+    let report = adapter.probe("agency-agents-router").expect("probe");
+    assert!(!report.ok);
+    let check = report
+        .checks
+        .iter()
+        .find(|c| c.name == "skills/backend-engineer.md")
+        .expect("backend-engineer check");
+    assert_eq!(check.status, ProbeStatus::Mismatch);
+}
+
+#[test]
+fn probe_ok_flag_reflects_every_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = HermesAdapter::new(dir.path().to_path_buf());
+    adapter.deploy(&sample_inputs()).expect("deploy");
+    // Tamper: zero out SKILL.md.
+    let path = dir.path().join("plugins/agency-agents-router/SKILL.md");
+    std::fs::write(&path, "   \n   ").expect("blank out");
+    let report = adapter.probe("agency-agents-router").expect("probe");
+    assert!(!report.ok, "tampered SKILL.md must flip the top-level ok");
+    assert!(report
+        .checks
+        .iter()
+        .any(|c| c.name == "SKILL.md" && c.status == ProbeStatus::Missing));
 }
