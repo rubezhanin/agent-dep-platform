@@ -941,3 +941,240 @@ fn default_db_path() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     home.join(".agency-server").join("data").join("agency.db")
 }
+
+// ---------------------------------------------------------------------------
+// 2.3.0 - /v1/secrets endpoints (ADR-0021).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSecretBody {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSecretBody {
+    pub value: String,
+}
+
+pub async fn list_secrets(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
+    let action = "GET /v1/secrets";
+    match state.secrets.list().await {
+        Ok(rows) => {
+            let details = Some(json!({"count": rows.len()}).to_string());
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
+            (StatusCode::OK, Json(rows)).into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn get_secret(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(name): AxPath<String>,
+) -> impl IntoResponse {
+    let action = "GET /v1/secrets/:name";
+    let target = format!("secret:{name}");
+    match state.secrets.get_value(&name).await {
+        Ok(value) => {
+            let _ = state
+                .audit
+                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .await;
+            (
+                StatusCode::OK,
+                Json(json!({ "name": value.name, "value": value.value })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            // Do NOT include the value (or even the
+            // name) in the error response - surface
+            // only a generic 404.
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("read: {e}")),
+                )
+                .await;
+            (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response()
+        }
+    }
+}
+
+pub async fn create_secret(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Json(req): Json<CreateSecretBody>,
+) -> impl IntoResponse {
+    let action = "POST /v1/secrets";
+    let target = format!("secret:{}", req.name);
+    match state.secrets.create(&req.name, &req.value, user.id).await {
+        Ok(row) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    Some(&format!("version={}", row.version)),
+                )
+                .await;
+            (StatusCode::CREATED, Json(row)).into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("create: {e}")),
+                )
+                .await;
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn update_secret(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(name): AxPath<String>,
+    Json(req): Json<UpdateSecretBody>,
+) -> impl IntoResponse {
+    let action = "PUT /v1/secrets/:name";
+    let target = format!("secret:{name}");
+    match state.secrets.update(&name, &req.value, user.id).await {
+        Ok(Some(row)) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    Some(&format!("version={}", row.version)),
+                )
+                .await;
+            (StatusCode::OK, Json(row)).into_response()
+        }
+        Ok(None) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(r#"{"reason":"not found"}"#),
+                )
+                .await;
+            (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("update: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn delete_secret(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(name): AxPath<String>,
+) -> impl IntoResponse {
+    let action = "DELETE /v1/secrets/:name";
+    let target = format!("secret:{name}");
+    match state.secrets.delete(&name).await {
+        Ok(true) => {
+            let _ = state
+                .audit
+                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .await;
+            (StatusCode::NO_CONTENT, ()).into_response()
+        }
+        Ok(false) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(r#"{"reason":"not found"}"#),
+                )
+                .await;
+            (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("delete: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}

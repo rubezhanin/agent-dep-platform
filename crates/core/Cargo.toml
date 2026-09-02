@@ -26,6 +26,8 @@ semver = "1"
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 base64 = { workspace = true }
 rand = { workspace = true }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
 
 [dev-dependencies]
 agent_dep_hermes_adapter = { path = "../hermes-adapter" }

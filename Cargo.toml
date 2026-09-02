@@ -45,6 +45,8 @@ tower = "0.5"
 tower-http = { version = "0.5", features = ["trace"] }
 rand = "0.8"
 base64 = "0.22"
+aes-gcm = "0.10"
+argon2 = "0.5"
 
 [profile.release]
 opt-level = 3

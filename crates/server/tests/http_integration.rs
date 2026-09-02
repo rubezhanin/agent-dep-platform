@@ -15,6 +15,7 @@ use agent_dep_core::infrastructure::repository::audit_log_repository::{
     AuditLogRepository, AuditOutcome,
 };
 use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
+use agent_dep_core::infrastructure::repository::secrets_repository::SecretRepository;
 use agent_dep_core::infrastructure::repository::users_repository::{Role, UserRepository};
 use agent_dep_core::infrastructure::sqlite::connect;
 use agent_dep_server::{router, ServerState};
@@ -60,11 +61,13 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
         }
     };
     let deploys = PendingDeployRepository::new(db.pool().clone());
+    let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase").expect("vault");
     let state = ServerState {
         db,
         audit,
         users,
         deploys,
+        secrets,
         legacy_token: Arc::new(legacy.map(|s| s.to_string())),
     };
     let app = router(state);
@@ -216,11 +219,13 @@ spec:
         .unwrap();
     let token = created.token.clone();
     let deploys = PendingDeployRepository::new(db.pool().clone());
+    let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase").expect("vault");
     let state = ServerState {
         db,
         audit,
         users,
         deploys,
+        secrets,
         legacy_token: Arc::new(Some(token.clone())),
     };
     let app = router(state);
@@ -552,4 +557,122 @@ async fn admin_rejects_pending_deploy() {
     let v: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(v["status"], "rejected");
     assert_eq!(v["rejection_reason"], "policy blocked");
+}
+
+// ---------------------------------------------------------------------------
+// 2.3.0 — vault integration tests (ADR-0021).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn admin_creates_secret_201() {
+    let srv = boot().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/secrets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({ "name": "hermes-api-token", "value": "secret-XYZ" }))
+        .send()
+        .await
+        .expect("create");
+    assert_eq!(resp.status(), 201, "create secret: {:?}", resp);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["name"], "hermes-api-token");
+    // The list view does NOT carry a value field.
+    assert!(v.get("value").is_none());
+}
+
+#[tokio::test]
+async fn viewer_lists_secrets_without_values() {
+    let srv = boot().await;
+    // Seed a secret as admin.
+    let _ = reqwest::Client::new()
+        .post(format!("{}/v1/secrets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({ "name": "k1", "value": "v1" }))
+        .send()
+        .await
+        .expect("seed k1");
+    // Operator-level token for the read.
+    let op_token = create_user(&srv, "op", Role::Operator).await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/secrets", srv.base))
+        .bearer_auth(&op_token)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let arr = v.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["name"], "k1");
+    assert!(
+        arr[0].get("value").is_none(),
+        "list must never include value"
+    );
+}
+
+#[tokio::test]
+async fn operator_reads_secret_value_200() {
+    let srv = boot().await;
+    let _ = reqwest::Client::new()
+        .post(format!("{}/v1/secrets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({ "name": "k", "value": "the-value" }))
+        .send()
+        .await
+        .expect("seed");
+    let op_token = create_user(&srv, "op", Role::Operator).await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/secrets/k", srv.base))
+        .bearer_auth(&op_token)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["name"], "k");
+    assert_eq!(v["value"], "the-value");
+}
+
+#[tokio::test]
+async fn admin_deletes_secret_204_and_audit_logs_access() {
+    let srv = boot().await;
+    let _ = reqwest::Client::new()
+        .post(format!("{}/v1/secrets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({ "name": "k", "value": "v" }))
+        .send()
+        .await
+        .expect("seed");
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/v1/secrets/k", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("delete");
+    assert_eq!(resp.status(), 204);
+    // After delete, GET returns 404.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/secrets/k", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("get after delete");
+    assert_eq!(resp.status(), 404);
+    // The audit log records every step: create, delete, then the failed get.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/audit?limit=200", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("get audit");
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let items = v["items"].as_array().expect("items");
+    let has_create = items
+        .iter()
+        .any(|r| r["action"] == "POST /v1/secrets" && r["outcome"] == "ok");
+    let has_delete = items
+        .iter()
+        .any(|r| r["action"] == "DELETE /v1/secrets/:name" && r["outcome"] == "ok");
+    assert!(has_create, "create must be in audit log: {items:?}");
+    assert!(has_delete, "delete must be in audit log: {items:?}");
 }

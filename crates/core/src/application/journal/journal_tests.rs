@@ -9,7 +9,7 @@ async fn make_service() -> (tempfile::TempDir, JournalService) {
     let path = dir.path().join("journal.db");
     let db = connect(&path).await.expect("connect");
     db.migrate().await.expect("migrate");
-    assert_eq!(schema_version(&db).await.unwrap(), 9);
+    assert_eq!(schema_version(&db).await.unwrap(), 10);
     (dir, JournalService::new(db.pool().clone()))
 }
 

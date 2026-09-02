@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use agent_dep_core::infrastructure::repository::audit_log_repository::AuditLogRepository;
 use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
+use agent_dep_core::infrastructure::repository::secrets_repository::SecretRepository;
 use agent_dep_core::infrastructure::repository::users_repository::UserRepository;
 use agent_dep_core::infrastructure::sqlite::connect;
 use anyhow::{Context, Result};
@@ -113,6 +114,34 @@ pub fn router(state: ServerState) -> Router {
         .route(
             "/v1/users/:id/rotate",
             post(handlers::rotate_user_token)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
+        // 2.3.0 vault
+        .route(
+            "/v1/secrets",
+            get(handlers::list_secrets)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
+        )
+        .route(
+            "/v1/secrets/:name",
+            get(handlers::get_secret).layer(middleware::from_fn_with_state(
+                state.clone(),
+                allow_operator,
+            )),
+        )
+        .route(
+            "/v1/secrets",
+            post(handlers::create_secret)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
+        .route(
+            "/v1/secrets/:name",
+            axum::routing::delete(handlers::delete_secret)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
+        .route(
+            "/v1/secrets/:name",
+            axum::routing::put(handlers::update_secret)
                 .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
         )
         .route_layer(middleware::from_fn_with_state(
@@ -278,11 +307,49 @@ pub async fn boot_default_state() -> Result<ServerState> {
     };
     let audit = AuditLogRepository::new(db.pool().clone());
     let deploys = PendingDeployRepository::new(db.pool().clone());
+    // 2.3.0: vault passphrase comes from
+    // `AGENCY_VAULT_PASSPHRASE`. If the `secrets`
+    // table is non-empty and the env var is unset,
+    // we refuse to start.
+    let passphrase = std::env::var("AGENCY_VAULT_PASSPHRASE").unwrap_or_default();
+    let secrets = if passphrase.is_empty() {
+        let count_placeholder = PendingDeployRepository::new(db.pool().clone());
+        // We use a temporary repo to count — but
+        // actually we need to check the count
+        // before constructing the vault, because
+        // the vault constructor requires a
+        // non-empty passphrase. Drop the
+        // placeholder and check directly.
+        drop(count_placeholder);
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM secrets")
+            .fetch_one(db.pool())
+            .await
+            .map_err(|e| anyhow::anyhow!("count secrets: {e}"))?;
+        if row.0 > 0 {
+            anyhow::bail!(
+                "AGENCY_VAULT_PASSPHRASE is unset but the `secrets` table has {} row(s). \
+                 Set the env var to the passphrase used to encrypt the existing rows, \
+                 or move the table aside to start fresh.",
+                row.0
+            );
+        }
+        // No secrets yet — build a placeholder
+        // vault with a temporary passphrase. The
+        // operator can rotate later by re-creating
+        // rows. The placeholder is NOT secure
+        // against a leaked memory dump.
+        SecretRepository::new(db.pool().clone(), "unset-rotate-before-first-use")
+            .map_err(|e| anyhow::anyhow!("init placeholder vault: {e}"))?
+    } else {
+        SecretRepository::new(db.pool().clone(), &passphrase)
+            .map_err(|e| anyhow::anyhow!("init vault: {e}"))?
+    };
     Ok(ServerState {
         db,
         audit,
         users,
         deploys,
+        secrets,
         legacy_token: Arc::new(Some(legacy_token)),
     })
 }
