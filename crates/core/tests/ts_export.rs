@@ -10,7 +10,9 @@ use agent_dep_core::dto::{
 };
 use agent_dep_hermes_adapter::hermes_adapter::{ProbeCheck, ProbeReport, ProbeStatus};
 use agent_dep_hermes_adapter::mcp_server::{McpAuth, McpServerSpec, McpTransport};
-use agent_dep_hermes_adapter::types::RuntimeInfo;
+use agent_dep_hermes_adapter::types::{
+    ArtifactHealth, ArtifactHealthStatus, HealthReport, RuntimeInfo,
+};
 use ts_rs::TS;
 
 #[test]
@@ -35,4 +37,14 @@ fn export_all_types() {
     let _ = ProbeReport::export_all();
     let _ = ProbeCheck::export_all();
     let _ = ProbeStatus::export_all();
+    // v1.4.0 added these to the hermes-adapter
+    // types module. The drift guard import list
+    // must include them; otherwise an
+    // incremental regen silently drops them
+    // (the gotcha called out in the saved
+    // memory entry "ts-rs gotcha: incremental
+    // regen can DUPLICATE types").
+    let _ = HealthReport::export_all();
+    let _ = ArtifactHealth::export_all();
+    let _ = ArtifactHealthStatus::export_all();
 }

@@ -2,11 +2,47 @@
 
 export type AgentSummary = { id: string, name: string, version: string, };
 
+export type ArtifactHealth = { 
+/**
+ * Path relative to `hermes_home` (POSIX style).
+ */
+target: string, 
+/**
+ * sha256 we expected on disk, or `None` if the file is
+ * not tracked in our baseline.
+ */
+expected_sha256: string | null, 
+/**
+ * sha256 we actually read, or `None` if the file is
+ * missing or unreadable.
+ */
+observed_sha256: string | null, status: ArtifactHealthStatus, };
+
+export type ArtifactHealthStatus = "Current" | "Modified" | "Foreign" | "Missing" | "Error";
+
 export type BackupSummary = { id: string, path: string, created_at: string, };
 
 export type DeploymentSummary = { id: string, system_id: string, status: string, created_at: string, };
 
 export type Finding = { severity: string, rule: string, path: string, reason: string, };
+
+/**
+ * Per-plugin verification report (TZ §12.3 + ADR-0008).
+ *
+ * One `HealthReport` per Hermes plugin id. Each `ArtifactHealth`
+ * describes one file inside the plugin tree relative to
+ * `hermes_home` (e.g. `plugins/agency-agents-router/manifest.yaml`).
+ *
+ * `expected_sha256` is `None` for files that the operator
+ * never deployed through us (e.g. a hand-written `README.md`).
+ * `observed_sha256` is `None` when the file is missing on disk.
+ */
+export type HealthReport = { plugin_id: string, hermes_home: string, artifacts: Array<ArtifactHealth>, 
+/**
+ * `true` iff every `ArtifactHealth` is `Current` (i.e. the
+ * on-disk state matches what we last deployed).
+ */
+ok: boolean, };
 
 export type LogLine = { ts: string, level: string, target: string, message: string, };
 

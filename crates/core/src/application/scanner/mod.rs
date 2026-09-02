@@ -244,6 +244,34 @@ pub const RULES: &[RuleSpec] = &[
         id: "prompt-injection.zero-width-chars",
         default: Severity::Warn,
     },
+    // 2.6.1 more complete secret scanner (ADR-0025).
+    // All Block — these tokens are
+    // credential-equivalent and fail-closed at
+    // ingest (ADR-0005 §"fail-closed").
+    RuleSpec {
+        id: "secret.slack-token",
+        default: Severity::Block,
+    },
+    RuleSpec {
+        id: "secret.stripe-key",
+        default: Severity::Block,
+    },
+    RuleSpec {
+        id: "secret.google-api-key",
+        default: Severity::Block,
+    },
+    RuleSpec {
+        id: "secret.openai-key",
+        default: Severity::Block,
+    },
+    RuleSpec {
+        id: "secret.anthropic-key",
+        default: Severity::Block,
+    },
+    RuleSpec {
+        id: "secret.jwt",
+        default: Severity::Block,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -551,6 +579,32 @@ static PI_ZERO_WIDTH_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"[\u{200B}-\u{200F}\u{2028}-\u{202F}\u{205F}-\u{206F}\u{FEFF}]").unwrap()
 });
 
+// 2.6.1 more complete secret scanner (ADR-0025).
+// All vendor-published formats as of 2026-09.
+// Each regex is anchored on the vendor's
+// documented prefix to keep false-positive
+// surface minimal. Note: the `regex` crate
+// forbids variable-width lookbehind after
+// `{N,}`, so we disambiguate the OpenAI vs
+// Stripe overlap via the `sk-` (dash) vs `sk_`
+// (underscore) prefix rather than `(?<!_)`.
+static SECRET_SLACK_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"xox[baprs]-[A-Za-z0-9-]{10,}").unwrap());
+static SECRET_STRIPE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"sk_(?:live|test)_[A-Za-z0-9]{20,}").unwrap());
+static SECRET_GOOGLE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"AIza[A-Za-z0-9_-]{35}").unwrap());
+// OpenAI new-format `sk-…` (post-Mar 2024) and
+// `sk-proj-…` (project keys). The `sk-` (dash)
+// prefix is the discriminator vs. Stripe's
+// `sk_` (underscore) — no overlap, no
+// lookbehind needed. We allow `-` in the body
+// so `sk-proj-…` (the project-key form) matches.
+static SECRET_OPENAI_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sk-[A-Za-z0-9-]{20,}").unwrap());
+static SECRET_ANTHROPIC_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"sk-ant-[A-Za-z0-9_-]{32,}").unwrap());
+static SECRET_JWT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").unwrap());
+
 static URL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"https?://[A-Za-z0-9.\-_:]+(?:/[^"'\s<>)]*)?"#).unwrap());
 
@@ -600,6 +654,17 @@ const TEXT_RULES: &[(&str, Severity, &Lazy<Regex>)] = &[
         Severity::Warn,
         &PI_ZERO_WIDTH_RE,
     ),
+    // 2.6.1 more complete secret scanner (ADR-0025).
+    ("secret.slack-token", Severity::Block, &SECRET_SLACK_RE),
+    ("secret.stripe-key", Severity::Block, &SECRET_STRIPE_RE),
+    ("secret.google-api-key", Severity::Block, &SECRET_GOOGLE_RE),
+    ("secret.openai-key", Severity::Block, &SECRET_OPENAI_RE),
+    (
+        "secret.anthropic-key",
+        Severity::Block,
+        &SECRET_ANTHROPIC_RE,
+    ),
+    ("secret.jwt", Severity::Block, &SECRET_JWT_RE),
 ];
 
 // ---------------------------------------------------------------------------

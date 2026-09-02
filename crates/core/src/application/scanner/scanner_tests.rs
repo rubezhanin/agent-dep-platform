@@ -39,10 +39,12 @@ fn count_rule(findings: &[Finding], rule: &str) -> usize {
 // -----------------------------------------------------------------------
 
 #[test]
-fn rule_table_has_19_rules_per_adr_0005_and_0024() {
+fn rule_table_has_25_rules_per_adr_0005_0024_0025() {
     // 2.6.0 (ADR-0024) added 6 prompt-injection
-    // rules. The MVP table (ADR-0005) had 13.
-    assert_eq!(RULES.len(), 19);
+    // rules. 2.6.1 (ADR-0025) added 6 more
+    // secret rules. MVP (ADR-0005) had 13.
+    // Total: 13 + 6 + 6 = 25.
+    assert_eq!(RULES.len(), 25);
     let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
     for expected in [
         // MVP (ADR-0005)
@@ -66,6 +68,13 @@ fn rule_table_has_19_rules_per_adr_0005_and_0024() {
         "prompt-injection.jailbreak-dan",
         "prompt-injection.markdown-system-tag",
         "prompt-injection.zero-width-chars",
+        // 2.6.1 (ADR-0025)
+        "secret.slack-token",
+        "secret.stripe-key",
+        "secret.google-api-key",
+        "secret.openai-key",
+        "secret.anthropic-key",
+        "secret.jwt",
     ] {
         assert!(ids.contains(&expected), "missing rule `{expected}`");
     }
@@ -632,4 +641,152 @@ fn prompt_injection_rules_respect_rule_overrides() {
     );
     assert!(!has_rule(&findings, "prompt-injection.role-override"));
     assert!(has_rule(&findings, "prompt-injection.jailbreak-dan"));
+}
+
+// -----------------------------------------------------------------------
+// 2.6.1 more complete secret scanner (ADR-0025)
+// -----------------------------------------------------------------------
+
+#[test]
+fn rule20_slack_token_is_block() {
+    let findings = scan_str(
+        "Use this token: xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx",
+        &ScanPolicy::mvp_default(),
+    );
+    let f = findings
+        .iter()
+        .find(|f| f.rule == "secret.slack-token")
+        .expect("expected slack-token finding");
+    assert_eq!(f.severity, Severity::Block);
+    // All Slack token variants share the xox[baprs]-
+    // prefix and the regex accepts them all (body
+    // must be 10+ chars to match the regex).
+    for variant in [
+        "xoxb-1234567890",
+        "xoxp-1234567890",
+        "xoxa-1234567890",
+        "xoxr-1234567890",
+        "xoxs-1234567890",
+    ] {
+        let findings = scan_str(variant, &ScanPolicy::mvp_default());
+        assert!(
+            has_rule(&findings, "secret.slack-token"),
+            "variant {variant} not matched"
+        );
+    }
+    // Plain text is a no-op.
+    let findings = scan_str("use slack", &ScanPolicy::mvp_default());
+    assert!(!has_rule(&findings, "secret.slack-token"));
+}
+
+#[test]
+fn rule21_stripe_key_is_block() {
+    let findings = scan_str(
+        "sk_live_4eC39HqLyjWDarjtT1zdp7dc",
+        &ScanPolicy::mvp_default(),
+    );
+    let f = findings
+        .iter()
+        .find(|f| f.rule == "secret.stripe-key")
+        .expect("expected stripe-key finding");
+    assert_eq!(f.severity, Severity::Block);
+    // Test variant also fires.
+    let findings = scan_str(
+        "sk_test_4eC39HqLyjWDarjtT1zdp7dc",
+        &ScanPolicy::mvp_default(),
+    );
+    assert!(has_rule(&findings, "secret.stripe-key"));
+    // Bare "sk-" (the OpenAI prefix) is NOT a
+    // Stripe key — must not match the Stripe
+    // rule. (It matches the OpenAI rule.)
+    let findings = scan_str("sk-proj-abcdefghijklmnopqrstuv", &ScanPolicy::mvp_default());
+    assert!(!has_rule(&findings, "secret.stripe-key"));
+}
+
+#[test]
+fn rule22_google_api_key_is_block() {
+    let findings = scan_str(
+        "AIzaSyA1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        &ScanPolicy::mvp_default(),
+    );
+    let f = findings
+        .iter()
+        .find(|f| f.rule == "secret.google-api-key")
+        .expect("expected google-api-key finding");
+    assert_eq!(f.severity, Severity::Block);
+    // Plain text is a no-op.
+    let findings = scan_str("use google maps", &ScanPolicy::mvp_default());
+    assert!(!has_rule(&findings, "secret.google-api-key"));
+}
+
+#[test]
+fn rule23_openai_key_is_block() {
+    let findings = scan_str(
+        "sk-proj-abcdefghijklmnopqrstuvwx",
+        &ScanPolicy::mvp_default(),
+    );
+    let f = findings
+        .iter()
+        .find(|f| f.rule == "secret.openai-key")
+        .expect("expected openai-key finding");
+    assert_eq!(f.severity, Severity::Block);
+    // Legacy user-key format also fires.
+    let findings = scan_str("sk-abcdefghijklmnopqrstuvwx", &ScanPolicy::mvp_default());
+    assert!(has_rule(&findings, "secret.openai-key"));
+    // Stripe keys do NOT match the OpenAI rule
+    // (the `sk-` (dash) vs `sk_` (underscore)
+    // prefix is the discriminator).
+    let findings = scan_str(
+        "sk_live_4eC39HqLyjWDarjtT1zdp7dc",
+        &ScanPolicy::mvp_default(),
+    );
+    assert!(!has_rule(&findings, "secret.openai-key"));
+    // The `sk-proj-…` project-key form fires too.
+    let findings = scan_str(
+        "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+        &ScanPolicy::mvp_default(),
+    );
+    assert!(has_rule(&findings, "secret.openai-key"));
+}
+
+#[test]
+fn rule24_anthropic_key_is_block() {
+    let findings = scan_str(
+        "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCD",
+        &ScanPolicy::mvp_default(),
+    );
+    let f = findings
+        .iter()
+        .find(|f| f.rule == "secret.anthropic-key")
+        .expect("expected anthropic-key finding");
+    assert_eq!(f.severity, Severity::Block);
+    // Plain text is a no-op.
+    let findings = scan_str("use claude", &ScanPolicy::mvp_default());
+    assert!(!has_rule(&findings, "secret.anthropic-key"));
+}
+
+#[test]
+fn rule25_jwt_is_block() {
+    // A realistic JWT (header.payload.signature, all
+    // base64url). The header and payload always
+    // start with "eyJ" (base64 of "{"); the
+    // signature is opaque base64url.
+    let findings = scan_str(
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+        &ScanPolicy::mvp_default(),
+    );
+    let f = findings
+        .iter()
+        .find(|f| f.rule == "secret.jwt")
+        .expect("expected jwt finding");
+    assert_eq!(f.severity, Severity::Block);
+    // Two distinct JWTs in the same file both fire.
+    let findings = scan_str(
+        "first: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature1\nsecond: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIyIn0.signature2",
+        &ScanPolicy::mvp_default(),
+    );
+    assert_eq!(count_rule(&findings, "secret.jwt"), 2);
+    // A non-JWT with similar shape does not match.
+    let findings = scan_str("a.b.c", &ScanPolicy::mvp_default());
+    assert!(!has_rule(&findings, "secret.jwt"));
 }
