@@ -22,6 +22,7 @@ async fn request_inserts_a_pending_row() {
             r#"{"writes":[]}"#,
             op.user.id,
             Environment::Dev,
+            None,
         )
         .await
         .expect("request");
@@ -38,11 +39,11 @@ async fn list_filters_by_status() {
     let op2 = users.create("op2", Role::Operator).await.expect("op2");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
     let r1 = pd
-        .request("a", "{}", op1.user.id, Environment::Dev)
+        .request("a", "{}", op1.user.id, Environment::Dev, None)
         .await
         .expect("r1");
     let _r2 = pd
-        .request("b", "{}", op2.user.id, Environment::Dev)
+        .request("b", "{}", op2.user.id, Environment::Dev, None)
         .await
         .expect("r2");
     pd.approve(r1.id, admin.user.id).await.expect("approve");
@@ -66,7 +67,7 @@ async fn approve_transitions_pending_to_approved() {
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
     let row = pd
-        .request("x", "{}", op.user.id, Environment::Dev)
+        .request("x", "{}", op.user.id, Environment::Dev, None)
         .await
         .expect("request");
     let out = pd
@@ -86,7 +87,7 @@ async fn reject_records_reason_and_blocks_replay() {
     let admin1 = users.create("admin1", Role::Admin).await.expect("admin1");
     let admin2 = users.create("admin2", Role::Admin).await.expect("admin2");
     let row = pd
-        .request("x", "{}", op.user.id, Environment::Dev)
+        .request("x", "{}", op.user.id, Environment::Dev, None)
         .await
         .expect("request");
     let out = pd
@@ -110,7 +111,7 @@ async fn mark_applied_only_works_on_approved_rows() {
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
     let row = pd
-        .request("x", "{}", op.user.id, Environment::Dev)
+        .request("x", "{}", op.user.id, Environment::Dev, None)
         .await
         .expect("request");
     // Pending → cannot mark applied yet.
@@ -133,7 +134,7 @@ async fn approve_uses_real_user_foreign_key() {
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
     let row = pd
-        .request("x", "{}", op.user.id, Environment::Dev)
+        .request("x", "{}", op.user.id, Environment::Dev, None)
         .await
         .expect("request");
     let out = pd

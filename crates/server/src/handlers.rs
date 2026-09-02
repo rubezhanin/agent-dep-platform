@@ -510,6 +510,11 @@ pub struct DeployView {
     pub requested_at: String,
     pub status: DeployStatus,
     pub environment: Environment,
+    /// 2.5.0 — nullable for legacy 2.4.0 deploys
+    /// and for operators still on the path-based
+    /// CLI. Populated when the request body
+    /// includes `"target": "<name>"`.
+    pub target_id: Option<i64>,
     pub approved_by: Option<i64>,
     pub approved_at: Option<String>,
     pub rejection_reason: Option<String>,
@@ -525,6 +530,7 @@ fn deploy_view(r: &PendingDeployRow) -> DeployView {
         requested_at: r.requested_at.clone(),
         status: r.status,
         environment: r.environment,
+        target_id: r.target_id,
         approved_by: r.approved_by,
         approved_at: r.approved_at.clone(),
         rejection_reason: r.rejection_reason.clone(),
@@ -540,6 +546,14 @@ pub struct DeployRequestBody {
     /// omitted (the 2.2.0 behaviour).
     #[serde(default)]
     pub environment: Option<Environment>,
+    /// 2.5.0 — optional. The operator-typed
+    /// target name; the server resolves it
+    /// through the `targets` table. Must match
+    /// the deploy's environment if both are
+    /// provided. `None` is allowed (the legacy
+    /// 2.4.0 path-based CLI keeps working).
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
 pub async fn request_deploy(
@@ -548,6 +562,60 @@ pub async fn request_deploy(
     Json(req): Json<DeployRequestBody>,
 ) -> impl IntoResponse {
     let action = "POST /v1/deploys";
+    // 2.5.0: resolve the optional `target` name
+    // BEFORE the plan runs. The lookup is
+    // cheap (indexed by `(environment, name)`)
+    // and we want a 4xx for an unknown target
+    // even if the plan would otherwise succeed.
+    let env = req.environment.unwrap_or(Environment::Dev);
+    let target_id: Option<i64> = match req.target.as_deref() {
+        None => None,
+        Some(name) => match state.targets.find_by_env_name(env, name).await {
+            Ok(Some(row)) => Some(row.id),
+            Ok(None) => {
+                let _ = state
+                    .audit
+                    .record(
+                        &user.name,
+                        action,
+                        None,
+                        AuditOutcome::Error,
+                        Some(&format!(
+                            "target `{name}` not found in environment `{}`",
+                            env.as_str()
+                        )),
+                    )
+                    .await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": format!(
+                            "target `{name}` not found in environment `{}`",
+                            env.as_str()
+                        )
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                let _ = state
+                    .audit
+                    .record(
+                        &user.name,
+                        action,
+                        None,
+                        AuditOutcome::Error,
+                        Some(&format!("target lookup: {e}")),
+                    )
+                    .await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response();
+            }
+        },
+    };
     match plan::compute_plan(&req.catalog, &req.system_yaml).await {
         Ok(summary) => {
             let plan_json = match serde_json::to_string(&summary) {
@@ -570,10 +638,9 @@ pub async fn request_deploy(
                         .into_response();
                 }
             };
-            let env = req.environment.unwrap_or(Environment::Dev);
             match state
                 .deploys
-                .request(&summary.system_id, &plan_json, user.id, env)
+                .request(&summary.system_id, &plan_json, user.id, env, target_id)
                 .await
             {
                 Ok(row) => {
@@ -1212,3 +1279,228 @@ pub async fn list_environments(
         .await;
     (StatusCode::OK, Json(json!({ "environments": names }))).into_response()
 }
+
+// ---------------------------------------------------------------------------
+// 2.5.0 — /v1/targets endpoints (ADR-0023).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateTargetBody {
+    pub name: String,
+    pub environment: Environment,
+    pub path: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListTargetsQuery {
+    /// 2.5.0 — optional environment filter.
+    #[serde(default)]
+    pub env: Option<Environment>,
+}
+
+pub async fn list_targets(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Query(q): Query<ListTargetsQuery>,
+) -> impl IntoResponse {
+    let action = "GET /v1/targets";
+    match state.targets.list(q.env).await {
+        Ok(rows) => {
+            let details = Some(
+                json!({
+                    "count": rows.len(),
+                    "env_filter": q.env.map(|e| e.as_str()),
+                })
+                .to_string(),
+            );
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
+            (StatusCode::OK, Json(rows)).into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn get_target(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(id): AxPath<i64>,
+) -> impl IntoResponse {
+    let action = "GET /v1/targets/:id";
+    let target = format!("target:{id}");
+    match state.targets.get(id).await {
+        Ok(Some(row)) => {
+            let _ = state
+                .audit
+                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .await;
+            (StatusCode::OK, Json(row)).into_response()
+        }
+        Ok(None) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(r#"{"reason":"not found"}"#),
+                )
+                .await;
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "target not found"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn create_target(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Json(req): Json<CreateTargetBody>,
+) -> impl IntoResponse {
+    let action = "POST /v1/targets";
+    let target = format!("target:{}:{}", req.environment.as_str(), req.name);
+    match state
+        .targets
+        .create(
+            &req.name,
+            req.environment,
+            &req.path,
+            req.description.as_deref(),
+        )
+        .await
+    {
+        Ok(row) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    Some(&format!("id={}", row.id)),
+                )
+                .await;
+            (StatusCode::CREATED, Json(row)).into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("create: {e}")),
+                )
+                .await;
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn delete_target(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(id): AxPath<i64>,
+) -> impl IntoResponse {
+    let action = "DELETE /v1/targets/:id";
+    let target = format!("target:{id}");
+    match state.targets.delete(id).await {
+        Ok(true) => {
+            let _ = state
+                .audit
+                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .await;
+            (StatusCode::NO_CONTENT, ()).into_response()
+        }
+        Ok(false) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(r#"{"reason":"not found"}"#),
+                )
+                .await;
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "target not found"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Error,
+                    Some(&format!("db error: {e}")),
+                )
+                .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+// (TargetRow is re-exported via the `core` crate. The
+// route handlers above use it through that re-export
+// path; there is no need to also re-export it here.)

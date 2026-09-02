@@ -16,6 +16,7 @@ use agent_dep_core::infrastructure::repository::audit_log_repository::{
 };
 use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
 use agent_dep_core::infrastructure::repository::secrets_repository::SecretRepository;
+use agent_dep_core::infrastructure::repository::targets_repository::TargetRepository;
 use agent_dep_core::infrastructure::repository::users_repository::{Role, UserRepository};
 use agent_dep_core::infrastructure::sqlite::connect;
 use agent_dep_server::{router, ServerState};
@@ -62,12 +63,14 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
     };
     let deploys = PendingDeployRepository::new(db.pool().clone());
     let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase").expect("vault");
+    let targets = TargetRepository::new(db.pool().clone());
     let state = ServerState {
         db,
         audit,
         users,
         deploys,
         secrets,
+        targets,
         legacy_token: Arc::new(legacy.map(|s| s.to_string())),
     };
     let app = router(state);
@@ -220,12 +223,14 @@ spec:
     let token = created.token.clone();
     let deploys = PendingDeployRepository::new(db.pool().clone());
     let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase").expect("vault");
+    let targets = TargetRepository::new(db.pool().clone());
     let state = ServerState {
         db,
         audit,
         users,
         deploys,
         secrets,
+        targets,
         legacy_token: Arc::new(Some(token.clone())),
     };
     let app = router(state);
@@ -752,4 +757,266 @@ async fn _request_deploy_with_env(
     assert_eq!(resp.status(), 201, "request deploy: {:?}", resp);
     let v: serde_json::Value = resp.json().await.expect("json");
     (v["deploy"]["id"].as_i64().expect("id"), v)
+}
+
+// ---------------------------------------------------------------------------
+// 2.5.0 — fleet integration tests (ADR-0023).
+// ---------------------------------------------------------------------------
+
+/// Helper: build the body for `POST /v1/targets`.
+/// `path` and `description` are optional so a test
+/// can use a smaller object.
+fn _create_target_body(
+    name: &str,
+    env: &str,
+    path: &str,
+    description: Option<&str>,
+) -> serde_json::Value {
+    let mut body = json!({
+        "name": name,
+        "environment": env,
+        "path": path,
+    });
+    if let Some(d) = description {
+        body["description"] = json!(d);
+    }
+    body
+}
+
+#[tokio::test]
+async fn admin_creates_and_lists_targets() {
+    let srv = boot().await;
+    // 201 on POST
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/targets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&_create_target_body(
+            "prod-blue",
+            "production",
+            "/srv/hermes/blue",
+            Some("primary prod"),
+        ))
+        .send()
+        .await
+        .expect("create");
+    assert_eq!(resp.status(), 201, "create target: {:?}", resp);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let id = v["id"].as_i64().expect("id");
+    assert_eq!(v["name"], "prod-blue");
+    assert_eq!(v["environment"], "production");
+    assert_eq!(v["path"], "/srv/hermes/blue");
+    assert_eq!(v["description"], "primary prod");
+    // Duplicate (env, name) is rejected.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/targets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&_create_target_body(
+            "prod-blue",
+            "production",
+            "/srv/hermes/other",
+            None,
+        ))
+        .send()
+        .await
+        .expect("dup");
+    assert_eq!(resp.status(), 400, "duplicate must be rejected");
+    // LIST returns the row.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/targets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("list");
+    assert_eq!(resp.status(), 200);
+    let arr: Vec<serde_json::Value> = resp.json().await.expect("arr");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"].as_i64().unwrap(), id);
+    // DELETE returns 204, then a second DELETE returns 404.
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/v1/targets/{id}", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("delete");
+    assert_eq!(resp.status(), 204);
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/v1/targets/{id}", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("delete-2");
+    assert_eq!(resp.status(), 404);
+    // LIST is now empty.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/targets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("list-empty");
+    let arr: Vec<serde_json::Value> = resp.json().await.expect("arr");
+    assert!(arr.is_empty(), "expected empty list, got {arr:?}");
+}
+
+#[tokio::test]
+async fn list_targets_filters_by_environment() {
+    let srv = boot().await;
+    // Seed three targets across two environments.
+    for (name, env, path) in [
+        ("laptop", "dev", "/home/op/dev"),
+        ("ci-runner", "dev", "/var/ci"),
+        ("prod-blue", "production", "/srv/hermes/blue"),
+    ] {
+        let resp = reqwest::Client::new()
+            .post(format!("{}/v1/targets", srv.base))
+            .bearer_auth(&srv.admin_token)
+            .json(&_create_target_body(name, env, path, None))
+            .send()
+            .await
+            .expect("seed");
+        assert_eq!(resp.status(), 201, "seed {name}: {:?}", resp);
+    }
+    // Unfiltered list returns all 3.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/targets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("list-all");
+    let arr: Vec<serde_json::Value> = resp.json().await.expect("arr");
+    assert_eq!(arr.len(), 3);
+    // env=dev filter returns 2.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/targets?env=dev", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("list-dev");
+    let arr: Vec<serde_json::Value> = resp.json().await.expect("arr");
+    assert_eq!(arr.len(), 2);
+    for row in &arr {
+        assert_eq!(row["environment"], "dev");
+    }
+    // env=production filter returns 1.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/targets?env=production", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("list-prod");
+    let arr: Vec<serde_json::Value> = resp.json().await.expect("arr");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["name"], "prod-blue");
+    // env=staging has no rows.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/targets?env=staging", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("list-staging");
+    let arr: Vec<serde_json::Value> = resp.json().await.expect("arr");
+    assert!(arr.is_empty());
+    // Bogus env value is rejected at the application
+    // layer (parses through `Environment::parse`).
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/targets?env=qa", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("list-qa");
+    assert_eq!(
+        resp.status(),
+        400,
+        "unknown env must be a 400, not silently empty"
+    );
+}
+
+#[tokio::test]
+async fn deploy_with_target_records_target_id() {
+    let srv = boot().await;
+    let op_token = create_user(&srv, "op", Role::Operator).await;
+    // Register a dev target, then deploy to it.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/targets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&_create_target_body("laptop", "dev", "/home/op/dev", None))
+        .send()
+        .await
+        .expect("create target");
+    assert_eq!(resp.status(), 201);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let target_id = v["id"].as_i64().expect("id");
+    // POST /v1/deploys with target=laptop.
+    let cat = srv._dir.path().join("target_catalog");
+    std::fs::create_dir_all(&cat).unwrap();
+    _write_approvals_catalog(&cat);
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/deploys", srv.base))
+        .bearer_auth(&op_token)
+        .json(&json!({
+            "catalog": cat.to_string_lossy(),
+            "system_yaml": APPROVALS_SYS,
+            "environment": "dev",
+            "target": "laptop",
+        }))
+        .send()
+        .await
+        .expect("post deploy");
+    assert_eq!(resp.status(), 201, "deploy with target: {:?}", resp);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let deploy_id = v["deploy"]["id"].as_i64().expect("deploy id");
+    assert_eq!(v["deploy"]["target_id"].as_i64(), Some(target_id));
+    assert_eq!(v["deploy"]["environment"], "dev");
+    // GET /v1/deploys/:id round-trips.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/deploys/{deploy_id}", srv.base))
+        .bearer_auth(&op_token)
+        .send()
+        .await
+        .expect("get");
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["target_id"].as_i64(), Some(target_id));
+}
+
+#[tokio::test]
+async fn deploy_with_unknown_target_is_400() {
+    let srv = boot().await;
+    let op_token = create_user(&srv, "op", Role::Operator).await;
+    let cat = srv._dir.path().join("missing_target_catalog");
+    std::fs::create_dir_all(&cat).unwrap();
+    _write_approvals_catalog(&cat);
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/deploys", srv.base))
+        .bearer_auth(&op_token)
+        .json(&json!({
+            "catalog": cat.to_string_lossy(),
+            "system_yaml": APPROVALS_SYS,
+            "environment": "dev",
+            "target": "this-target-does-not-exist",
+        }))
+        .send()
+        .await
+        .expect("post deploy");
+    assert_eq!(
+        resp.status(),
+        400,
+        "unknown target must be a 400, not a 201/500"
+    );
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let err = v["error"].as_str().unwrap_or("");
+    assert!(
+        err.contains("not found"),
+        "expected `not found` error, got: {err}"
+    );
+    // The deploy must NOT have been created.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/deploys", srv.base))
+        .bearer_auth(&op_token)
+        .send()
+        .await
+        .expect("list");
+    let arr: Vec<serde_json::Value> = resp.json().await.expect("arr");
+    assert!(
+        arr.is_empty(),
+        "failed target lookup must not leave a pending_deploys row: {arr:?}"
+    );
 }

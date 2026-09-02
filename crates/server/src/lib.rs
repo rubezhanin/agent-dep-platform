@@ -18,6 +18,7 @@ use std::sync::Arc;
 use agent_dep_core::infrastructure::repository::audit_log_repository::AuditLogRepository;
 use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
 use agent_dep_core::infrastructure::repository::secrets_repository::SecretRepository;
+use agent_dep_core::infrastructure::repository::targets_repository::TargetRepository;
 use agent_dep_core::infrastructure::repository::users_repository::UserRepository;
 use agent_dep_core::infrastructure::sqlite::connect;
 use anyhow::{Context, Result};
@@ -148,6 +149,30 @@ pub fn router(state: ServerState) -> Router {
         .route(
             "/v1/secrets/:name",
             axum::routing::put(handlers::update_secret)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
+        // 2.5.0 fleet (ADR-0023): targets
+        // registry. List/get is read-only
+        // metadata so viewer+ is enough;
+        // create/delete is admin-only.
+        .route(
+            "/v1/targets",
+            get(handlers::list_targets)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
+        )
+        .route(
+            "/v1/targets/:id",
+            get(handlers::get_target)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
+        )
+        .route(
+            "/v1/targets",
+            post(handlers::create_target)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
+        .route(
+            "/v1/targets/:id",
+            axum::routing::delete(handlers::delete_target)
                 .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
         )
         .route_layer(middleware::from_fn_with_state(
@@ -350,12 +375,14 @@ pub async fn boot_default_state() -> Result<ServerState> {
         SecretRepository::new(db.pool().clone(), &passphrase)
             .map_err(|e| anyhow::anyhow!("init vault: {e}"))?
     };
+    let targets = TargetRepository::new(db.pool().clone());
     Ok(ServerState {
         db,
         audit,
         users,
         deploys,
         secrets,
+        targets,
         legacy_token: Arc::new(Some(legacy_token)),
     })
 }

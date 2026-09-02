@@ -97,6 +97,7 @@ pub struct PendingDeployRow {
     pub requested_at: String,
     pub status: Status,
     pub environment: Environment,
+    pub target_id: Option<i64>,
     pub approved_by: Option<i64>,
     pub approved_at: Option<String>,
     pub rejection_reason: Option<String>,
@@ -117,26 +118,33 @@ impl PendingDeployRepository {
     /// is the JSON string the operator submitted (the
     /// server re-runs the plan to keep the
     /// `system_id` honest, so this is the fresh
-    /// snapshot).
+    /// snapshot). `environment` defaults to `Dev` if
+    /// not provided (2.4.0). `target_id` is optional
+    /// (2.5.0): NULL means the deploy predates the
+    /// fleet registry or the operator is using the
+    /// legacy `--target <path>` CLI path.
     pub async fn request(
         &self,
         system_id: &str,
         plan_summary: &str,
         requested_by: i64,
         environment: Environment,
+        target_id: Option<i64>,
     ) -> CoreResult<PendingDeployRow> {
         let now: DateTime<Utc> = Utc::now();
         let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let row: (i64,) = sqlx::query_as(
             "INSERT INTO pending_deploys \
-             (system_id, plan_summary, requested_by, requested_at, status, environment) \
-             VALUES (?1, ?2, ?3, ?4, 'pending', ?5) RETURNING id",
+             (system_id, plan_summary, requested_by, requested_at, status, \
+              environment, target_id) \
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6) RETURNING id",
         )
         .bind(system_id)
         .bind(plan_summary)
         .bind(requested_by)
         .bind(&now_str)
         .bind(environment.as_str())
+        .bind(target_id)
         .fetch_one(&self.pool)
         .await?;
         Ok(PendingDeployRow {
@@ -147,6 +155,7 @@ impl PendingDeployRepository {
             requested_at: now_str,
             status: Status::Pending,
             environment,
+            target_id,
             approved_by: None,
             approved_at: None,
             rejection_reason: None,
@@ -158,7 +167,7 @@ impl PendingDeployRepository {
     pub async fn get(&self, id: i64) -> CoreResult<Option<PendingDeployRow>> {
         let row: Option<PendingDeployRowTuple> = sqlx::query_as(
             "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                    status, environment, approved_by, approved_at, \
+                    status, environment, target_id, approved_by, approved_at, \
                     rejection_reason, applied_at \
              FROM pending_deploys WHERE id = ?1",
         )
@@ -181,7 +190,7 @@ impl PendingDeployRepository {
             (None, None) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, environment, approved_by, approved_at, \
+                        status, environment, target_id, approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys ORDER BY id ASC LIMIT ?1",
                 )
@@ -192,7 +201,7 @@ impl PendingDeployRepository {
             (Some(s), None) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, environment, approved_by, approved_at, \
+                        status, environment, target_id, approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE status = ?1 \
                  ORDER BY id ASC LIMIT ?2",
@@ -205,7 +214,7 @@ impl PendingDeployRepository {
             (None, Some(e)) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, environment, approved_by, approved_at, \
+                        status, environment, target_id, approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE environment = ?1 \
                  ORDER BY id ASC LIMIT ?2",
@@ -218,7 +227,7 @@ impl PendingDeployRepository {
             (Some(s), Some(e)) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, environment, approved_by, approved_at, \
+                        status, environment, target_id, approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE status = ?1 AND environment = ?2 \
                  ORDER BY id ASC LIMIT ?3",
@@ -318,6 +327,7 @@ type PendingDeployRowTuple = (
     String,
     String,
     Option<i64>,
+    Option<i64>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -332,6 +342,7 @@ fn decode_row(row: PendingDeployRowTuple) -> CoreResult<PendingDeployRow> {
         requested_at,
         status,
         environment,
+        target_id,
         approved_by,
         approved_at,
         rejection_reason,
@@ -345,6 +356,7 @@ fn decode_row(row: PendingDeployRowTuple) -> CoreResult<PendingDeployRow> {
         requested_at,
         status: Status::parse(&status)?,
         environment: Environment::parse(&environment)?,
+        target_id,
         approved_by,
         approved_at,
         rejection_reason,
