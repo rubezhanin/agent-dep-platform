@@ -5,18 +5,20 @@ deploying agent systems from Git repositories into Hermes Agent.
 
 ## Status
 
-**MVP-1.0 (TZ v2 schema + Hermes router plugin)** — 16 commits
-ahead of MVP-3, all MUST HAVE slices landed. 294 tests passing
-on Windows, **294 passing on Ubuntu 20.04.6 LTS** (secondary-
-platform smoke, `cargo 1.98`, `--exclude agent_dep_app`),
-`svelte-check` 0/0, all CI gates green.
+**v2.7.2 (TZ v2 schema + Hermes router plugin + advanced
+scanner)** — 22 tags on main, all TZ §45 MUST-HAVE
+slices landed (through v2.5.0), all TZ §23.3 advanced-
+scanner items landed (through v2.7.0). **433 tests passing
+on Windows**, `svelte-check` 0/0, all CI gates green.
+See [`CHANGELOG.md`](./CHANGELOG.md) for the per-release
+narrative.
 
 ```
 $ .\scripts\ci.ps1
 ==>
 ==> cargo fmt --check
 ==> cargo clippy
-==> cargo test        (294 passed; 0 failed)
+==> cargo test        (433 passed; 0 failed)
 ==> ts-rs regen
 ==> npm install
 ==> npm run check     (svelte-check: 0 errors, 0 warnings)
