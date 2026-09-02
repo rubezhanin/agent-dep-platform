@@ -77,7 +77,7 @@ fn make_system() -> crate::domain::system::System {
 #[test]
 fn plan_for_emits_add_per_resolved_agent() {
     let sys = make_system();
-    let plan = PlanService::new().plan_for(&sys, None, None);
+    let plan = PlanService::new().plan_for(&sys, None, None, None);
     assert_eq!(plan.system_id, "saas");
     assert_eq!(plan.operations.len(), 3);
     for op in &plan.operations {
@@ -124,7 +124,7 @@ fn plan_for_empty_system_is_empty_plan() {
         }],
         resolved_skills: vec![],
     };
-    let plan = PlanService::new().plan_for(&sys, None, None);
+    let plan = PlanService::new().plan_for(&sys, None, None, None);
     assert_eq!(plan.operations.len(), 1);
     assert_eq!(plan.risk, PlanRisk::Low);
 }
@@ -141,7 +141,7 @@ fn plan_for_emits_noop_when_actual_sha_matches_desired() {
     // Add.
     let mut actual: HashMap<String, String> = HashMap::new();
     actual.insert("be@1.0.0".to_string(), "deadbeef".to_string());
-    let plan = PlanService::new().plan_for(&sys, Some(&actual), None);
+    let plan = PlanService::new().plan_for(&sys, Some(&actual), None, None);
 
     let be = plan
         .operations
@@ -167,7 +167,7 @@ fn plan_for_emits_update_when_actual_sha_mismatches() {
         "be@1.0.0".to_string(),
         "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
     );
-    let plan = PlanService::new().plan_for(&sys, Some(&actual), None);
+    let plan = PlanService::new().plan_for(&sys, Some(&actual), None, None);
     let be = plan
         .operations
         .iter()
@@ -175,4 +175,161 @@ fn plan_for_emits_update_when_actual_sha_mismatches() {
         .expect("be op");
     assert_eq!(be.kind, PlanOperationKind::Update);
     assert!(be.reason.contains("content changed"));
+}
+
+// ---------------------------------------------------------------------------
+// 1.5.0 (ADR-0013): drift detection (Verify + Backup)
+// ---------------------------------------------------------------------------
+
+fn make_obs(
+    target: &str,
+    expected_sha: &str,
+    on_disk_sha: Option<&str>,
+    backup_present: bool,
+) -> (String, DeployedObservation) {
+    (
+        target.to_string(),
+        DeployedObservation {
+            target: target.to_string(),
+            expected_sha256: expected_sha.to_string(),
+            observed_sha256: on_disk_sha.map(str::to_string),
+            backup_present,
+        },
+    )
+}
+
+#[test]
+fn plan_for_emits_verify_when_on_disk_sha_mismatches_expected() {
+    use std::collections::BTreeMap;
+    let sys = make_system();
+    let mut obs_map: BTreeMap<String, DeployedObservation> = BTreeMap::new();
+    let (k, o) = make_obs(
+        "agents/be@0.9.0/be.md",
+        "deadbeef000000000000000000000000000000000000000000000000000000",
+        Some("cafebabe000000000000000000000000000000000000000000000000000000"),
+        true,
+    );
+    obs_map.insert(k, o);
+    let plan = PlanService::new().plan_for(&sys, None, None, Some(&obs_map));
+    let v = plan
+        .operations
+        .iter()
+        .find(|o| o.kind == PlanOperationKind::Verify && o.target == "path:agents/be@0.9.0/be.md")
+        .expect("verify op");
+    assert!(v.reason.contains("drift"));
+    assert!(v.reason.contains("cafebabe"));
+    assert!(v.reason.contains("deadbeef"));
+    // No Backup op (backup_present = true).
+    assert!(!plan
+        .operations
+        .iter()
+        .any(|o| o.kind == PlanOperationKind::Backup));
+}
+
+#[test]
+fn plan_for_emits_noop_when_on_disk_sha_matches_expected() {
+    use std::collections::BTreeMap;
+    let sys = make_system();
+    let mut obs_map: BTreeMap<String, DeployedObservation> = BTreeMap::new();
+    let (k, o) = make_obs(
+        "agents/be@0.9.0/be.md",
+        "abc123",
+        Some("abc123"),
+        true,
+    );
+    obs_map.insert(k, o);
+    let plan = PlanService::new().plan_for(&sys, None, None, Some(&obs_map));
+    // sha matches -> no Verify op for that target.
+    assert!(!plan
+        .operations
+        .iter()
+        .any(|o| o.kind == PlanOperationKind::Verify));
+}
+
+#[test]
+fn plan_for_emits_verify_when_file_is_missing() {
+    use std::collections::BTreeMap;
+    let sys = make_system();
+    let mut obs_map: BTreeMap<String, DeployedObservation> = BTreeMap::new();
+    let (k, o) = make_obs(
+        "agents/be@0.9.0/be.md",
+        "abc123",
+        None, // file is gone
+        false,
+    );
+    obs_map.insert(k, o);
+    let plan = PlanService::new().plan_for(&sys, None, None, Some(&obs_map));
+    let v = plan
+        .operations
+        .iter()
+        .find(|o| o.kind == PlanOperationKind::Verify)
+        .expect("verify op");
+    assert!(v.reason.contains("missing on disk"));
+    // Backup op too (backup_present = false).
+    let b = plan
+        .operations
+        .iter()
+        .find(|o| o.kind == PlanOperationKind::Backup)
+        .expect("backup op");
+    assert!(b.reason.contains("no backup under"));
+}
+
+#[test]
+fn plan_for_emits_backup_when_backup_file_is_missing() {
+    use std::collections::BTreeMap;
+    let sys = make_system();
+    let mut obs_map: BTreeMap<String, DeployedObservation> = BTreeMap::new();
+    let (k, o) = make_obs(
+        "agents/be@0.9.0/be.md",
+        "abc123",
+        Some("abc123"), // sha matches -> no Verify
+        false,           // but no backup
+    );
+    obs_map.insert(k, o);
+    let plan = PlanService::new().plan_for(&sys, None, None, Some(&obs_map));
+    assert!(!plan
+        .operations
+        .iter()
+        .any(|o| o.kind == PlanOperationKind::Verify));
+    let b = plan
+        .operations
+        .iter()
+        .find(|o| o.kind == PlanOperationKind::Backup)
+        .expect("backup op");
+    assert!(b.reason.contains("no backup under"));
+}
+
+#[test]
+fn plan_for_skips_drift_for_targets_already_in_plan() {
+    use std::collections::BTreeMap;
+    let sys = make_system();
+    // The current system plans to write
+    // `agents/be@1.0.0/be.md`. The previous deployment
+    // tracked the SAME path with the SAME sha. The
+    // plan service must NOT emit a Verify for a path
+    // it is about to write, otherwise the operator
+    // would see the same file as Add+Verify.
+    let mut obs_map: BTreeMap<String, DeployedObservation> = BTreeMap::new();
+    let (k, o) = make_obs(
+        "agents/be@1.0.0/be.md",
+        "deadbeef",
+        Some("deadbeef"),
+        true,
+    );
+    obs_map.insert(k, o);
+    let plan = PlanService::new().plan_for(&sys, None, None, Some(&obs_map));
+    let be = plan
+        .operations
+        .iter()
+        .find(|o| o.target == "agent:be@1.0.0")
+        .expect("be Add op");
+    // The Add for `be@1.0.0` is still there (sha
+    // mismatch on the `actual` map -> Add because we
+    // passed `None` for actual_sha256_by_ref).
+    assert_eq!(be.kind, PlanOperationKind::Add);
+    // But the Verify for the same target was suppressed.
+    assert!(!plan
+        .operations
+        .iter()
+        .any(|o| o.kind == PlanOperationKind::Verify && o.target == "path:agents/be@1.0.0/be.md"));
 }

@@ -1,27 +1,58 @@
 //! Plan service (TZ §16).
 //!
-//! MVP-1.0 supports two of the six TZ §16.1 plan
-//! operations:
+//! MVP-1.0 / 1.4.x support four of the six TZ §16.1
+//! plan operations: `Add`, `Noop`, `Update`,
+//! `Delete`. 1.5.0 (ADR-0013) adds the remaining two
+//! as *drift-detection* read-only operations:
 //!
-//! * `Add`  — a resolved agent has no on-disk counterpart
-//!   in the target tree.
-//! * `Noop` — the agent's body hash already matches the
-//!   on-disk file, so the deploy loop skips the write.
+//! * `Verify` — for every file that *should* be on disk
+//!   per the previous `deployed_artifacts` snapshot,
+//!   check that the on-disk sha256 still matches the
+//!   expected one. A mismatch means the operator
+//!   (or some external process) edited the file after
+//!   deployment.
+//! * `Backup` — for every file that *should* have a
+//!   backup under `<parent>/.backups/`, check that
+//!   the backup is actually there.
 //!
-//! The remaining four (`Update`, `Delete`, `Backup`,
-//! `Verify`) are 1.x once we have a `deployed_artifacts`
-//! table to read the "current" state from. The plan
-//! service here is a pure function: the caller passes
-//! in the on-disk sha256s (when known) and gets back a
-//! typed `Plan`.
+//! The plan service is a pure function: the caller
+//! passes in the on-disk sha256s (when known) and gets
+//! back a typed `Plan`. `Verify` and `Backup` are
+//! emitted only when the caller provides the
+//! `previously_deployed_observations` argument
+//! (4th parameter, optional).
 //!
 //! `risk` is `low` for a plan that only contains `Add` /
-//! `Noop`. A future `High` risk (e.g. deletes against
-//! non-empty trees) lands together with `Update` /
-//! `Delete`.
+//! `Noop` / `Verify` / `Backup`. A future `High` risk
+//! (e.g. deletes against non-empty trees) lands
+//! together with `Update` / `Delete` if we ever decide
+//! to upgrade the risk model.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::domain::plan::{Plan, PlanOperation, PlanOperationKind, PlanRisk};
 use crate::domain::system::System;
+
+/// What the plan service needs to know about a single
+/// previously-deployed file in order to emit `Verify`
+/// and `Backup` ops for it (1.5.0, ADR-0013).
+///
+/// `target` is the relative path recorded in
+/// `deployed_artifacts.target` (e.g.
+/// `agents/be@1.0.0/be.md`). `expected_sha256` is what
+/// the row says the file *should* be. `observed_sha256`
+/// is what the filesystem actually has right now, or
+/// `None` if the file is missing.
+#[derive(Debug, Clone)]
+pub struct DeployedObservation {
+    pub target: String,
+    pub expected_sha256: String,
+    pub observed_sha256: Option<String>,
+    /// Whether `<parent>/.backups/<target>` exists on
+    /// disk. The CLI populates this by a `read_dir`
+    /// walk before calling `plan_for`.
+    pub backup_present: bool,
+}
 
 pub struct PlanService;
 
@@ -53,15 +84,21 @@ impl PlanService {
     /// `RuntimeAdapter::verify` (or the rollback path)
     /// before the actual removal. Pass `None` to skip
     /// delete detection (the old behavior).
+    ///
+    /// `previously_deployed_observations` (1.5.0+) is the
+    /// richer view that powers `Verify` and `Backup` ops.
+    /// Pass `None` for the 1.4.x behaviour (no
+    /// drift-detection ops).
+    #[allow(clippy::too_many_arguments)]
     pub fn plan_for(
         &self,
         system: &System,
-        actual_sha256_by_ref: Option<&std::collections::HashMap<String, String>>,
-        previously_deployed_targets: Option<&std::collections::HashSet<String>>,
+        actual_sha256_by_ref: Option<&HashMap<String, String>>,
+        previously_deployed_targets: Option<&HashSet<String>>,
+        previously_deployed_observations: Option<&BTreeMap<String, DeployedObservation>>,
     ) -> Plan {
         let mut operations = Vec::with_capacity(system.resolved.len());
-        let mut planned_targets: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut planned_targets: HashSet<String> = HashSet::new();
 
         for r in &system.resolved {
             let agent_ref = format!("{}@{}", r.agent.id, r.agent.version);
@@ -112,11 +149,68 @@ impl PlanService {
             }
         }
 
+        // Drift detection: for every file the previous
+        // deployment tracked, emit `Verify` (sha mismatch
+        // or missing) and/or `Backup` (backup missing).
+        if let Some(obs) = previously_deployed_observations {
+            for (target, o) in obs {
+                // `target` is the relative path (e.g.
+                // `agents/be@1.0.0/be.md`). Match it
+                // against the planned-target set so we
+                // don't double-emit a `Verify` for a file
+                // that the new system is also going to
+                // touch with an `Add` / `Update`.
+                if planned_targets.contains(target) {
+                    continue;
+                }
+                if let Some(observed) = &o.observed_sha256 {
+                    if observed != &o.expected_sha256 {
+                        operations.push(PlanOperation {
+                            kind: PlanOperationKind::Verify,
+                            target: format!("path:{target}"),
+                            reason: format!(
+                                "drift: expected sha `{}`, on-disk sha `{}`",
+                                short(&o.expected_sha256),
+                                short(observed)
+                            ),
+                        });
+                    }
+                } else {
+                    operations.push(PlanOperation {
+                        kind: PlanOperationKind::Verify,
+                        target: format!("path:{target}"),
+                        reason: format!(
+                            "drift: expected sha `{}` but file is missing on disk",
+                            short(&o.expected_sha256)
+                        ),
+                    });
+                }
+                if !o.backup_present {
+                    operations.push(PlanOperation {
+                        kind: PlanOperationKind::Backup,
+                        target: format!("path:{target}"),
+                        reason: format!(
+                            "no backup under `<parent>/.backups/{target}`; \
+                             next deploy cannot roll back this file"
+                        ),
+                    });
+                }
+            }
+        }
+
         Plan {
             system_id: system.metadata.id.clone(),
             operations,
             risk: PlanRisk::Low,
         }
+    }
+}
+
+fn short(sha: &str) -> &str {
+    if sha.len() >= 12 {
+        &sha[..12]
+    } else {
+        sha
     }
 }
 
