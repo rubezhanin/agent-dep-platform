@@ -34,3 +34,11 @@ argon2 = { workspace = true }
 agent_dep_hermes_adapter = { path = "../hermes-adapter" }
 tempfile = { workspace = true }
 dunce = { workspace = true }
+# 2.8.0 (ADR-0039): real Git source
+# ingest. The `vendored-libgit2`
+# feature builds libgit2 from source
+# so the binary is portable across
+# Windows / Linux / macOS without
+# requiring the system `libgit2-dev`
+# package.
+git2 = { workspace = true }
