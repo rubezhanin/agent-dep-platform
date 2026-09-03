@@ -26,6 +26,7 @@ use agent_dep_core::infrastructure::repository::audit_log_repository::AuditOutco
 use agent_dep_core::infrastructure::repository::users_repository::{Role, UserRepository};
 
 use crate::auth::AuthenticatedUser;
+use crate::oidc_client::CallbackInput;
 use crate::ServerState;
 
 /// Configuration for the OIDC client. Read
@@ -68,12 +69,18 @@ impl OidcConfig {
             operator_groups: split(
                 &std::env::var("AGENCY_OIDC_OPERATOR_GROUPS").unwrap_or_default(),
             ),
-            // Default to mock in 2.7.6; the
-            // real client lands in 2.7.7.
+            // 2.7.7 (ADR-0035): the default
+            // flipped from `1` (2.7.6) to `0`
+            // (2.7.7). The real wire-protocol
+            // client is the new default.
+            // Operators who were relying on
+            // the mock in production must set
+            // `AGENCY_OIDC_MOCK=1` explicitly
+            // (typically only in dev / CI).
             mock: std::env::var("AGENCY_OIDC_MOCK")
                 .ok()
                 .map(|s| s == "1" || s == "true")
-                .unwrap_or(true),
+                .unwrap_or(false),
         }
     }
 
@@ -155,6 +162,19 @@ pub fn generate_nonce() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Derive a PKCE S256 `code_challenge`
+/// from a verifier. The verifier is a
+/// high-entropy random string; the
+/// challenge is
+/// `BASE64URL(SHA256(verifier))`.
+pub fn pkce_challenge_from_verifier(verifier: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(verifier.as_bytes());
+    let digest = h.finalize();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+}
+
 /// The login handler. Generates state +
 /// PKCE + nonce, stores them in the
 /// pending map, and returns the IdP's
@@ -169,6 +189,7 @@ pub fn handle_login(state: &ServerState) -> CoreResult<(String, String)> {
     let state_token = generate_state();
     let pkce = generate_pkce_verifier();
     let nonce = generate_nonce();
+    let code_challenge = pkce_challenge_from_verifier(&pkce);
     let mut pending = state.oidc_pending.lock().expect("oidc_pending lock");
     pending.insert(
         state_token.clone(),
@@ -178,20 +199,14 @@ pub fn handle_login(state: &ServerState) -> CoreResult<(String, String)> {
             created_at: std::time::Instant::now(),
         },
     );
-    // For 2.7.6 the authorize URL is a
-    // placeholder (the real client lands
-    // in 2.7.7). The mock path returns
-    // the redirect URI with the state +
-    // code pre-filled so the test
-    // callback flow works.
-    let authorize_url = format!(
-        "{redirect}?state={state_token}&code=mock-code&nonce={nonce}",
-        redirect = if state.oidc.redirect_uri.is_empty() {
-            "https://idp.example.com/authorize".to_string()
-        } else {
-            state.oidc.redirect_uri.replace("/callback", "/authorize")
-        },
-    );
+    // 2.7.7 (ADR-0035): delegate URL
+    // assembly to the configured
+    // `OidcClient` (real or mock).
+    let authorize_url = state.oidc_client.authorize_url(
+        &state_token,
+        &code_challenge,
+        &nonce,
+    )?;
     Ok((authorize_url, state_token))
 }
 
@@ -352,11 +367,16 @@ pub struct CallbackQuery {
 /// 200-OK with `{token, user}` on success.
 /// The SPA stores the token and uses it as
 /// a bearer for subsequent requests.
+///
+/// 2.7.7 (ADR-0035): exchanges the
+/// authorization code via the configured
+/// `OidcClient` (real or mock) BEFORE
+/// provisioning the local user.
 pub async fn callback_handler(
     State(state): State<ServerState>,
     Query(q): Query<CallbackQuery>,
 ) -> Response {
-    // Verify state.
+    // 1. Verify state.
     let pending = match validate_state(&state.oidc_pending, &q.state) {
         Ok(p) => p,
         Err(e) => {
@@ -367,12 +387,38 @@ pub async fn callback_handler(
                 .into_response();
         }
     };
-    let _ = pending; // reserved for production code/verifier exchange
-                     // In 2.7.6, we use the mock claims. The
-                     // production path (2.7.7) exchanges the
-                     // code + verifier for tokens and extracts
-                     // claims from the ID token.
-    match provision_user_from_claims(&state, &mock_oidc_claims()).await {
+    // 2. Exchange the code via the
+    //    configured OidcClient.
+    let claims = match state
+        .oidc_client
+        .exchange_code(CallbackInput {
+            code: q.code.clone(),
+            state: q.state.clone(),
+            pkce_verifier: pending.pkce_verifier.clone(),
+            nonce: pending.nonce.clone(),
+        })
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("OIDC callback exchange_code: {e}");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("{e}")})),
+            )
+                .into_response();
+        }
+    };
+    // 3. Build the claims JSON the
+    //    framework expects.
+    let claims_json = serde_json::json!({
+        "sub": claims.sub,
+        "email": claims.email,
+        "preferred_username": claims.preferred_username,
+        state.oidc.role_claim.clone(): claims.role_claim_value,
+    });
+    // 4. Provision the local user.
+    match provision_user_from_claims(&state, &claims_json).await {
         Ok(out) => (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -529,5 +575,54 @@ mod tests {
         );
         let err = validate_state(&pending, "abc").expect_err("must reject expired");
         assert!(format!("{err:?}").contains("expired"));
+    }
+
+    /// 2.7.7 (ADR-0035): the default
+    /// for `AGENCY_OIDC_MOCK` flipped
+    /// from `1` (2.7.6) to `0` (2.7.7).
+    /// The real wire-protocol client is
+    /// the new default. Operators who
+    /// were relying on the mock in
+    /// production must set
+    /// `AGENCY_OIDC_MOCK=1` explicitly.
+    #[test]
+    fn oidc_mock_default_is_false_in_277() {
+        // Clear any inherited value.
+        std::env::remove_var("AGENCY_OIDC_MOCK");
+        let cfg = OidcConfig::from_env();
+        assert!(
+            !cfg.mock,
+            "2.7.7 must default AGENCY_OIDC_MOCK to false (real client)"
+        );
+    }
+
+    /// 2.7.7: AGENCY_OIDC_MOCK=1
+    /// explicitly selects the mock.
+    #[test]
+    fn oidc_mock_env_var_overrides_to_true() {
+        std::env::set_var("AGENCY_OIDC_MOCK", "1");
+        let cfg = OidcConfig::from_env();
+        std::env::remove_var("AGENCY_OIDC_MOCK");
+        assert!(cfg.mock, "AGENCY_OIDC_MOCK=1 must select the mock client");
+    }
+
+    /// 2.7.7: `pkce_challenge_from_verifier`
+    /// is the S256 derivation. The
+    /// framework passes the result as
+    /// `code_challenge` to the IdP. The
+    /// IdP then computes
+    /// `BASE64URL(SHA256(verifier))` and
+    /// compares. We don't assert against
+    /// a specific IdP here; we just check
+    /// the function is deterministic and
+    /// non-empty.
+    #[test]
+    fn pkce_challenge_is_deterministic_and_nonempty() {
+        let a = pkce_challenge_from_verifier("verifier-1");
+        let b = pkce_challenge_from_verifier("verifier-1");
+        let c = pkce_challenge_from_verifier("verifier-2");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(a.len() > 40);
     }
 }

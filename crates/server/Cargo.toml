@@ -29,7 +29,21 @@ hex = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
 tempfile = { workspace = true }
+url = { workspace = true }
+# 2.7.7 (ADR-0035): OIDC real
+# wire-protocol client. `reqwest` was
+# previously a dev-dependency; promoted
+# to dependencies here so the OIDC
+# client (and any future HTTP server
+# endpoint) can use it. The full
+# RSA / ECDSA signature verification is
+# deferred to 2.7.7.1; 2.7.7 ships the
+# transport + claims validation.
+# `async_trait` makes `OidcClient`
+# object-safe so we can store it as
+# `Arc<dyn OidcClient>` in `ServerState`.
+reqwest = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

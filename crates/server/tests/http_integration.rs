@@ -67,6 +67,8 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
     let oidc = agent_dep_server::oidc::OidcConfig::default();
     let oidc_pending: agent_dep_server::oidc::OidcPending =
         Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let oidc_client: Arc<dyn agent_dep_server::oidc_client::OidcClient> =
+        Arc::new(agent_dep_server::oidc_client::MockOidcClient);
     let state = ServerState {
         db,
         audit,
@@ -76,6 +78,7 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
         targets,
         oidc,
         oidc_pending,
+        oidc_client,
         legacy_token: Arc::new(legacy.map(|s| s.to_string())),
     };
     let app = router(state);
@@ -232,6 +235,8 @@ spec:
     let oidc = agent_dep_server::oidc::OidcConfig::default();
     let oidc_pending: agent_dep_server::oidc::OidcPending =
         Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let oidc_client: Arc<dyn agent_dep_server::oidc_client::OidcClient> =
+        Arc::new(agent_dep_server::oidc_client::MockOidcClient);
     let state = ServerState {
         db,
         audit,
@@ -241,6 +246,7 @@ spec:
         targets,
         oidc,
         oidc_pending,
+        oidc_client,
         legacy_token: Arc::new(Some(token.clone())),
     };
     let app = router(state);

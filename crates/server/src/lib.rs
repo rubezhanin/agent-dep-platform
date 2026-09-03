@@ -9,6 +9,7 @@ pub mod auth;
 pub mod catalog;
 pub mod handlers;
 pub mod oidc;
+pub mod oidc_client;
 pub mod plan;
 pub mod state;
 
@@ -387,6 +388,15 @@ pub async fn boot_default_state() -> Result<ServerState> {
     let targets = TargetRepository::new(db.pool().clone());
     let oidc = oidc::OidcConfig::from_env();
     let oidc_pending = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    // 2.7.7 (ADR-0035): pick the OIDC
+    // client based on AGENCY_OIDC_MOCK. The
+    // 2.7.7 default is `0` (real client).
+    let oidc_client: std::sync::Arc<dyn oidc_client::OidcClient> =
+        if oidc.mock {
+            std::sync::Arc::new(oidc_client::MockOidcClient)
+        } else {
+            std::sync::Arc::new(oidc_client::RealOidcClient::new(oidc.clone()))
+        };
     Ok(ServerState {
         db,
         audit,
@@ -396,6 +406,7 @@ pub async fn boot_default_state() -> Result<ServerState> {
         targets,
         oidc,
         oidc_pending,
+        oidc_client,
         legacy_token: Arc::new(Some(legacy_token)),
     })
 }

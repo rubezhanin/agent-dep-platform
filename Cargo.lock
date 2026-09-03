@@ -146,6 +146,7 @@ dependencies = [
  "agent_dep_core",
  "agent_dep_hermes_adapter",
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -162,6 +163,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

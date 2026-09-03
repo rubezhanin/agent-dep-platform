@@ -10,6 +10,7 @@ use agent_dep_core::infrastructure::repository::users_repository::UserRepository
 use agent_dep_core::infrastructure::sqlite::Db;
 
 use crate::oidc::{OidcConfig, OidcPending};
+use crate::oidc_client::OidcClient;
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -36,6 +37,14 @@ pub struct ServerState {
     /// 2.7.x enhancement for multi-process
     /// deployments.
     pub oidc_pending: OidcPending,
+    /// 2.7.7 (ADR-0035): the OIDC wire-protocol
+    /// client. `MockOidcClient` when
+    /// `AGENCY_OIDC_MOCK=1`; `RealOidcClient`
+    /// otherwise. The 2.7.7 default is
+    /// `AGENCY_OIDC_MOCK=0` (real client) — a
+    /// behavioural break from 2.7.6's
+    /// `AGENCY_OIDC_MOCK=1` default.
+    pub oidc_client: Arc<dyn OidcClient>,
     /// Retained for 2.0.0→2.1.0 migration: if the
     /// `users` table is empty on first start and this
     /// is `Some(legacy)`, the server creates an
