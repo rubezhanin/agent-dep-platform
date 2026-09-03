@@ -9,7 +9,92 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.7.4] — 2026-09-03
+
+### Added
+
+- **Dynamic LLM probe** (ADR-0032, the TZ §23.3
+  item that was blocked on Hermes 0.19+; now
+  unblocked: the operator confirmed Hermes 0.21
+  is installed on the VPS). `agency hermes
+  probe <plugin> --llm` runs the structural
+  probe first, then asks an external LLM to
+  flag semantic inconsistencies between
+  `manifest.yaml` and `SKILL.md`.
+- New `crates/hermes-adapter/src/llm_probe.rs`
+  with:
+  - `LlmClient` trait — provider abstraction
+    (mock in tests, real HTTP in prod).
+  - `OpenAiCompatibleClient` — POSTs
+    `{model, messages}` to
+    `AGENCY_LLM_ENDPOINT` and returns the
+    assistant text. Works for OpenAI,
+    Anthropic via OpenAI proxy, Ollama, etc.
+  - `OpenAiConfig::from_env` reads
+    `AGENCY_LLM_ENDPOINT` (default:
+    `http://localhost:11434/v1/chat/completions`),
+    `AGENCY_LLM_MODEL` (default: `llama3.2`),
+    `AGENCY_LLM_API_KEY` (optional).
+  - `MockLlmClient` — canned response for
+    tests.
+  - `LlmProbe::extend(structural, manifest, skill)`
+    — sends the manifest + SKILL.md + a
+    structural summary to the LLM, parses
+    the JSON verdict, and returns a new
+    `ProbeReport` with the structural
+    checks plus one `llm_review` check.
+
+### Fixed
+
+- The 1.4.0 scanner `redact()` used byte
+  slicing on a 200-char limit, which could
+  panic on multi-byte content near the
+  boundary. Now uses `.chars().take(200)` for
+  both the scanner and the new LLM-probe
+  response parser.
+
+### Test count
+
+454 (was 444 in v2.7.3). +10 net.
+
+## [2.7.3] — 2026-09-03
+
+### Added
+
+- **Scanner plugin manifest** (ADR-0031, the
+  2.7.0 "Out of scope" follow-up).
+  `plugin.toml` sits next to the plugin binary
+  and supplies metadata (name, version,
+  description, author) plus per-plugin
+  tunables (timeout, output cap, env vars,
+  capability tags).
+
+### Test count
+
+444 (was 433 in v2.7.2). +11 net.
+
 ## [2.7.2] — 2026-09-03
+
+### Added
+
+- **Scanner plugin auto-discovery** (ADR-0030).
+  `agency catalog scan` now auto-discovers
+  executable scripts in `~/.agency/scanners.d/`
+  (Windows: `%USERPROFILE%\.agency\scanners.d`).
+  The `AGENCY_SCANNERS_DIR` env var overrides the
+  default. Explicit `--plugin NAME:PATH` flags
+  still win on name collision.
+- `discover_plugins(dir)` in
+  `crates/core/src/application/scanner/plugin.rs`.
+  Returns `Vec<DiscoveredPlugin>` sorted by name
+  (deterministic order across runs). Skips
+  non-executable files and unknown extensions
+  (e.g. `README.md` is ignored).
+
+### Test count
+
+433 (was 430 in v2.7.1). +3 net on Windows, +3
+more on POSIX CI.
 
 ### Added
 
