@@ -9,6 +9,67 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.7.10] — 2026-09-03
+
+### Added
+
+- **DB-backed `OidcPending`**
+  (ADR-0038). The 2.7.6 in-memory
+  `Arc<Mutex<HashMap<String,
+  PendingAuth>>>` is replaced by
+  a SQLite table
+  (`oidc_pending_state`). This
+  closes the multi-process /
+  multi-instance gap: a `state`
+  token returned by
+  `/v1/auth/oidc/login` on
+  replica A is now visible to the
+  callback handler on replica B.
+- New `OidcPendingRepository` in
+  `crates/core/src/infrastructure/repository/oidc_pending_repository.rs`:
+  - `insert(state, pkce, nonce,
+    created_at_secs)` — write
+    path.
+  - `take(state, max_age_secs)`
+    — atomic `SELECT` + `DELETE`
+    in one transaction.
+  - `gc_expired(max_age_secs)` —
+    best-effort cleanup of rows
+    older than `max_age_secs`.
+- 60-second background tokio
+  task in `boot_default_state`
+  that does best-effort GC of
+  the `oidc_pending_state`
+  table.
+
+### Changed
+
+- `ServerState.oidc_pending` is
+  now `Arc<OidcPendingRepository>`
+  (was `Arc<Mutex<HashMap<...>>>`).
+- `handle_login` and
+  `validate_state` are now async.
+- The 2.7.6 `PendingAuth::is_expired`
+  method is removed; expiry
+  enforcement moved to the
+  repository's `take`.
+
+### Schema
+
+- New `oidc_pending_state` table
+  + `idx_oidc_pending_created_at`
+  index. Schema 16 -> 17.
+- The 3 schema-version test sites
+  are bumped from 16 to 17
+  (sqlite_tests, journal_tests,
+  cli_tests).
+
+### Test count
+
+- 488/0 (was 487/0 in 2.7.9). Delta
+  is +1 (4 new repository tests
+  minus 3 removed inline tests).
+
 ## [2.7.9] — 2026-09-03
 
 ### Added
