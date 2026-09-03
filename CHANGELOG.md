@@ -9,6 +9,97 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.7.6] — 2026-09-03
+
+### Added
+
+- **OIDC authentication framework** (ADR-0034).
+  OIDC is now an opt-in alternative to bearer-token
+  auth for `agency-server`. Bearer tokens are
+  unchanged; the OIDC flow runs in parallel.
+  - Migration `015` adds a nullable
+    `users.external_id` column (the OIDC `sub`
+    claim) plus a UNIQUE partial index. Schema
+    version 14 -> 15.
+  - `UserRepository::find_by_external_id` /
+    `create_with_external_id` /
+    `store_token_hash` are the new OIDC-aware
+    primitives.
+  - New `crates/server/src/oidc.rs` module
+    (config, state map, role mapping, user
+    provisioning, mock client, axum handlers).
+  - Two new PUBLIC routes (outside the
+    `require_bearer` middleware):
+    - `GET /v1/auth/oidc/login` — 302 redirect
+      to IdP `/authorize`.
+    - `GET /v1/auth/oidc/callback` — 200 with
+      `{token, user}` on success.
+  - 8 env vars: `AGENCY_OIDC_ISSUER`,
+    `AGENCY_OIDC_CLIENT_ID`,
+    `AGENCY_OIDC_CLIENT_SECRET`,
+    `AGENCY_OIDC_REDIRECT_URI`,
+    `AGENCY_OIDC_SCOPES`,
+    `AGENCY_OIDC_ROLE_CLAIM`,
+    `AGENCY_OIDC_ADMIN_GROUPS`,
+    `AGENCY_OIDC_OPERATOR_GROUPS`,
+    `AGENCY_OIDC_MOCK` (default `1` for the
+    2.7.6 framework).
+  - 9 inline unit tests for the OIDC
+    framework (role mapping, state generation,
+    state validation, expiry).
+
+### Changed
+
+- **clippy lint cleanup** (separate `chore:`
+  commit). Rust 1.98 toolchain tightens
+  `clippy::io_other_error`,
+  `clippy::let_underscore_must_use`, and
+  `clippy::doc_markdown` to deny-by-default in
+  `-D warnings`. Mechanical fixes across
+  `scanner/plugin.rs`, `llm_probe.rs`, and the
+  CLI command modules. No behaviour change.
+
+### Scope note
+
+- 2.7.6 ships the framework only (config,
+  state map, role mapping, user provisioning,
+  mock client). The real
+  `openidconnect` + `reqwest::blocking` +
+  JWKS wire-protocol exchange is a 2.7.7
+  follow-up. Splitting framework from
+  wire-protocol is the right cut for one
+  release.
+
+### Test count
+
+- 466/0 (was 457/0 in 2.7.5). Delta is the 9
+  new OIDC unit tests.
+
+## [2.7.5] — 2026-09-03
+
+### Added
+
+- **Target backfill tooling** (ADR-0033).
+  Library-side helpers for operators who
+  inherited a `pending_deploys` table from
+  before 2.5.0's fleet feature (where
+  `target_id` was always NULL).
+  - `PendingDeployRepository::list_orphans` —
+    every row with `target_id IS NULL`.
+  - `PendingDeployRepository::set_target_id`
+    — links a row to a target by name +
+    environment.
+  - No schema change. The 2.5.x NOT NULL
+    constraint on `pending_deploys.target_id`
+    is deferred to 2.5.3 until operators
+    complete the backfill.
+
+### Test count
+
+- 457/0 (was 454/0 in 2.7.4). Delta is the
+  backfill helper tests plus 0 net change
+  elsewhere.
+
 ## [2.7.4] — 2026-09-03
 
 ### Added
