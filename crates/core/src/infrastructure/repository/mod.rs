@@ -19,6 +19,7 @@ pub mod audit_log_repository;
 pub mod deployed_artifacts_repository;
 pub mod pending_deploys_repository;
 pub mod secrets_repository;
+pub mod oidc_pending_repository;
 pub mod skill_repository;
 pub mod targets_repository;
 pub mod users_repository;

@@ -65,8 +65,11 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
     let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase").expect("vault");
     let targets = TargetRepository::new(db.pool().clone());
     let oidc = agent_dep_server::oidc::OidcConfig::default();
-    let oidc_pending: agent_dep_server::oidc::OidcPending =
-        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let oidc_pending = std::sync::Arc::new(
+        agent_dep_core::infrastructure::repository::oidc_pending_repository::OidcPendingRepository::new(
+            db.pool().clone(),
+        ),
+    );
     let oidc_client: Arc<dyn agent_dep_server::oidc_client::OidcClient> =
         Arc::new(agent_dep_server::oidc_client::MockOidcClient);
     let state = ServerState {
@@ -233,8 +236,11 @@ spec:
     let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase").expect("vault");
     let targets = TargetRepository::new(db.pool().clone());
     let oidc = agent_dep_server::oidc::OidcConfig::default();
-    let oidc_pending: agent_dep_server::oidc::OidcPending =
-        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let oidc_pending = std::sync::Arc::new(
+        agent_dep_core::infrastructure::repository::oidc_pending_repository::OidcPendingRepository::new(
+            db.pool().clone(),
+        ),
+    );
     let oidc_client: Arc<dyn agent_dep_server::oidc_client::OidcClient> =
         Arc::new(agent_dep_server::oidc_client::MockOidcClient);
     let state = ServerState {

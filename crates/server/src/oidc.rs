@@ -15,8 +15,7 @@
 //! reason the env vars don't enable
 //! "real" production use yet.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use base64::Engine;
 use rand::RngCore;
@@ -91,23 +90,25 @@ impl OidcConfig {
     }
 }
 
-/// In-memory state for the OIDC flow: maps
-/// the `state` token (CSRF) to the
-/// (verifier, nonce, created_at) tuple.
-pub type OidcPending = Arc<Mutex<HashMap<String, PendingAuth>>>;
+/// 2.7.10 (ADR-0038): DB-backed
+/// `OidcPending` is now a repository
+/// over the `oidc_pending_state`
+/// table. The 2.7.6 in-memory
+/// `Arc<Mutex<HashMap>>` is removed.
+pub use agent_dep_core::infrastructure::repository::oidc_pending_repository::{
+    OidcPendingRepository, PendingAuth,
+};
 
-#[derive(Debug, Clone)]
-pub struct PendingAuth {
-    pub pkce_verifier: String,
-    pub nonce: String,
-    pub created_at: std::time::Instant,
-}
-
-impl PendingAuth {
-    pub fn is_expired(&self, max_age: std::time::Duration) -> bool {
-        self.created_at.elapsed() > max_age
-    }
-}
+/// Convenience alias so the
+/// 2.7.6/2.7.7 call sites that
+/// expected `state.oidc_pending`
+/// to be a `Mutex`-protected map
+/// keep working. The 2.7.10
+/// ServerState holds
+/// `Arc<OidcPendingRepository>`
+/// instead.
+#[deprecated(note = "use OidcPendingRepository instead")]
+pub type OidcPending = Arc<OidcPendingRepository>;
 
 /// Map IdP claims to a local `Role`. The
 /// `role_claim` field of the ID token is
@@ -178,8 +179,10 @@ pub fn pkce_challenge_from_verifier(verifier: &str) -> String {
 /// The login handler. Generates state +
 /// PKCE + nonce, stores them in the
 /// pending map, and returns the IdP's
-/// authorize URL.
-pub fn handle_login(state: &ServerState) -> CoreResult<(String, String)> {
+/// authorize URL. 2.7.10: now async
+/// because the pending state is
+/// DB-backed.
+pub async fn handle_login(state: &ServerState) -> CoreResult<(String, String)> {
     if !state.oidc.is_enabled() {
         return Err(agent_dep_core::error::CoreError::ErrSchemaInvalid {
             path: "oidc.config".to_string(),
@@ -190,15 +193,22 @@ pub fn handle_login(state: &ServerState) -> CoreResult<(String, String)> {
     let pkce = generate_pkce_verifier();
     let nonce = generate_nonce();
     let code_challenge = pkce_challenge_from_verifier(&pkce);
-    let mut pending = state.oidc_pending.lock().expect("oidc_pending lock");
-    pending.insert(
-        state_token.clone(),
-        PendingAuth {
-            pkce_verifier: pkce,
-            nonce: nonce.clone(),
-            created_at: std::time::Instant::now(),
-        },
-    );
+    // 2.7.10 (ADR-0038): persist the
+    // pending auth in SQLite (via
+    // the repository) instead of an
+    // in-memory HashMap. This is
+    // what makes multi-instance
+    // `agency-server` deployments
+    // work.
+    state
+        .oidc_pending
+        .insert(
+            &state_token,
+            &pkce,
+            &nonce,
+            chrono::Utc::now().timestamp(),
+        )
+        .await?;
     // 2.7.7 (ADR-0035): delegate URL
     // assembly to the configured
     // `OidcClient` (real or mock).
@@ -211,15 +221,15 @@ pub fn handle_login(state: &ServerState) -> CoreResult<(String, String)> {
 }
 
 /// Validate an OIDC state token.
-pub fn validate_state(pending: &OidcPending, state_param: &str) -> CoreResult<PendingAuth> {
-    let mut pending = pending.lock().expect("oidc_pending lock");
-    let entry = pending.remove(state_param);
-    match entry {
-        Some(e) if !e.is_expired(std::time::Duration::from_secs(600)) => Ok(e),
-        Some(_) => Err(agent_dep_core::error::CoreError::ErrSchemaInvalid {
-            path: "oidc.state".to_string(),
-            reason: "state expired".to_string(),
-        }),
+/// 2.7.10 (ADR-0038): now an async
+/// call against the DB-backed
+/// `OidcPendingRepository`.
+pub async fn validate_state(
+    pending: &OidcPendingRepository,
+    state_param: &str,
+) -> CoreResult<PendingAuth> {
+    match pending.take(state_param, 600).await? {
+        Some(e) => Ok(e),
         None => Err(agent_dep_core::error::CoreError::ErrSchemaInvalid {
             path: "oidc.state".to_string(),
             reason: "unknown state".to_string(),
@@ -365,7 +375,7 @@ use serde::Deserialize;
 /// `state.oidc_pending`, and returns the
 /// authorize URL.
 pub async fn login_handler(State(state): State<ServerState>) -> Response {
-    match handle_login(&state) {
+    match handle_login(&state).await {
         Ok((authorize_url, _state_token)) => {
             // 302 redirect.
             (
@@ -404,7 +414,7 @@ pub async fn callback_handler(
     Query(q): Query<CallbackQuery>,
 ) -> Response {
     // 1. Verify state.
-    let pending = match validate_state(&state.oidc_pending, &q.state) {
+    let pending = match validate_state(&state.oidc_pending, &q.state).await {
         Ok(p) => p,
         Err(e) => {
             return (
@@ -780,43 +790,14 @@ mod tests {
         assert_ne!(x, y);
     }
 
-    #[test]
-    fn validate_state_matching_token() {
-        let pending: OidcPending = Arc::new(Mutex::new(HashMap::new()));
-        pending.lock().unwrap().insert(
-            "abc".to_string(),
-            PendingAuth {
-                pkce_verifier: "v".to_string(),
-                nonce: "n".to_string(),
-                created_at: std::time::Instant::now(),
-            },
-        );
-        let entry = validate_state(&pending, "abc").expect("match");
-        assert_eq!(entry.pkce_verifier, "v");
-    }
-
-    #[test]
-    fn validate_state_rejects_unknown_token() {
-        let pending: OidcPending = Arc::new(Mutex::new(HashMap::new()));
-        let err = validate_state(&pending, "missing").expect_err("must reject");
-        assert!(format!("{err:?}").contains("unknown state"));
-    }
-
-    #[test]
-    fn validate_state_rejects_expired_token() {
-        let pending: OidcPending = Arc::new(Mutex::new(HashMap::new()));
-        pending.lock().unwrap().insert(
-            "abc".to_string(),
-            PendingAuth {
-                pkce_verifier: "v".to_string(),
-                nonce: "n".to_string(),
-                // Backdate so it's already expired.
-                created_at: std::time::Instant::now() - std::time::Duration::from_secs(700),
-            },
-        );
-        let err = validate_state(&pending, "abc").expect_err("must reject expired");
-        assert!(format!("{err:?}").contains("expired"));
-    }
+    // 2.7.10 (ADR-0038): the in-memory
+    // `validate_state_*` tests are
+    // removed; the equivalent tests
+    // now live in
+    // `crates/core/src/infrastructure/repository/oidc_pending_repository_tests.rs`
+    // and exercise the DB-backed
+    // `OidcPendingRepository::take`
+    // path.
 
     /// 2.7.7 (ADR-0035): the default
     /// for `AGENCY_OIDC_MOCK` flipped

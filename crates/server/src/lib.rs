@@ -395,7 +395,15 @@ pub async fn boot_default_state() -> Result<ServerState> {
     };
     let targets = TargetRepository::new(db.pool().clone());
     let oidc = oidc::OidcConfig::from_env();
-    let oidc_pending = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    // 2.7.10 (ADR-0038): DB-backed
+    // OidcPending. The 2.7.6 in-memory
+    // `Arc<Mutex<HashMap>>` is
+    // replaced by a SQLite table.
+    let oidc_pending = std::sync::Arc::new(
+        agent_dep_core::infrastructure::repository::oidc_pending_repository::OidcPendingRepository::new(
+            db.pool().clone(),
+        ),
+    );
     // 2.7.7 (ADR-0035): pick the OIDC
     // client based on AGENCY_OIDC_MOCK. The
     // 2.7.7 default is `0` (real client).
@@ -405,18 +413,38 @@ pub async fn boot_default_state() -> Result<ServerState> {
         } else {
             std::sync::Arc::new(oidc_client::RealOidcClient::new(oidc.clone()))
         };
-    Ok(ServerState {
-        db,
+    let state = ServerState {
+        db: db.clone(),
         audit,
         users,
         deploys,
         secrets,
         targets,
         oidc,
-        oidc_pending,
+        oidc_pending: oidc_pending.clone(),
         oidc_client,
         legacy_token: Arc::new(Some(legacy_token)),
-    })
+    };
+    // 2.7.10 (ADR-0038): background
+    // GC of the `oidc_pending_state`
+    // table. Runs every 60s and
+    // removes rows older than the
+    // 600s `state` expiry. The
+    // future is dropped here (the
+    // task lives until the process
+    // exits).
+    {
+        let pool = state.db.pool().clone();
+        tokio::spawn(async move {
+            let repo =
+                agent_dep_core::infrastructure::repository::oidc_pending_repository::OidcPendingRepository::new(pool);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let _ = repo.gc_expired(600).await;
+            }
+        });
+    }
+    Ok(state)
 }
 
 pub fn parse_port(args: &[String]) -> u16 {

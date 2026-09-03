@@ -3,13 +3,14 @@
 use std::sync::Arc;
 
 use agent_dep_core::infrastructure::repository::audit_log_repository::AuditLogRepository;
+use agent_dep_core::infrastructure::repository::oidc_pending_repository::OidcPendingRepository;
 use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
 use agent_dep_core::infrastructure::repository::secrets_repository::SecretRepository;
 use agent_dep_core::infrastructure::repository::targets_repository::TargetRepository;
 use agent_dep_core::infrastructure::repository::users_repository::UserRepository;
 use agent_dep_core::infrastructure::sqlite::Db;
 
-use crate::oidc::{OidcConfig, OidcPending};
+use crate::oidc::OidcConfig;
 use crate::oidc_client::OidcClient;
 
 #[derive(Clone)]
@@ -31,12 +32,19 @@ pub struct ServerState {
     /// return 503 "not configured". Bearer-token
     /// auth is unaffected.
     pub oidc: OidcConfig,
-    /// 2.7.6: in-memory map of `state` -> (PKCE
-    /// verifier, nonce, created_at). Single-process
-    /// only. A shared store (DB or Redis) is a
-    /// 2.7.x enhancement for multi-process
-    /// deployments.
-    pub oidc_pending: OidcPending,
+    /// 2.7.10 (ADR-0038): DB-backed
+    /// `OidcPending` repository. The
+    /// 2.7.6 in-memory
+    /// `Arc<Mutex<HashMap<String,
+    /// PendingAuth>>>` is replaced by
+    /// a SQLite table so multi-process
+    /// / multi-instance
+    /// `agency-server` deployments
+    /// can hand the callback request
+    /// off to a different replica than
+    /// the one that handled
+    /// `/v1/auth/oidc/login`.
+    pub oidc_pending: Arc<OidcPendingRepository>,
     /// 2.7.7 (ADR-0035): the OIDC wire-protocol
     /// client. `MockOidcClient` when
     /// `AGENCY_OIDC_MOCK=1`; `RealOidcClient`
