@@ -9,6 +9,76 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.7.8] — 2026-09-03
+
+### Added
+
+- **OIDC token refresh + logout**
+  (ADR-0036). The OIDC flow now has
+  a real logout path and a refresh
+  path that the SPA can use to keep
+  the local session alive.
+  - `POST /v1/auth/oidc/refresh` —
+    public. Body
+    `{refresh_token, sub}`. Looks up
+    the local user by
+    `external_id`, calls
+    `oidc_client.refresh`, rotates
+    the local bearer, updates
+    `token_expires_at`, audits
+    `oidc.refresh`. Returns
+    `{token, user, expires_at,
+    refresh_token?}`.
+  - `GET /v1/auth/oidc/logout` —
+    public. If the Authorization
+    header is present, invalidates
+    the local `token_hash` for the
+    matching user. Then
+    302-redirects to the IdP's
+    `end_session_endpoint` (if any)
+    or returns 200 with
+    `{"message": "logged out locally"}`.
+
+### Changed
+
+- **Auth middleware** honours
+  `users.token_expires_at`. The
+  `auth::require_bearer` middleware
+  now returns 401 with
+  `{"error": "token expired, refresh
+  required"}` once the wall clock
+  passes the expiry. NULL =
+  non-expiring (bearer-token users
+  from 2.0.0-2.7.7 keep NULL).
+- `OidcClient` trait gains
+  `refresh(...)`, `end_session_url()`,
+  `as_any()` (for the logout
+  handler's downcast).
+- `RealOidcClient::refresh` POSTs
+  `grant_type=refresh_token` to the
+  `token_endpoint`, parses the new
+  `id_token`, returns
+  `RefreshedTokens { claims,
+  expires_at, new_refresh_token }`.
+- `RealOidcClient` caches
+  `end_session_endpoint` from the
+  discovery document.
+
+### Schema
+
+- `users.token_expires_at TEXT
+  NULL`. Schema 15 -> 16.
+- 3 schema-version test sites
+  bumped (sqlite_tests,
+  journal_tests, cli_tests).
+
+### Test count
+
+- 487/0 (was 477/0 in 2.7.7). Delta
+  is +10: 3 in `oidc_client::tests`,
+  2 in `users_repository::tests`, 5
+  in `http_integration.rs`.
+
 ## [2.7.7] — 2026-09-03
 
 ### Added
