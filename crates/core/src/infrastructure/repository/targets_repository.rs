@@ -272,7 +272,16 @@ impl TargetRepository {
     }
 }
 
-type TargetRowTuple = (i64, String, String, String, String, Option<String>, String, String);
+type TargetRowTuple = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+);
 
 fn decode(row: TargetRowTuple) -> CoreResult<TargetRow> {
     let (id, name, environment, path, path_kind, description, created_at, updated_at) = row;

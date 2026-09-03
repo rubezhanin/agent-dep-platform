@@ -10,7 +10,6 @@
 //!    uses `cmd.exe` (see `bin` below).
 
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 
 use super::*;
@@ -100,10 +99,7 @@ EOF
         .scan(&root, &ScanPolicy::mvp_default())
         .expect("scan");
     assert_eq!(findings.len(), 1);
-    assert_eq!(
-        findings[0].rule,
-        "plugin.myplugin.security.tainted-env"
-    );
+    assert_eq!(findings[0].rule, "plugin.myplugin.security.tainted-env");
 }
 
 #[cfg(unix)]
@@ -314,7 +310,10 @@ binary = "./x.sh"
     let m = PluginManifest::parse(bytes).expect("parse");
     let dir = std::path::Path::new("/opt/agency/scanners.d/x");
     let resolved = m.resolved_binary(dir);
-    assert_eq!(resolved, std::path::PathBuf::from("/opt/agency/scanners.d/x/./x.sh"));
+    assert_eq!(
+        resolved,
+        std::path::PathBuf::from("/opt/agency/scanners.d/x/./x.sh")
+    );
 }
 
 #[test]

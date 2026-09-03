@@ -772,10 +772,7 @@ pub fn findings_to_sarif(findings: &[Finding]) -> serde_json::Value {
     let results: Vec<serde_json::Value> = findings
         .iter()
         .map(|f| {
-            let rule_index = rule_index_by_id
-                .get(&f.rule)
-                .copied()
-                .unwrap_or(0);
+            let rule_index = rule_index_by_id.get(&f.rule).copied().unwrap_or(0);
             serde_json::json!({
                 "ruleId": f.rule,
                 "ruleIndex": rule_index,

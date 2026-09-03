@@ -36,11 +36,10 @@ fn default_timeout() -> Duration {
 /// Operators can override via
 /// `AGENCY_PLUGIN_MAX_OUTPUT_BYTES`.
 fn default_max_output_bytes() -> usize {
-    let n = std::env::var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES")
+    std::env::var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(256 * 1024 * 1024);
-    n
+        .unwrap_or(256 * 1024 * 1024)
 }
 
 /// JSON envelope sent to the plugin on stdin.
@@ -100,10 +99,7 @@ impl Scanner for PluginScanner {
         if !self.binary.is_file() {
             return Err(CoreError::ErrIo(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!(
-                    "plugin binary not found: {}",
-                    self.binary.display()
-                ),
+                format!("plugin binary not found: {}", self.binary.display()),
             )));
         }
         // Build the file list (relative POSIX
@@ -132,12 +128,11 @@ impl Scanner for PluginScanner {
             files,
             policy,
         };
-        let request_json = serde_json::to_vec(&request).map_err(|e| {
-            CoreError::ErrSchemaInvalid {
+        let request_json =
+            serde_json::to_vec(&request).map_err(|e| CoreError::ErrSchemaInvalid {
                 path: "plugin.request".to_string(),
                 reason: format!("serialise: {e}"),
-            }
-        })?;
+            })?;
         let mut child = Command::new(&self.binary)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -145,17 +140,18 @@ impl Scanner for PluginScanner {
             .env("AGENCY_PLUGIN_NAME", &self.name)
             .env("AGENCY_ROOT", root)
             .spawn()
-            .map_err(|e| CoreError::ErrIo(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("spawn plugin {}: {e}", self.binary.display()),
-            )))?;
+            .map_err(|e| {
+                CoreError::ErrIo(std::io::Error::other(format!(
+                    "spawn plugin {}: {e}",
+                    self.binary.display()
+                )))
+            })?;
         // Write the envelope to stdin.
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(&request_json).map_err(|e| {
-                CoreError::ErrIo(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("write plugin stdin: {e}"),
-                ))
+                CoreError::ErrIo(std::io::Error::other(format!(
+                    "write plugin stdin: {e}"
+                )))
             })?;
             // Drop stdin to signal EOF.
         }
@@ -169,12 +165,9 @@ impl Scanner for PluginScanner {
         // parent enforces. 2.7.x adds
         // `wait-timeout` once `Child::wait` is
         // stable.
-        let output = child
-            .wait_with_output()
-            .map_err(|e| CoreError::ErrIo(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("wait plugin: {e}"),
-            )))?;
+        let output = child.wait_with_output().map_err(|e| {
+            CoreError::ErrIo(std::io::Error::other(format!("wait plugin: {e}")))
+        })?;
         if !output.status.success() {
             // Plugin failed; return an empty list
             // with a synthetic finding so the
@@ -204,11 +197,9 @@ impl Scanner for PluginScanner {
             }]);
         }
         let response: PluginResponse =
-            serde_json::from_slice(&output.stdout).map_err(|e| {
-                CoreError::ErrSchemaInvalid {
-                    path: "plugin.response".to_string(),
-                    reason: format!("parse plugin stdout: {e}"),
-                }
+            serde_json::from_slice(&output.stdout).map_err(|e| CoreError::ErrSchemaInvalid {
+                path: "plugin.response".to_string(),
+                reason: format!("parse plugin stdout: {e}"),
             })?;
         let mut out = Vec::with_capacity(response.findings.len());
         for pf in response.findings {
@@ -290,12 +281,11 @@ impl PluginManifest {
             path: "plugin.manifest".to_string(),
             reason: format!("not utf-8: {e}"),
         })?;
-        let manifest: PluginManifest = toml::from_str(text).map_err(|e| {
-            CoreError::ErrSchemaInvalid {
+        let manifest: PluginManifest =
+            toml::from_str(text).map_err(|e| CoreError::ErrSchemaInvalid {
                 path: "plugin.manifest".to_string(),
                 reason: format!("parse toml: {e}"),
-            }
-        })?;
+            })?;
         // Validate required fields are non-empty.
         if manifest.name.trim().is_empty() {
             return Err(CoreError::ErrSchemaInvalid {
@@ -439,11 +429,7 @@ pub fn discover_plugins(dir: &Path) -> std::io::Result<Vec<DiscoveredPlugin>> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::metadata(&path)?
-                    .permissions()
-                    .mode()
-                    & 0o100
-                    != 0
+                std::fs::metadata(&path)?.permissions().mode() & 0o100 != 0
             }
             #[cfg(not(unix))]
             {
@@ -458,10 +444,7 @@ pub fn discover_plugins(dir: &Path) -> std::io::Result<Vec<DiscoveredPlugin>> {
         if !is_exec {
             continue;
         }
-        out.push(DiscoveredPlugin {
-            name,
-            binary: path,
-        });
+        out.push(DiscoveredPlugin { name, binary: path });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)

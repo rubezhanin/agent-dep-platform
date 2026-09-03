@@ -7,7 +7,9 @@
 use std::path::PathBuf;
 
 use agent_dep_hermes_adapter::hermes_adapter::{HermesAdapter, ProbeReport, ProbeStatus};
-use agent_dep_hermes_adapter::llm_probe::{LlmProbe, MockLlmClient, OpenAiCompatibleClient, OpenAiConfig};
+use agent_dep_hermes_adapter::llm_probe::{
+    LlmProbe, MockLlmClient, OpenAiCompatibleClient, OpenAiConfig,
+};
 use anyhow::{Context, Result};
 
 use crate::output;
@@ -70,12 +72,10 @@ pub fn probe_at_with_llm(plugin_id: &str, hermes_home: &PathBuf) -> Result<Probe
     let plugin_dir = hermes_home.join("plugins").join(plugin_id);
     let manifest_path = plugin_dir.join("manifest.yaml");
     let skill_path = plugin_dir.join("SKILL.md");
-    let manifest_text = std::fs::read_to_string(&manifest_path).with_context(|| {
-        format!("read manifest {}", manifest_path.display())
-    })?;
-    let skill_text = std::fs::read_to_string(&skill_path).with_context(|| {
-        format!("read SKILL.md {}", skill_path.display())
-    })?;
+    let manifest_text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("read manifest {}", manifest_path.display()))?;
+    let skill_text = std::fs::read_to_string(&skill_path)
+        .with_context(|| format!("read SKILL.md {}", skill_path.display()))?;
     // The LLM client is chosen at runtime by
     // env vars. `OpenAiConfig::from_env` reads
     // `AGENCY_LLM_ENDPOINT`,
@@ -89,7 +89,11 @@ pub fn probe_at_with_llm(plugin_id: &str, hermes_home: &PathBuf) -> Result<Probe
     };
     let probe = LlmProbe::new(client);
     let extended = probe
-        .extend(structural_summary.report.clone(), &manifest_text, &skill_text)
+        .extend(
+            structural_summary.report.clone(),
+            &manifest_text,
+            &skill_text,
+        )
         .map_err(|e| anyhow::anyhow!("LLM probe failed: {e}"))?;
     Ok(ProbeSummary {
         plugin_id: plugin_id.to_string(),

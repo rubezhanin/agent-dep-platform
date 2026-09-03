@@ -4,9 +4,7 @@ use std::path::{Path, PathBuf};
 
 use agent_dep_core::application::ingest::git_fetcher::{classify_url, ingest_source};
 use agent_dep_core::application::ingest::IngestService;
-use agent_dep_core::application::scanner::plugin::{
-    discover_plugins, PluginScanner,
-};
+use agent_dep_core::application::scanner::plugin::{discover_plugins, PluginScanner};
 use agent_dep_core::application::scanner::{
     findings_to_sarif, Finding, RegexScanner, ScanPolicy, Scanner, Severity,
 };
@@ -308,9 +306,7 @@ pub async fn scan(path: PathBuf, format: String, plugins: Vec<String>) -> Result
             Ok(())
         }
         other => {
-            anyhow::bail!(
-                "unknown --format `{other}` (expected: text, json, sarif)"
-            )
+            anyhow::bail!("unknown --format `{other}` (expected: text, json, sarif)")
         }
     }
 }
@@ -421,14 +417,11 @@ fn parse_plugin_spec(spec: &str) -> Result<(String, PathBuf)> {
 fn default_scanners_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        std::env::var_os("USERPROFILE")
-            .map(|p| PathBuf::from(p).join(".agency").join("scanners.d"))
+        std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join(".agency").join("scanners.d"))
     }
     #[cfg(not(windows))]
     {
-        std::env::var_os("HOME").map(|p| {
-            PathBuf::from(p).join(".agency").join("scanners.d")
-        })
+        std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".agency").join("scanners.d"))
     }
 }
 

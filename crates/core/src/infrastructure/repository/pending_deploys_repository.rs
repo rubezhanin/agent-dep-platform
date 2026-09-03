@@ -375,14 +375,12 @@ impl PendingDeployRepository {
         id: i64,
         target_id: i64,
     ) -> CoreResult<Option<PendingDeployRow>> {
-        let affected = sqlx::query(
-            "UPDATE pending_deploys SET target_id = ?1 WHERE id = ?2",
-        )
-        .bind(target_id)
-        .bind(id)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        let affected = sqlx::query("UPDATE pending_deploys SET target_id = ?1 WHERE id = ?2")
+            .bind(target_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
         if affected == 0 {
             return Ok(None);
         }

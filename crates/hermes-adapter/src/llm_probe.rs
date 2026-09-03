@@ -40,11 +40,9 @@ impl OpenAiConfig {
     /// falling back to Ollama's defaults.
     pub fn from_env() -> Self {
         Self {
-            endpoint: std::env::var("AGENCY_LLM_ENDPOINT").unwrap_or_else(|_| {
-                "http://localhost:11434/v1/chat/completions".to_string()
-            }),
-            model: std::env::var("AGENCY_LLM_MODEL")
-                .unwrap_or_else(|_| "llama3.2".to_string()),
+            endpoint: std::env::var("AGENCY_LLM_ENDPOINT")
+                .unwrap_or_else(|_| "http://localhost:11434/v1/chat/completions".to_string()),
+            model: std::env::var("AGENCY_LLM_MODEL").unwrap_or_else(|_| "llama3.2".to_string()),
             api_key: std::env::var("AGENCY_LLM_API_KEY").ok(),
         }
     }
@@ -86,21 +84,16 @@ impl LlmClient for OpenAiCompatibleClient {
         }
         let resp = req
             .send()
-            .map_err(|e| CoreError::ErrIo(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("LLM POST: {e}"),
-            )))?
+            .map_err(|e| {
+                CoreError::ErrIo(std::io::Error::other(format!("LLM POST: {e}")))
+            })?
             .error_for_status()
-            .map_err(|e| CoreError::ErrIo(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("LLM status: {e}"),
-            )))?;
-        let v: serde_json::Value = resp.json().map_err(|e| {
-            CoreError::ErrIo(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("LLM JSON: {e}"),
-            ))
-        })?;
+            .map_err(|e| {
+                CoreError::ErrIo(std::io::Error::other(format!("LLM status: {e}")))
+            })?;
+        let v: serde_json::Value = resp
+            .json()
+            .map_err(|e| CoreError::ErrIo(std::io::Error::other(format!("LLM JSON: {e}"))))?;
         v.get("choices")
             .and_then(|c| c.get(0))
             .and_then(|c0| c0.get("message"))
@@ -109,9 +102,7 @@ impl LlmClient for OpenAiCompatibleClient {
             .map(|s| s.to_string())
             .ok_or_else(|| CoreError::ErrSchemaInvalid {
                 path: "llm.response".to_string(),
-                reason: format!(
-                    "LLM response missing choices[0].message.content: {v}"
-                ),
+                reason: format!("LLM response missing choices[0].message.content: {v}"),
             })
     }
 }
@@ -150,7 +141,12 @@ impl LlmProbe {
             let mut s = String::from("FAILED:\n");
             for c in &structural.checks {
                 if c.status != ProbeStatus::Ok {
-                    s.push_str(&format!("  - {} [{}]: {}\n", c.name, status_str(c.status), c.detail));
+                    s.push_str(&format!(
+                        "  - {} [{}]: {}\n",
+                        c.name,
+                        status_str(c.status),
+                        c.detail
+                    ));
                 }
             }
             s

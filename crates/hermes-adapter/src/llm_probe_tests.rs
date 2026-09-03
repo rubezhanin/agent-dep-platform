@@ -9,7 +9,11 @@ fn make_structural(ok: bool) -> ProbeReport {
         ok,
         checks: vec![ProbeCheck {
             name: "manifest.yaml".to_string(),
-            status: if ok { ProbeStatus::Ok } else { ProbeStatus::Missing },
+            status: if ok {
+                ProbeStatus::Ok
+            } else {
+                ProbeStatus::Missing
+            },
             detail: "test".to_string(),
             sha256: None,
         }],

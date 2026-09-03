@@ -869,7 +869,10 @@ fn findings_to_sarif_empty_input() {
     assert_eq!(log["runs"].as_array().unwrap().len(), 1);
     let run = &log["runs"][0];
     assert_eq!(run["tool"]["driver"]["name"], "agency-scanner");
-    assert!(run["tool"]["driver"]["rules"].as_array().unwrap().is_empty());
+    assert!(run["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert!(run["results"].as_array().unwrap().is_empty());
 }
 
@@ -905,10 +908,14 @@ fn findings_to_sarif_maps_rules_and_levels() {
     assert_eq!(results[1]["ruleIndex"], 1);
     // Each result has a locations entry with a
     // physicalLocation.artifactLocation.uri.
-    assert_eq!(results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
-        "agents/be.md");
-    assert_eq!(results[1]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
-        "skills/devops/SKILL.md");
+    assert_eq!(
+        results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "agents/be.md"
+    );
+    assert_eq!(
+        results[1]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "skills/devops/SKILL.md"
+    );
 }
 
 #[test]
