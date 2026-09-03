@@ -23,6 +23,7 @@ walkdir = { workspace = true }
 once_cell = { workspace = true }
 regex = "1"
 semver = "1"
+toml = "0.8"
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 base64 = { workspace = true }
 rand = { workspace = true }

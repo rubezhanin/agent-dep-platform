@@ -242,6 +242,96 @@ fn parse_severity(s: &str) -> Option<Severity> {
 }
 
 // ---------------------------------------------------------------------------
+// 2.7.3 plugin manifest (ADR-0031)
+// ---------------------------------------------------------------------------
+
+/// A `plugin.toml` manifest sitting next to
+/// the plugin binary. The manifest carries
+/// metadata (name, version, description) plus
+/// per-plugin tunables (timeout, output cap,
+/// env vars).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginManifest {
+    pub name: String,
+    pub version: String,
+    pub binary: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    /// Per-plugin timeout override. If
+    /// `None`, falls back to the global
+    /// `AGENCY_PLUGIN_TIMEOUT_SECS` (or 30s
+    /// default).
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    /// Per-plugin output cap override. If
+    /// `None`, falls back to the global
+    /// `AGENCY_PLUGIN_MAX_OUTPUT_BYTES` (or
+    /// 256 MiB default).
+    #[serde(default)]
+    pub max_output_bytes: Option<usize>,
+    /// Extra env vars to pass to the plugin
+    /// process. Format: `KEY=VALUE`.
+    #[serde(default)]
+    pub env: Vec<String>,
+    /// Free-form capability tags. 2.7.3
+    /// doesn't enforce a vocabulary.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+impl PluginManifest {
+    /// Parse a `plugin.toml` from raw bytes.
+    /// Returns a typed error with the parse
+    /// context on failure.
+    pub fn parse(bytes: &[u8]) -> CoreResult<Self> {
+        let text = std::str::from_utf8(bytes).map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "plugin.manifest".to_string(),
+            reason: format!("not utf-8: {e}"),
+        })?;
+        let manifest: PluginManifest = toml::from_str(text).map_err(|e| {
+            CoreError::ErrSchemaInvalid {
+                path: "plugin.manifest".to_string(),
+                reason: format!("parse toml: {e}"),
+            }
+        })?;
+        // Validate required fields are non-empty.
+        if manifest.name.trim().is_empty() {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "plugin.manifest.name".to_string(),
+                reason: "name must not be empty".to_string(),
+            });
+        }
+        if manifest.version.trim().is_empty() {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "plugin.manifest.version".to_string(),
+                reason: "version must not be empty".to_string(),
+            });
+        }
+        if manifest.binary.trim().is_empty() {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "plugin.manifest.binary".to_string(),
+                reason: "binary must not be empty".to_string(),
+            });
+        }
+        Ok(manifest)
+    }
+
+    /// Resolve `binary` relative to the
+    /// manifest's directory. If `binary` is
+    /// absolute, returns it as-is.
+    pub fn resolved_binary(&self, manifest_dir: &Path) -> PathBuf {
+        let p = PathBuf::from(&self.binary);
+        if p.is_absolute() {
+            p
+        } else {
+            manifest_dir.join(&self.binary)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 2.7.2 plugin auto-discovery (ADR-0030)
 // ---------------------------------------------------------------------------
 
@@ -256,19 +346,78 @@ pub struct DiscoveredPlugin {
 }
 
 /// Discover plugin executables in a directory.
-/// Only files with the conventional script
-/// extensions (`.sh`, `.ps1`, `.bat`) OR no
-/// extension are considered. Non-executable
-/// files are silently skipped.
+/// Two sources, in precedence order (manifest
+/// wins on name collision):
 ///
-/// The returned vector is sorted by `name` for
-/// determinism (so two scans over the same
-/// directory produce the same order).
+/// 1. **Manifest form** (2.7.3, ADR-0031):
+///    `<dir>/<name>/plugin.toml` is parsed
+///    and the `binary` field inside the
+///    manifest is the executable. The
+///    manifest's `name` field is the plugin
+///    name; it MUST match the directory name.
+///
+/// 2. **Bare-script form** (2.7.2, ADR-0030):
+///    top-level `*.sh` / `*.ps1` / `.bat`
+///    files (or no extension). The file stem
+///    is the plugin name.
+///
+/// Non-executable files are silently skipped
+/// (so a `README.md` next to the scripts is
+/// fine). The returned vector is sorted by
+/// `name` for determinism.
 pub fn discover_plugins(dir: &Path) -> std::io::Result<Vec<DiscoveredPlugin>> {
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
     let mut out: Vec<DiscoveredPlugin> = Vec::new();
+    let mut names_with_manifest: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    // 1. Manifest form: scan subdirectories.
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_name_os = match path.file_name() {
+            Some(n) => n.to_owned(),
+            None => continue,
+        };
+        let dir_name = match dir_name_os.to_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let manifest_path = path.join("plugin.toml");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let bytes = match std::fs::read(&manifest_path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let manifest = match PluginManifest::parse(&bytes) {
+            Ok(m) => m,
+            Err(_) => continue, // invalid manifest is a no-op (caller sees Warn at scan time)
+        };
+        if manifest.name != dir_name {
+            // Mismatch: manifest `name` field
+            // must match the directory name.
+            // Skip; the operator will see the
+            // mismatch in the manifest's
+            // `manifest-invalid` finding at
+            // scan time.
+            continue;
+        }
+        let binary = manifest.resolved_binary(&path);
+        out.push(DiscoveredPlugin {
+            name: manifest.name.clone(),
+            binary,
+        });
+        names_with_manifest.insert(manifest.name);
+    }
+    // 2. Bare-script form (2.7.2 behaviour):
+    //    only top-level files. Skip names that
+    //    a manifest already claimed.
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -278,20 +427,23 @@ pub fn discover_plugins(dir: &Path) -> std::io::Result<Vec<DiscoveredPlugin>> {
         let Some(name) = plugin_name_from_path(&path) else {
             continue;
         };
-        // Skip non-executable files (the
-        // executable bit is what makes a script
-        // a plugin; a non-executable `README.md`
-        // is fine to drop into the directory).
+        if names_with_manifest.contains(&name) {
+            // Manifest already claimed this
+            // name; the bare script is a
+            // fallback that the manifest
+            // takes precedence over.
+            continue;
+        }
+        // Skip non-executable files.
         let is_exec = {
-            let meta = std::fs::metadata(&path)?;
-            // On Windows the executable bit is
-            // meaningless; treat all `.ps1` /
-            // `.bat` files as runnable. On
-            // POSIX, require the user-exec bit.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                meta.permissions().mode() & 0o100 != 0
+                std::fs::metadata(&path)?
+                    .permissions()
+                    .mode()
+                    & 0o100
+                    != 0
             }
             #[cfg(not(unix))]
             {

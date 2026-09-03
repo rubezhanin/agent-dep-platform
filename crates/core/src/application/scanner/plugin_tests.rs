@@ -218,3 +218,199 @@ fn discover_name_uses_stem_not_full_basename() {
         "name must be the file stem, not the basename"
     );
 }
+
+// -----------------------------------------------------------------------
+// 2.7.3 plugin manifest (ADR-0031)
+// -----------------------------------------------------------------------
+
+#[test]
+fn manifest_minimal_round_trip() {
+    let bytes = br#"
+name = "semgrep"
+version = "0.1.0"
+binary = "./semgrep.sh"
+"#;
+    let m = PluginManifest::parse(bytes).expect("parse");
+    assert_eq!(m.name, "semgrep");
+    assert_eq!(m.version, "0.1.0");
+    assert_eq!(m.binary, "./semgrep.sh");
+    assert_eq!(m.description, None);
+    assert_eq!(m.author, None);
+    assert!(m.env.is_empty());
+    assert!(m.capabilities.is_empty());
+}
+
+#[test]
+fn manifest_with_all_optional_fields() {
+    let bytes = br#"
+name = "semgrep"
+version = "0.1.0"
+binary = "./semgrep.sh"
+description = "Semgrep SAST scanner"
+author = "agency-team"
+timeout_seconds = 60
+max_output_bytes = 134217728
+env = ["SEMGREP_SEND_METRICS=off", "X=1"]
+capabilities = ["sast", "secrets"]
+"#;
+    let m = PluginManifest::parse(bytes).expect("parse");
+    assert_eq!(m.description.as_deref(), Some("Semgrep SAST scanner"));
+    assert_eq!(m.author.as_deref(), Some("agency-team"));
+    assert_eq!(m.timeout_seconds, Some(60));
+    assert_eq!(m.max_output_bytes, Some(134217728));
+    assert_eq!(m.env, vec!["SEMGREP_SEND_METRICS=off", "X=1"]);
+    assert_eq!(m.capabilities, vec!["sast", "secrets"]);
+}
+
+#[test]
+fn manifest_rejects_empty_name() {
+    let bytes = br#"
+name = ""
+version = "0.1.0"
+binary = "./x.sh"
+"#;
+    let err = PluginManifest::parse(bytes).expect_err("must reject");
+    assert!(format!("{err:?}").contains("name must not be empty"));
+}
+
+#[test]
+fn manifest_rejects_empty_version() {
+    let bytes = br#"
+name = "x"
+version = ""
+binary = "./x.sh"
+"#;
+    let err = PluginManifest::parse(bytes).expect_err("must reject");
+    assert!(format!("{err:?}").contains("version must not be empty"));
+}
+
+#[test]
+fn manifest_rejects_empty_binary() {
+    let bytes = br#"
+name = "x"
+version = "0.1.0"
+binary = ""
+"#;
+    let err = PluginManifest::parse(bytes).expect_err("must reject");
+    assert!(format!("{err:?}").contains("binary must not be empty"));
+}
+
+#[test]
+fn manifest_rejects_malformed_toml() {
+    let bytes = br#"
+this is not = = = valid toml
+"#;
+    let err = PluginManifest::parse(bytes).expect_err("must reject");
+    assert!(format!("{err:?}").contains("parse toml"));
+}
+
+#[test]
+fn manifest_binary_path_resolves_relative() {
+    let bytes = br#"
+name = "x"
+version = "0.1.0"
+binary = "./x.sh"
+"#;
+    let m = PluginManifest::parse(bytes).expect("parse");
+    let dir = std::path::Path::new("/opt/agency/scanners.d/x");
+    let resolved = m.resolved_binary(dir);
+    assert_eq!(resolved, std::path::PathBuf::from("/opt/agency/scanners.d/x/./x.sh"));
+}
+
+#[test]
+fn manifest_binary_path_resolves_absolute() {
+    let bytes = br#"
+name = "x"
+version = "0.1.0"
+binary = "/usr/local/bin/x"
+"#;
+    let m = PluginManifest::parse(bytes).expect("parse");
+    let dir = std::path::Path::new("/opt/agency/scanners.d/x");
+    let resolved = m.resolved_binary(dir);
+    assert_eq!(resolved, std::path::PathBuf::from("/usr/local/bin/x"));
+}
+
+#[test]
+fn discover_picks_manifest_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugin_dir = dir.path().join("semgrep");
+    std::fs::create_dir(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("semgrep.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::write(
+        plugin_dir.join("plugin.toml"),
+        r#"
+name = "semgrep"
+version = "0.1.0"
+binary = "./semgrep.sh"
+"#,
+    )
+    .unwrap();
+    let found = discover_plugins(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].name, "semgrep");
+    assert_eq!(found[0].binary, plugin_dir.join("semgrep.sh"));
+}
+
+#[test]
+fn discover_manifest_wins_over_bare_script() {
+    // Both `semgrep/plugin.toml` (manifest) and
+    // `semgrep.sh` (bare script) exist with the
+    // same plugin name. The manifest wins.
+    let dir = tempfile::tempdir().unwrap();
+    let plugin_dir = dir.path().join("semgrep");
+    std::fs::create_dir(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("semgrep.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::write(
+        plugin_dir.join("plugin.toml"),
+        r#"
+name = "semgrep"
+version = "0.1.0"
+binary = "./semgrep.sh"
+"#,
+    )
+    .unwrap();
+    // Also create a bare top-level `semgrep.sh`.
+    std::fs::write(dir.path().join("semgrep.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    let found = discover_plugins(dir.path()).unwrap();
+    assert_eq!(found.len(), 1, "manifest must win over bare script");
+    assert_eq!(found[0].name, "semgrep");
+    // Binary is the manifest's resolved path,
+    // which is the plugin subdir's semgrep.sh
+    // (not the top-level one).
+    assert_eq!(found[0].binary, plugin_dir.join("semgrep.sh"));
+}
+
+#[test]
+fn discover_skips_manifest_with_name_mismatch() {
+    // The directory is named `semgrep` but the
+    // manifest's `name` field is `other`. The
+    // mismatch is a hard skip.
+    let dir = tempfile::tempdir().unwrap();
+    let plugin_dir = dir.path().join("semgrep");
+    std::fs::create_dir(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("semgrep.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::write(
+        plugin_dir.join("plugin.toml"),
+        r#"
+name = "other"
+version = "0.1.0"
+binary = "./semgrep.sh"
+"#,
+    )
+    .unwrap();
+    let found = discover_plugins(dir.path()).unwrap();
+    // The mismatched manifest is skipped; the
+    // top-level bare script would be picked
+    // up, but the manifest takes precedence
+    // and rejects it. In this case, the
+    // manifest's name `other` doesn't match
+    // the dir `semgrep`, so the manifest is
+    // skipped. The result is the same as if
+    // the directory was empty (the dir
+    // contains no executable files at the
+    // top level).
+    assert!(
+        found.is_empty(),
+        "name-mismatched manifest must be skipped, got {found:?}"
+    );
+}
