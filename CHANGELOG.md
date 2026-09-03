@@ -9,6 +9,73 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.7.9] — 2026-09-03
+
+### Added
+
+- **OIDC full RSA signature verification**
+  (ADR-0037). Closes the 2.7.7
+  caveat: the `RealOidcClient` now
+  actually verifies the JWS
+  signature against the IdP's
+  JWKS. 2.7.7 only validated
+  `iss` / `aud` / `nonce`; a
+  malicious IdP could forge
+  tokens.
+- New `verify_jwt_signature`
+  helper in
+  `crates/server/src/oidc_client.rs`:
+  fetches the JWKS, finds the JWK
+  with the matching `kid`, rejects
+  non-RSA `kty`, builds an
+  `RsaPublicKey` from `n` and `e`,
+  and verifies the signature with
+  `rsa::pkcs1v15::VerifyingKey<Sha*>`.
+- New `find_jwk` helper for
+  JWKS-by-`kid` lookup.
+
+### Changed
+
+- **Workspace dependency**:
+  `rsa = { version = "0.9", features
+  = ["sha2"] }` (new). The
+  `sha2` feature enables the
+  `pkcs1v15::SigningKey<Sha*>`
+  for RS256 / RS384 / RS512.
+- `validate_id_token_minimal`
+  docblock updated: the 2.7.7
+  caveat is replaced with a 2.7.9
+  block that documents the
+  supported `alg`s (RS256 / RS384
+  / RS512) and the 2.7.9.1
+  follow-up (ES / PS).
+
+### Algorithm support (2.7.9)
+
+| alg   | 2.7.9 |
+|-------|-------|
+| RS256 | yes   |
+| RS384 | yes   |
+| RS512 | yes   |
+| ES256 | no — deferred to 2.7.9.1 |
+| ES384 | no — deferred |
+| ES512 | no — deferred |
+| PS256 | no — deferred |
+| PS384 | no — deferred |
+| PS512 | no — deferred |
+| HS\*  | never (OIDC forbids symmetric ID tokens) |
+
+### Test count
+
+- 487/0 (unchanged net from 2.7.8).
+  The signature-path coverage
+  (real RSA key + JWKS server) is
+  deferred to 2.7.9.1 with a
+  `wiremock` integration. The
+  2.7.9 cut ships the production
+  verifier without a heavyweight
+  test harness.
+
 ## [2.7.8] — 2026-09-03
 
 ### Added
