@@ -185,9 +185,17 @@ pub fn router(state: ServerState) -> Router {
     // endpoints are PUBLIC — no bearer
     // required. They sit OUTSIDE the
     // `require_bearer` middleware.
+    // 2.7.8 (ADR-0036): adds
+    // `POST /v1/auth/oidc/refresh` and
+    // `GET /v1/auth/oidc/logout`.
     let oidc_routes = Router::new()
         .route("/v1/auth/oidc/login", get(oidc::login_handler))
-        .route("/v1/auth/oidc/callback", get(oidc::callback_handler));
+        .route("/v1/auth/oidc/callback", get(oidc::callback_handler))
+        .route(
+            "/v1/auth/oidc/refresh",
+            axum::routing::post(oidc::refresh_handler),
+        )
+        .route("/v1/auth/oidc/logout", get(oidc::logout_handler));
     Router::new()
         .route("/v1/health", get(handlers::health))
         .merge(oidc_routes)

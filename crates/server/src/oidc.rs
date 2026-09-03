@@ -232,6 +232,12 @@ pub fn validate_state(pending: &OidcPending, state_param: &str) -> CoreResult<Pe
 pub struct OidcCallbackResult {
     pub token: String,
     pub user: AuthenticatedUser,
+    /// 2.7.8 (ADR-0036): local bearer
+    /// expiry. The SPA should refresh
+    /// proactively within
+    /// `OIDC_REFRESH_LEEWAY_SECS` of
+    /// this timestamp.
+    pub expires_at: String,
 }
 
 /// Map IdP claims to a local user, create
@@ -288,6 +294,26 @@ pub async fn provision_user_from_claims(
             path: "oidc.provision".to_string(),
             reason: format!("store token: {e}"),
         })?;
+    // 2.7.8 (ADR-0036): set the
+    // local bearer expiry to
+    // `now + 1h`. The IdP's
+    // `access_token` typically
+    // expires in 1h; the SPA is
+    // expected to call
+    // `/v1/auth/oidc/refresh`
+    // proactively within
+    // `OIDC_REFRESH_LEEWAY_SECS`
+    // of this expiry.
+    let expires_at = (chrono::Utc::now() + chrono::Duration::hours(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    state
+        .users
+        .set_token_expiry(user.id, &expires_at)
+        .await
+        .map_err(|e| agent_dep_core::error::CoreError::ErrSchemaInvalid {
+            path: "oidc.provision".to_string(),
+            reason: format!("set expiry: {e}"),
+        })?;
     let _ = state
         .audit
         .record(
@@ -305,6 +331,7 @@ pub async fn provision_user_from_claims(
             name: user.name.clone(),
             role: user.role,
         },
+        expires_at,
     })
 }
 
@@ -427,7 +454,8 @@ pub async fn callback_handler(
                     "id": out.user.id,
                     "name": out.user.name,
                     "role": format!("{:?}", out.user.role),
-                }
+                },
+                "expires_at": out.expires_at,
             })),
         )
             .into_response(),
@@ -440,6 +468,219 @@ pub async fn callback_handler(
 }
 
 // ---------------------------------------------------------------------------
+// 2.7.8 (ADR-0036) refresh + logout.
+// ---------------------------------------------------------------------------
+
+/// Body of `POST /v1/auth/oidc/refresh`.
+#[derive(Debug, Deserialize)]
+pub struct RefreshRequest {
+    /// The IdP `refresh_token` (NOT the
+    /// local bearer). The SPA holds this
+    /// from the initial `/callback`
+    /// response. The `RealOidcClient` may
+    /// rotate it on every refresh; the
+    /// rotated value is returned in
+    /// `RefreshResponse::refresh_token`.
+    pub refresh_token: String,
+    /// The `sub` claim (or the local
+    /// user id) identifying which user
+    /// is being refreshed. Used to look
+    /// up the `external_id` and update
+    /// the right `users` row.
+    pub sub: String,
+}
+
+/// Response of `POST /v1/auth/oidc/refresh`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RefreshResponse {
+    pub token: String,
+    pub user: RefreshedUser,
+    pub expires_at: String,
+    /// New IdP `refresh_token` (if
+    /// rotated by the IdP). The SPA
+    /// MUST replace its stored value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+}
+
+/// 2.7.8: serializable user info for
+/// the refresh response. Same shape
+/// as the callback response:
+/// `{id, name, role}`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RefreshedUser {
+    pub id: i64,
+    pub name: String,
+    pub role: String,
+}
+
+/// `POST /v1/auth/oidc/refresh`. Public.
+pub async fn refresh_handler(
+    State(state): State<ServerState>,
+    Json(req): Json<RefreshRequest>,
+) -> Response {
+    // 1. Find the local user by `sub`.
+    let users = UserRepository::new(state.db.pool().clone());
+    let user = match users.find_by_external_id(&req.sub).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "unknown sub"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("{e}")})),
+            )
+                .into_response();
+        }
+    };
+    // 2. Call the OidcClient to refresh.
+    let refreshed = match state.oidc_client.refresh(&req.refresh_token).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("OIDC refresh: {e}");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("{e}")})),
+            )
+                .into_response();
+        }
+    };
+    // 3. Re-provision the local user
+    //    (the sub may have changed
+    //    if the IdP rotated
+    //    identities — for OIDC, sub
+    //    is supposed to be stable, so
+    //    this is a no-op in practice).
+    use agent_dep_core::infrastructure::repository::users_repository::{
+        generate_token, sha256_hex,
+    };
+    let new_local_token = generate_token();
+    let new_hash = sha256_hex(new_local_token.as_bytes());
+    if let Err(e) = state
+        .users
+        .store_token_hash(user.id, &new_hash)
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("store token: {e}")})),
+        )
+            .into_response();
+    }
+    if let Err(e) = state
+        .users
+        .set_token_expiry(user.id, &refreshed.expires_at)
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("set expiry: {e}")})),
+        )
+            .into_response();
+    }
+    // 4. Audit.
+    let _ = state
+        .audit
+        .record(
+            &user.name,
+            "oidc.refresh",
+            Some(&format!("user:{}", user.id)),
+            AuditOutcome::Ok,
+            Some(&format!("{{\"sub\":\"{}\"}}", refreshed.claims.sub)),
+        )
+        .await;
+    (
+        StatusCode::OK,
+        Json(RefreshResponse {
+            token: new_local_token,
+            user: RefreshedUser {
+                id: user.id,
+                name: user.name.clone(),
+                role: format!("{:?}", user.role),
+            },
+            expires_at: refreshed.expires_at,
+            refresh_token: refreshed.new_refresh_token,
+        }),
+    )
+        .into_response()
+}
+
+/// `GET /v1/auth/oidc/logout`. Public.
+/// 302-redirects to the IdP's
+/// `end_session_endpoint` if the IdP
+/// publishes one; otherwise returns
+/// 200 with `{"message": "logged out
+/// locally"}`. Always invalidates the
+/// local `token_hash` for the
+/// currently-logged-in user (if the
+/// Authorization header is present).
+pub async fn logout_handler(
+    State(state): State<ServerState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // 1. If a bearer is present,
+    //    invalidate the local token.
+    if let Some(auth) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(token) = auth.strip_prefix("Bearer ") {
+            if let Ok(Some(user)) = state.users.find_by_token(token).await {
+                let _ = state.users.invalidate_token(user.id).await;
+                let _ = state
+                    .audit
+                    .record(
+                        &user.name,
+                        "oidc.logout",
+                        Some(&format!("user:{}", user.id)),
+                        AuditOutcome::Ok,
+                        None,
+                    )
+                    .await;
+            }
+        }
+    }
+    // 2. 302-redirect to the IdP's
+    //    end_session_endpoint if the
+    //    real client has one cached.
+    if let Some(end_session) = end_session_url_for(&state).await {
+        return (
+            StatusCode::FOUND,
+            [(axum::http::header::LOCATION, end_session)],
+        )
+            .into_response();
+    }
+    // 3. Mock client (or IdP without
+    //    end_session_endpoint): return
+    //    200 locally.
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"message": "logged out locally"})),
+    )
+        .into_response()
+}
+
+/// 2.7.8 helper: read the cached
+/// `end_session_endpoint` if the
+/// configured client is the real one.
+/// Returns `None` for the mock or
+/// when the IdP doesn't publish one.
+async fn end_session_url_for(state: &ServerState) -> Option<String> {
+    let any: &dyn std::any::Any = state.oidc_client.as_any();
+    if let Some(real) =
+        any.downcast_ref::<crate::oidc_client::RealOidcClient>()
+    {
+        if let Ok(Some(url)) = real.end_session_url_async().await {
+            return Some(url);
+        }
+    }
+    None
+}
 // Tests (2.7.6)
 // ---------------------------------------------------------------------------
 

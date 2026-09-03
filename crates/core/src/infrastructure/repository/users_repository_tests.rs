@@ -97,6 +97,63 @@ async fn migrate_legacy_token_creates_admin_once() {
     assert_eq!(u.role, Role::Admin);
 }
 
+#[tokio::test]
+async fn set_token_expiry_round_trips() {
+    let (_dir, repo) = fresh_db().await;
+    let out = repo.create("alice", Role::Operator).await.expect("create");
+    // Default: NULL (bearer-token users
+    // never expire in 2.0.0-2.7.7).
+    let u0 = repo
+        .find_by_token(&out.token)
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(u0.token_expires_at.is_none());
+    // Set expiry.
+    repo.set_token_expiry(out.user.id, "2030-01-01T00:00:00Z")
+        .await
+        .expect("set");
+    let u1 = repo
+        .find_by_token(&out.token)
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(
+        u1.token_expires_at.as_deref(),
+        Some("2030-01-01T00:00:00Z")
+    );
+    // Clear expiry.
+    repo.set_token_expiry(out.user.id, "")
+        .await
+        .expect("clear");
+    let u2 = repo
+        .find_by_token(&out.token)
+        .await
+        .expect("find")
+        .expect("present");
+    assert!(u2.token_expires_at.is_none());
+}
+
+#[tokio::test]
+async fn invalidate_token_blocks_find_by_token() {
+    let (_dir, repo) = fresh_db().await;
+    let out = repo.create("alice", Role::Operator).await.expect("create");
+    // Sanity: token works.
+    let before = repo
+        .find_by_token(&out.token)
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(before.id, out.user.id);
+    // Invalidate.
+    repo.invalidate_token(out.user.id)
+        .await
+        .expect("invalidate");
+    // Subsequent lookups return None.
+    let after = repo.find_by_token(&out.token).await.expect("find");
+    assert!(after.is_none(), "invalidate must block find_by_token");
+}
+
 fn sha256_hex_public(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();

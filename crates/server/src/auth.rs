@@ -49,6 +49,26 @@ pub async fn require_bearer(
     };
     match state.users.find_by_token(&token).await {
         Ok(Some(user)) => {
+            // 2.7.8 (ADR-0036): enforce
+            // local bearer expiry. OIDC
+            // users get a non-NULL
+            // `token_expires_at`; bearer-
+            // token users (2.0.0-2.7.7)
+            // have `NULL` and never
+            // expire.
+            if let Some(expires_at) = user.token_expires_at.as_deref() {
+                if let Ok(expires) = chrono::DateTime::parse_from_rfc3339(expires_at) {
+                    if expires <= chrono::Utc::now() {
+                        return unauthorized(
+                            &state,
+                            &method,
+                            &path,
+                            "token expired, refresh required",
+                        )
+                        .await;
+                    }
+                }
+            }
             let user_id = user.id;
             let repo = state.users.clone();
             tokio::spawn(async move {

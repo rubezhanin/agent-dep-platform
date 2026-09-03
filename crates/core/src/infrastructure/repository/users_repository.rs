@@ -56,18 +56,26 @@ pub struct UserRow {
     /// (the `sub` claim). `None` for
     /// bearer-token users (2.0.0-2.7.5).
     pub external_id: Option<String>,
+    /// 2.7.8 (ADR-0036): local bearer
+    /// expiry (RFC 3339). `None` for
+    /// bearer-token users (2.0.0-2.7.7)
+    /// and OIDC users that have not yet
+    /// been refreshed.
+    pub token_expires_at: Option<String>,
 }
 
 /// Tuple shape returned by `sqlx::query_as` for
 /// `SELECT id, name, role, token_hash, created_at,
-/// last_seen_at, disabled_at, external_id FROM users`.
-/// The eight fields map 1:1 to [`UserRow`].
+/// last_seen_at, disabled_at, external_id,
+/// token_expires_at FROM users`. The nine
+/// fields map 1:1 to [`UserRow`].
 pub type UserRowTuple = (
     i64,
     String,
     String,
     String,
     String,
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -136,6 +144,7 @@ impl UserRepository {
             last_seen_at: None,
             disabled_at: None,
             external_id: None,
+            token_expires_at: None,
         };
         Ok(UserCreated { user, token })
     }
@@ -147,7 +156,7 @@ impl UserRepository {
     pub async fn find_by_token(&self, plain_token: &str) -> CoreResult<Option<UserRow>> {
         let token_hash = sha256_hex(plain_token.as_bytes());
         let row: Option<UserRowTuple> = sqlx::query_as(
-            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at, external_id \
+            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at, external_id, token_expires_at \
              FROM users WHERE token_hash = ?1",
         )
         .bind(&token_hash)
@@ -164,6 +173,7 @@ impl UserRepository {
                 last_seen_at,
                 disabled_at,
                 external_id,
+                token_expires_at,
             )) => {
                 if disabled_at.is_some() {
                     return Ok(None);
@@ -178,6 +188,7 @@ impl UserRepository {
                     last_seen_at,
                     disabled_at,
                     external_id,
+                    token_expires_at,
                 }))
             }
         }
@@ -236,13 +247,13 @@ impl UserRepository {
     /// `last_seen_at` and `disabled_at` are.
     pub async fn list(&self) -> CoreResult<Vec<UserRow>> {
         let rows: Vec<UserRowTuple> = sqlx::query_as(
-            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at, external_id \
+            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at, external_id, token_expires_at \
              FROM users ORDER BY id ASC",
         )
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
-        for (id, name, role_str, token_hash, created_at, last_seen_at, disabled_at, external_id) in
+        for (id, name, role_str, token_hash, created_at, last_seen_at, disabled_at, external_id, token_expires_at) in
             rows
         {
             out.push(UserRow {
@@ -254,6 +265,7 @@ impl UserRepository {
                 last_seen_at,
                 disabled_at,
                 external_id,
+                token_expires_at,
             });
         }
         Ok(out)
@@ -298,7 +310,7 @@ impl UserRepository {
             return Ok(None);
         }
         let row: Option<UserRowTuple> = sqlx::query_as(
-            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at, external_id \
+            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at, external_id, token_expires_at \
              FROM users WHERE external_id = ?1",
         )
         .bind(external_id)
@@ -315,6 +327,7 @@ impl UserRepository {
                 last_seen_at,
                 disabled_at,
                 external_id,
+                token_expires_at,
             )) => {
                 if disabled_at.is_some() {
                     return Ok(None);
@@ -329,6 +342,7 @@ impl UserRepository {
                     last_seen_at,
                     disabled_at,
                     external_id,
+                    token_expires_at,
                 }))
             }
         }
@@ -393,6 +407,7 @@ impl UserRepository {
             last_seen_at: None,
             disabled_at: None,
             external_id: Some(external_id.to_string()),
+            token_expires_at: None,
         })
     }
 
@@ -404,6 +419,50 @@ impl UserRepository {
     pub async fn store_token_hash(&self, user_id: i64, token_hash: &str) -> CoreResult<()> {
         sqlx::query("UPDATE users SET token_hash = ?1 WHERE id = ?2")
             .bind(token_hash)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 2.7.8 (ADR-0036): set the local
+    /// bearer token's expiry. The
+    /// `auth::require_bearer` middleware
+    /// returns 401 once the wall clock
+    /// passes `expires_at`. Pass an empty
+    /// string to clear the expiry (the
+    /// user reverts to non-expiring,
+    /// matching the 2.7.7 behaviour).
+    pub async fn set_token_expiry(
+        &self,
+        user_id: i64,
+        expires_at: &str,
+    ) -> CoreResult<()> {
+        let value: Option<&str> = if expires_at.is_empty() {
+            None
+        } else {
+            Some(expires_at)
+        };
+        sqlx::query("UPDATE users SET token_expires_at = ?1 WHERE id = ?2")
+            .bind(value)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 2.7.8 (ADR-0036): invalidate the
+    /// local bearer token by setting
+    /// `token_hash = sha256("")` (the
+    /// "empty hash" sentinel from
+    /// `create_with_external_id` in
+    /// 2.7.6). Subsequent
+    /// `find_by_token` calls return
+    /// `None` for this user.
+    pub async fn invalidate_token(&self, user_id: i64) -> CoreResult<()> {
+        let empty_hash = sha256_hex(b"");
+        sqlx::query("UPDATE users SET token_hash = ?1 WHERE id = ?2")
+            .bind(&empty_hash)
             .bind(user_id)
             .execute(&self.pool)
             .await?;

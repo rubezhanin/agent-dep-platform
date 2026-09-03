@@ -77,6 +77,28 @@ pub struct TokenClaims {
     pub role_claim_value: serde_json::Value,
 }
 
+/// 2.7.8 (ADR-0036): what
+/// `OidcClient::refresh` returns. The
+/// framework re-issues a local bearer
+/// token from the new claims and
+/// updates `users.token_expires_at`.
+#[derive(Debug, Clone)]
+pub struct RefreshedTokens {
+    pub claims: TokenClaims,
+    /// RFC 3339 timestamp at which the
+    /// IdP's `access_token` (and the
+    /// local bearer) expires. The
+    /// framework stores this in
+    /// `users.token_expires_at`.
+    pub expires_at: String,
+    /// New IdP `refresh_token` (if the
+    /// IdP rotated it). The framework
+    /// does NOT store this (it cannot
+    /// keep a 2.x-state-secret); the
+    /// SPA holds it client-side.
+    pub new_refresh_token: Option<String>,
+}
+
 /// The wire-protocol abstraction. Uses
 /// `async_trait` for object-safety
 /// (so we can store `Arc<dyn OidcClient>`).
@@ -100,6 +122,36 @@ pub trait OidcClient: Send + Sync {
         &self,
         input: CallbackInput,
     ) -> CoreResult<TokenClaims>;
+
+    /// 2.7.8 (ADR-0036): refresh the IdP
+    /// tokens using the supplied
+    /// `refresh_token`. The framework
+    /// calls this from the
+    /// `POST /v1/auth/oidc/refresh`
+    /// endpoint.
+    async fn refresh(
+        &self,
+        refresh_token: &str,
+    ) -> CoreResult<RefreshedTokens>;
+
+    /// 2.7.8: build the IdP
+    /// `end_session_endpoint` URL (if
+    /// published by the IdP's discovery
+    /// document). `None` means the IdP
+    /// does not support front-channel
+    /// logout; the framework's logout
+    /// endpoint then returns
+    /// `{"message": "logged out locally"}`.
+    fn end_session_url(&self) -> CoreResult<Option<String>>;
+
+    /// 2.7.8: downcast to `&dyn Any` so
+    /// the framework can read
+    /// `RealOidcClient`-specific state
+    /// (the cached `end_session_endpoint`)
+    /// from inside an `Arc<dyn
+    /// OidcClient>`. Returns `&dyn Any`
+    /// for the underlying concrete type.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 // -----------------------------------------------------------------------
@@ -143,6 +195,40 @@ impl OidcClient for MockOidcClient {
             role_claim_value: serde_json::json!([]),
         })
     }
+
+    async fn refresh(
+        &self,
+        _refresh_token: &str,
+    ) -> CoreResult<RefreshedTokens> {
+        // 2.7.8 mock: 1-hour expiry,
+        // same canned claims, no
+        // refresh-token rotation. The
+        // SPA's `oidc:test:user-1`
+        // bearer keeps working for the
+        // next hour.
+        let now = chrono::Utc::now();
+        let expires = now + chrono::Duration::hours(1);
+        Ok(RefreshedTokens {
+            claims: TokenClaims {
+                sub: "oidc:test:user-1".to_string(),
+                email: Some("test-user@example.com".to_string()),
+                preferred_username: Some("test-user".to_string()),
+                role_claim_value: serde_json::json!([]),
+            },
+            expires_at: expires.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            new_refresh_token: None,
+        })
+    }
+
+    fn end_session_url(&self) -> CoreResult<Option<String>> {
+        // Mock IdP does not publish an
+        // `end_session_endpoint`.
+        Ok(None)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -160,6 +246,13 @@ struct OidcDiscovery {
     authorization_endpoint: String,
     token_endpoint: String,
     jwks_uri: String,
+    /// 2.7.8 (ADR-0036): optional
+    /// `end_session_endpoint` for the
+    /// `GET /v1/auth/oidc/logout`
+    /// front-channel redirect. Not all
+    /// IdPs publish this.
+    #[serde(default)]
+    end_session_endpoint: Option<String>,
 }
 
 /// Real OIDC client. Holds a cached discovery
@@ -358,6 +451,151 @@ impl OidcClient for RealOidcClient {
         )
         .await?;
         Ok(claims)
+    }
+
+    /// 2.7.8 (ADR-0036): refresh the IdP
+    /// tokens. POSTs
+    /// `grant_type=refresh_token` to the
+    /// `token_endpoint` and parses the
+    /// response.
+    async fn refresh(
+        &self,
+        refresh_token: &str,
+    ) -> CoreResult<RefreshedTokens> {
+        if refresh_token.is_empty() {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "oidc.refresh".to_string(),
+                reason: "refresh_token must not be empty".to_string(),
+            });
+        }
+        let discovery = self.ensure_discovery().await?;
+        let client_secret = self
+            .config
+            .client_secret
+            .as_deref()
+            .ok_or_else(|| CoreError::ErrSchemaInvalid {
+                path: "oidc.client_secret".to_string(),
+                reason: "AGENCY_OIDC_CLIENT_SECRET must be set for the real client".to_string(),
+            })?;
+        let params = [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", self.config.client_id.as_str()),
+        ];
+        let resp = self
+            .http
+            .post(&discovery.token_endpoint)
+            .basic_auth(&self.config.client_id, Some(client_secret))
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| {
+                CoreError::ErrIo(std::io::Error::other(format!("OIDC refresh POST: {e}")))
+            })?;
+        if !resp.status().is_success() {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "oidc.refresh".to_string(),
+                reason: format!("HTTP {}", resp.status()),
+            });
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| {
+                CoreError::ErrIo(std::io::Error::other(format!("OIDC refresh parse: {e}")))
+            })?;
+        // The IdP returns a new
+        // `access_token` (we don't use
+        // it — we issue our own local
+        // bearer) and a new `id_token`
+        // (we re-validate iss/aud).
+        // `expires_in` is the IdP's
+        // `access_token` lifetime in
+        // seconds. The IdP may rotate
+        // `refresh_token`.
+        let id_token = body
+            .get("id_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ErrSchemaInvalid {
+                path: "oidc.refresh".to_string(),
+                reason: "no `id_token` in refresh response".to_string(),
+            })?;
+        // 2.7.8 caveat: the nonce check
+        // is the trickiest part of
+        // refresh because the IdP's new
+        // `id_token` does NOT contain
+        // the original nonce (refresh
+        // responses don't repeat the
+        // nonce). We pass a wildcard
+        // `expected_nonce` of the empty
+        // string and accept any nonce
+        // value (or none) in the
+        // refreshed id_token.
+        let claims = validate_id_token_minimal(
+            id_token,
+            &discovery.jwks_uri,
+            &self.config.issuer,
+            &self.config.client_id,
+            "",
+            &self.http,
+        )
+        .await?;
+        let expires_in_secs = body
+            .get("expires_in")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(3600);
+        let expires = chrono::Utc::now() + chrono::Duration::seconds(expires_in_secs);
+        let expires_at = expires.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let new_refresh_token = body
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        Ok(RefreshedTokens {
+            claims,
+            expires_at,
+            new_refresh_token,
+        })
+    }
+
+    /// 2.7.8 (ADR-0036): return the
+    /// cached `end_session_endpoint`
+    /// (or `None` if the IdP does not
+    /// publish one). The framework's
+    /// logout handler 302-redirects
+    /// here for front-channel logout.
+    fn end_session_url(&self) -> CoreResult<Option<String>> {
+        // 2.7.8 limitation: we do not
+        // hold a sync lock on the
+        // discovery cache (the cache is
+        // a `tokio::sync::Mutex`). The
+        // framework's logout handler is
+        // async and acquires the lock
+        // separately; here we return
+        // `None` to indicate "use the
+        // fallback locally-only logout
+        // flow" rather than blocking
+        // the runtime. The framework's
+        // `logout_handler` async-fns
+        // lock the cache directly via
+        // `RealOidcClient::end_session_url_async`
+        // (defined below as an inherent
+        // method).
+        Ok(None)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl RealOidcClient {
+    /// Async version of `end_session_url`
+    /// that reads the cached discovery
+    /// doc. The framework's logout
+    /// handler calls this.
+    pub async fn end_session_url_async(&self) -> CoreResult<Option<String>> {
+        let guard = self.discovery.lock().await;
+        Ok(guard.as_ref().and_then(|d| d.end_session_endpoint.clone()))
     }
 }
 
@@ -733,5 +971,72 @@ mod tests {
         .await
         .expect_err("must reject");
         assert!(format!("{err:?}").contains("malformed JWS"));
+    }
+
+    // 2.7.8 (ADR-0036) tests
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn mock_refresh_returns_one_hour_expiry() {
+        let mock = MockOidcClient;
+        let before = chrono::Utc::now();
+        let r = mock
+            .refresh("any-refresh-token")
+            .await
+            .expect("refresh");
+        let after = chrono::Utc::now();
+        // The expiry is approximately
+        // `now + 1h`. Parse and check
+        // it's strictly after
+        // (before+1h) and not too far
+        // in the future.
+        let parsed = chrono::DateTime::parse_from_rfc3339(&r.expires_at)
+            .expect("rfc3339");
+        let lower = before + chrono::Duration::minutes(59);
+        let upper = after + chrono::Duration::hours(2);
+        assert!(
+            parsed >= lower && parsed <= upper,
+            "expires_at not in (now+59m, now+2h] window: {} (now={} .. {})",
+            r.expires_at, before, after
+        );
+        assert!(r.new_refresh_token.is_none());
+    }
+
+    #[test]
+    fn mock_end_session_url_is_none() {
+        let mock = MockOidcClient;
+        let url = mock.end_session_url().expect("url");
+        assert!(url.is_none());
+    }
+
+    #[test]
+    fn discovery_end_session_endpoint_optional() {
+        // Discovery doc without
+        // end_session_endpoint — the
+        // deserialiser must accept
+        // this and return None.
+        let json = r#"{
+            "issuer": "https://idp.example.com",
+            "authorization_endpoint": "https://idp.example.com/auth",
+            "token_endpoint": "https://idp.example.com/token",
+            "jwks_uri": "https://idp.example.com/jwks"
+        }"#;
+        let d: OidcDiscovery = serde_json::from_str(json).expect("parse");
+        assert!(d.end_session_endpoint.is_none());
+
+        // Discovery doc WITH
+        // end_session_endpoint.
+        let json2 = r#"{
+            "issuer": "https://idp.example.com",
+            "authorization_endpoint": "https://idp.example.com/auth",
+            "token_endpoint": "https://idp.example.com/token",
+            "jwks_uri": "https://idp.example.com/jwks",
+            "end_session_endpoint": "https://idp.example.com/logout"
+        }"#;
+        let d2: OidcDiscovery = serde_json::from_str(json2).expect("parse");
+        assert_eq!(
+            d2.end_session_endpoint.as_deref(),
+            Some("https://idp.example.com/logout")
+        );
     }
 }

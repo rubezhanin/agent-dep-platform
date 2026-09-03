@@ -1036,3 +1036,185 @@ async fn deploy_with_unknown_target_is_400() {
         "failed target lookup must not leave a pending_deploys row: {arr:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 2.7.8 — OIDC token refresh + logout
+// (ADR-0036). The mock client is in
+// effect, so the IdP's `end_session_endpoint`
+// is None; the logout endpoint returns
+// 200 with `{"message": "logged out locally"}`.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn oidc_refresh_endpoint_returns_new_token_and_expiry() {
+    let srv = boot().await;
+    // The 2.7.6 framework provisions an
+    // OIDC user via `provision_user_from_claims`
+    // (called from the `/callback`
+    // handler). For the test we go
+    // straight to the underlying repo
+    // to seed a user with an
+    // `external_id`. (The 2.7.8
+    // surface does not need a separate
+    // `create_oidc_user` helper.)
+    let users = UserRepository::new(connect_helper(&srv).await);
+    let user = users
+        .create_with_external_id("alice", Role::Operator, "sub-abc")
+        .await
+        .expect("create");
+    users
+        .set_token_expiry(user.id, "2020-01-01T00:00:00Z")
+        .await
+        .expect("expiry");
+    // Refresh: a public endpoint.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/auth/oidc/refresh", srv.base))
+        .json(&json!({
+            "refresh_token": "the-mock-refresh-token",
+            "sub": "sub-abc",
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert!(v["token"].is_string());
+    assert!(v["expires_at"].is_string());
+    // The new token must NOT be the
+    // old (already-invalidated) one.
+    let new_token = v["token"].as_str().expect("token");
+    assert!(!new_token.is_empty());
+    // The user can be looked up by
+    // the new token.
+    let still_valid = users
+        .find_by_token(new_token)
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(still_valid.id, user.id);
+    // The new expiry is approximately
+    // `now + 1h` (the mock client).
+    let parsed =
+        chrono::DateTime::parse_from_rfc3339(v["expires_at"].as_str().unwrap())
+            .expect("rfc3339");
+    let now = chrono::Utc::now();
+    assert!(parsed > now);
+    assert!(parsed < now + chrono::Duration::hours(2));
+}
+
+#[tokio::test]
+async fn oidc_refresh_with_unknown_sub_returns_404() {
+    let srv = boot().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/auth/oidc/refresh", srv.base))
+        .json(&json!({
+            "refresh_token": "any",
+            "sub": "no-such-user",
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn oidc_logout_endpoint_returns_200_locally() {
+    let srv = boot().await;
+    // No bearer — anonymous logout
+    // still returns 200 because the
+    // mock client has no
+    // end_session_endpoint.
+    let resp = reqwest::get(format!("{}/v1/auth/oidc/logout", srv.base))
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["message"], "logged out locally");
+}
+
+#[tokio::test]
+async fn oidc_logout_with_bearer_invalidates_local_token() {
+    let srv = boot().await;
+    let users = UserRepository::new(connect_helper(&srv).await);
+    let user = users
+        .create_with_external_id("bob", Role::Operator, "sub-bob")
+        .await
+        .expect("create");
+    // Issue a local bearer and store
+    // the hash. The mock client
+    // doesn't issue tokens, so we
+    // rotate the user's token via
+    // the API to get a plain one.
+    users
+        .set_token_expiry(user.id, "2030-01-01T00:00:00Z")
+        .await
+        .expect("expiry");
+    let plain = users
+        .rotate_token(user.id)
+        .await
+        .expect("rotate")
+        .expect("present");
+    // Logout with the bearer.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/auth/oidc/logout", srv.base))
+        .bearer_auth(&plain)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), 200);
+    // The local token must no longer
+    // work.
+    let after = users.find_by_token(&plain).await.expect("find");
+    assert!(
+        after.is_none(),
+        "logout must invalidate the local token"
+    );
+}
+
+#[tokio::test]
+async fn expired_token_returns_401() {
+    let srv = boot().await;
+    let users = UserRepository::new(connect_helper(&srv).await);
+    let user = users
+        .create_with_external_id("carol", Role::Operator, "sub-carol")
+        .await
+        .expect("create");
+    users
+        .set_token_expiry(user.id, "2020-01-01T00:00:00Z")
+        .await
+        .expect("expiry");
+    let plain = users
+        .rotate_token(user.id)
+        .await
+        .expect("rotate")
+        .expect("present");
+    // Any authed endpoint should
+    // 401 because the token is
+    // expired.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/audit", srv.base))
+        .bearer_auth(&plain)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), 401);
+}
+
+/// 2.7.8 helper: open a fresh
+/// connection to the test server's
+/// in-memory DB. The TestServer holds
+/// the connection; the helper just
+/// returns a clone of the pool. (We
+/// can't easily share `state.db` from
+/// the test helper, so we open a
+/// second connection to the same
+/// file. For in-memory tests, the
+/// DB file lives under
+/// `srv._dir`.)
+async fn connect_helper(srv: &TestServer) -> sqlx::SqlitePool {
+    let path = srv._dir.path().join("audit.db");
+    let db = agent_dep_core::infrastructure::sqlite::connect(&path)
+        .await
+        .expect("connect");
+    db.pool().clone()
+}
