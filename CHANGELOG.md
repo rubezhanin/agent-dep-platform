@@ -9,6 +9,106 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.7.7] — 2026-09-03
+
+### Added
+
+- **OIDC real wire-protocol client**
+  (ADR-0035). The 2.7.6 framework now has
+  a production client behind it:
+  - `OidcClient` trait
+    (`crates/server/src/oidc_client.rs`,
+    602 lines, 8 unit tests). The
+    `async_trait` macro makes the trait
+    object-safe so the framework can
+    store `Arc<dyn OidcClient>` in
+    `ServerState`.
+  - `RealOidcClient`:
+    - Discovery: GET
+      `{issuer}/.well-known/openid-configuration`
+      and cache the result.
+    - `/authorize` URL builder using
+      `url::Url::query_pairs_mut`.
+      Includes `response_type=code`,
+      `client_id`, `redirect_uri`,
+      `scope`, `state`, `nonce`,
+      `code_challenge`,
+      `code_challenge_method=S256`.
+    - Token exchange: POST `code` +
+      `code_verifier` + `redirect_uri`
+      to the `token_endpoint` with HTTP
+      Basic auth on
+      `client_id:client_secret`.
+    - ID-token validator: parse JWS,
+      decode header + payload, verify
+      `alg` is present, validate `iss` /
+      `aud` / `nonce` claims.
+  - `MockOidcClient` (kept for dev /
+    CI; activated by
+    `AGENCY_OIDC_MOCK=1`).
+  - `pkce_challenge_from_verifier(verifier)` —
+    the S256 derivation
+    `BASE64URL(SHA256(verifier))`.
+  - `handle_login` delegates URL
+    assembly to the configured
+    `OidcClient`.
+  - `callback_handler` calls
+    `oidc_client.exchange_code(...)`
+    before
+    `provision_user_from_claims`. The
+    framework's `validate_state` already
+    retrieved the PKCE verifier + nonce
+    from `OidcPending`; both are passed
+    in `CallbackInput`.
+
+### Changed
+
+- **BREAKING**: `AGENCY_OIDC_MOCK`
+  default flipped from `1` (2.7.6) to
+  `0` (2.7.7). The real client is the
+  new default. Operators who set up
+  OIDC in 2.7.6 and have been running
+  with the (silently mock) flow MUST
+  either:
+  1. Set `AGENCY_OIDC_ISSUER` +
+     `AGENCY_OIDC_CLIENT_ID` +
+     `AGENCY_OIDC_CLIENT_SECRET` (and
+     friends) to a real IdP, OR
+  2. Set `AGENCY_OIDC_MOCK=1`
+     explicitly to keep the mock.
+- **Workspace dependencies**:
+  - `url = "2"` (new)
+  - `reqwest = { version = "0.12",
+      default-features = false,
+      features = ["json", "rustls-tls"] }`
+    promoted from
+    `crates/server/dev-dependencies` to
+    `crates/server/dependencies` and
+    then to workspace-level
+  - `async-trait = "0.1"` (new)
+
+### Caveat
+
+- Full RSA / ECDSA signature
+  verification of the ID token is
+  **deferred to 2.7.7.1**. 2.7.7 ships
+  the transport + claims validation, but
+  the `rsa` crate's API is in flux
+  between 0.8 and 0.9; we don't want to
+  chase it for the 2.7.7 cut. Operators
+  who need full crypto verification
+  should pin to 2.7.7.1+ or run an
+  in-line reverse proxy (e.g.
+  `oauth2-proxy`) in front of the OIDC
+  callback.
+
+### Test count
+
+- 477/0 (was 466/0 in 2.7.6). Delta is
+  the 11 new OIDC unit tests (8 in
+  `oidc_client::tests` + 3 in
+  `oidc::tests`).
+
 ## [2.7.6] — 2026-09-03
 
 ### Added
