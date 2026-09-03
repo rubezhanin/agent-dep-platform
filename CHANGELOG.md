@@ -9,6 +9,79 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.8.0] — 2026-09-04
+
+### Added
+
+- **Real Git source ingest**
+  (ADR-0009 + ADR-0039). The MVP
+  `IngestRepository` walked a local
+  catalog directory; 2.8.0 adds a
+  `GitFetcher` that uses the `git2`
+  crate (with `vendored-libgit2`)
+  to clone a remote repo into a
+  tempdir and feed the existing
+  local walker.
+- New `GitFetcher` in
+  `crates/core/src/infrastructure/git_fetcher.rs`:
+  - `GitFetcher::clone_to(url,
+    ref_, dest)` — clone a
+    remote repo into `dest`
+    and check out `ref_`
+    (branch, tag, or commit
+    SHA; defaults to remote
+    HEAD).
+  - `GitFetcher::fetch(dest,
+    ref_)` — fetch +
+    fast-forward an existing
+    clone.
+- Both methods are async via
+  `tokio::task::spawn_blocking`
+  (git2 is sync).
+- HTTPS + SSH are supported
+  via the operator's
+  `~/.ssh/config` + `ssh-agent`.
+
+### Changed
+
+- **Workspace dependency**:
+  `git2 = { version = "0.20",
+  features = ["vendored-libgit2"]
+  }` (new). The
+  `vendored-libgit2` feature
+  builds libgit2 from source so
+  the binary is portable across
+  Windows / Linux / macOS.
+- `crates/core/Cargo.toml`
+  gains the `git2` dep
+  (workspace alias).
+- 3 new build deps are pulled
+  in transitively: `libssh2-sys`,
+  `openssl-probe`, `openssl-sys`.
+
+### Test count
+
+- 489/0 + 3 ignored (was 488/0
+  in 2.7.10). Delta is +1 (the
+  2 happy-path tests are
+  `#[ignore]`'d on Windows:
+  tempfile uses 8.3 short path
+  which `git2` rejects; tracked
+  in 2.8.1).
+
+### Caveats (deferred to 2.8.x)
+
+- **Auto-merge on fetch** — 2.8.0
+  does not fast-forward the
+  local branch after `fetch`.
+- **Integration with the existing
+  `application::ingest::git_fetcher`**
+  (which has `HttpsFetcher` /
+  `SshFetcher` scaffold) —
+  2.8.1 unifies the two paths.
+- **Sparse-checkout**, **shallow
+  clone**, **LFS** support.
+
 ## [2.7.10] — 2026-09-03
 
 ### Added
