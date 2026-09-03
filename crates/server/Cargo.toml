@@ -44,6 +44,12 @@ url = { workspace = true }
 # `Arc<dyn OidcClient>` in `ServerState`.
 reqwest = { workspace = true }
 async-trait = { workspace = true }
+# 2.7.9 (ADR-0037): full RSA
+# signature verification of the
+# OIDC id_token. `rsa` 0.9 + the
+# `sha2` feature for
+# `pkcs1v15::SigningKey<Sha*>`.
+rsa = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

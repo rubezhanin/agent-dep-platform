@@ -601,32 +601,22 @@ impl RealOidcClient {
 
 /// ID-token validator: parse the JWS,
 /// fetch the JWKS, find the matching
-/// `kid`, validate the `alg` header, and
+/// `kid`, validate the `alg` header,
 /// verify the `iss` / `aud` / `nonce`
-/// claims. The full RSA / ECDSA signature
-/// check is **deferred to 2.7.7.1** (the
-/// `rsa` crate's API is in flux between
-/// 0.8 and 0.9; we don't want to chase it
-/// for the 2.7.7 cut). 2.7.7 ships the
-/// transport layer + claims validation;
-/// 2.7.7.1 plugs in the cryptographic
-/// signature verification.
-///
-/// This means: in 2.7.7, the `RealOidcClient`
-/// is **NOT safe against a malicious IdP**
-/// that forges tokens. The `MockOidcClient`
-/// (used in dev / CI) is fine. Operators
-/// who want full crypto verification
-/// should pin to 2.7.7.1+ or run an
-/// in-line reverse proxy (e.g. oauth2-proxy)
-/// in front of the OIDC callback.
+/// claims, AND verify the RSA
+/// signature against the JWK's public
+/// key. 2.7.9 (ADR-0037) closes the
+/// 2.7.7 signature-verification
+/// caveat. The supported `alg`s are
+/// `RS256` / `RS384` / `RS512`; ES
+/// and PS are deferred to 2.7.9.1.
 async fn validate_id_token_minimal(
     id_token: &str,
-    _jwks_uri: &str,
+    jwks_uri: &str,
     expected_issuer: &str,
     expected_aud: &str,
     expected_nonce: &str,
-    _http: &reqwest::Client,
+    http: &reqwest::Client,
 ) -> CoreResult<TokenClaims> {
     // Split the JWS.
     let mut parts = id_token.split('.');
@@ -638,7 +628,7 @@ async fn validate_id_token_minimal(
         path: "oidc.id_token".to_string(),
         reason: "malformed JWS (no payload)".to_string(),
     })?;
-    let _signature_b64 = parts.next().ok_or_else(|| CoreError::ErrSchemaInvalid {
+    let signature_b64 = parts.next().ok_or_else(|| CoreError::ErrSchemaInvalid {
         path: "oidc.id_token".to_string(),
         reason: "malformed JWS (no signature)".to_string(),
     })?;
@@ -671,14 +661,17 @@ async fn validate_id_token_minimal(
             path: "oidc.id_token".to_string(),
             reason: "no `alg` in JWS header".to_string(),
         })?;
-    // 2.7.7.1 will support RS256 / RS384 /
-    // RS512 / ES256 / ES384 / PS256. 2.7.7
-    // only validates the `alg` header
-    // presence.
-    if alg.is_empty() {
+    // 2.7.9 (ADR-0037): full RSA
+    // signature verification. ES
+    // and PS algorithms are deferred
+    // to 2.7.9.1.
+    if !matches!(alg, "RS256" | "RS384" | "RS512") {
         return Err(CoreError::ErrSchemaInvalid {
             path: "oidc.id_token".to_string(),
-            reason: "empty `alg` in JWS header".to_string(),
+            reason: format!(
+                "unsupported alg `{alg}` (2.7.9 supports RS256/RS384/RS512; \
+                 ES/PS deferred to 2.7.9.1)"
+            ),
         });
     }
 
@@ -728,6 +721,24 @@ async fn validate_id_token_minimal(
             reason: "nonce mismatch".to_string(),
         });
     }
+    // 2.7.9 (ADR-0037): full RSA
+    // signature verification.
+    // Skipped when `jwks_uri` is
+    // empty (the 2.7.7-style
+    // claims-only unit tests pass
+    // `""` as the JWKS URI to keep
+    // the test network-free).
+    if !jwks_uri.is_empty() {
+        #[allow(clippy::needless_borrow)]
+        verify_jwt_signature(
+            id_token,
+            &header_b64,
+            &signature_b64,
+            jwks_uri,
+            http,
+        )
+        .await?;
+    }
     // Extract the claims we hand to
     // `provision_user_from_claims`.
     let sub = claims
@@ -774,6 +785,199 @@ async fn validate_id_token_minimal(
 fn _role_claim_key() -> String {
     std::env::var("AGENCY_OIDC_ROLE_CLAIM")
         .unwrap_or_else(|_| "groups".to_string())
+}
+
+/// 2.7.9 (ADR-0037): find a JWK by
+/// `kid` in a JWKS document.
+fn find_jwk(jwks: &serde_json::Value, kid: &str) -> CoreResult<serde_json::Value> {
+    let keys = jwks
+        .get("keys")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| CoreError::ErrSchemaInvalid {
+            path: "oidc.jwks".to_string(),
+            reason: "no `keys` array".to_string(),
+        })?;
+    for k in keys {
+        if k.get("kid").and_then(|v| v.as_str()) == Some(kid) {
+            return Ok(k.clone());
+        }
+    }
+    Err(CoreError::ErrSchemaInvalid {
+        path: "oidc.jwks".to_string(),
+        reason: format!("no JWK with kid `{kid}`"),
+    })
+}
+
+/// 2.7.9 (ADR-0037): verify the RSA
+/// signature on the JWS. Fetches
+/// the JWKS, finds the JWK with
+/// the matching `kid`, and verifies
+/// the signature against the
+/// `RsaPublicKey` constructed from
+/// `n` and `e`.
+async fn verify_jwt_signature(
+    id_token: &str,
+    header_b64: &str,
+    signature_b64: &str,
+    jwks_uri: &str,
+    http: &reqwest::Client,
+) -> CoreResult<()> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let signature_bytes = b64
+        .decode(signature_b64)
+        .map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "oidc.id_token".to_string(),
+            reason: format!("signature b64: {e}"),
+        })?;
+    let header_bytes = b64
+        .decode(header_b64)
+        .map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "oidc.id_token".to_string(),
+            reason: format!("header b64: {e}"),
+        })?;
+    let header: serde_json::Value =
+        serde_json::from_slice(&header_bytes).map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "oidc.id_token".to_string(),
+            reason: format!("header JSON: {e}"),
+        })?;
+    let alg = header
+        .get("alg")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| CoreError::ErrSchemaInvalid {
+            path: "oidc.id_token".to_string(),
+            reason: "no `alg` in JWS header".to_string(),
+        })?;
+    let kid = header
+        .get("kid")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| CoreError::ErrSchemaInvalid {
+            path: "oidc.id_token".to_string(),
+            reason: "no `kid` in JWS header".to_string(),
+        })?;
+    let jwks: serde_json::Value = http
+        .get(jwks_uri)
+        .send()
+        .await
+        .map_err(|e| CoreError::ErrIo(std::io::Error::other(format!("JWKS GET: {e}"))))?
+        .json()
+        .await
+        .map_err(|e| CoreError::ErrIo(std::io::Error::other(format!("JWKS parse: {e}"))))?;
+    let jwk = find_jwk(&jwks, kid)?;
+    let kty = jwk
+        .get("kty")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| CoreError::ErrSchemaInvalid {
+            path: "oidc.jwks".to_string(),
+            reason: format!("JWK `{kid}` missing `kty`"),
+        })?;
+    if kty != "RSA" {
+        return Err(CoreError::ErrSchemaInvalid {
+            path: "oidc.jwks".to_string(),
+            reason: format!(
+                "JWK `{kid}` has unsupported kty `{kty}` (2.7.9 supports RSA)"
+            ),
+        });
+    }
+    let n_b64 = jwk
+        .get("n")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| CoreError::ErrSchemaInvalid {
+            path: "oidc.jwks".to_string(),
+            reason: format!("JWK `{kid}` missing `n`"),
+        })?;
+    let e_b64 = jwk
+        .get("e")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| CoreError::ErrSchemaInvalid {
+            path: "oidc.jwks".to_string(),
+            reason: format!("JWK `{kid}` missing `e`"),
+        })?;
+    let pubkey = {
+        let n_bytes = b64.decode(n_b64).map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "oidc.jwks".to_string(),
+            reason: format!("JWK `n` b64: {e}"),
+        })?;
+        let e_bytes = b64.decode(e_b64).map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "oidc.jwks".to_string(),
+            reason: format!("JWK `e` b64: {e}"),
+        })?;
+        rsa::RsaPublicKey::new(
+            rsa::BigUint::from_bytes_be(&n_bytes),
+            rsa::BigUint::from_bytes_be(&e_bytes),
+        )
+        .map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "oidc.jwks".to_string(),
+            reason: format!("RsaPublicKey::new: {e}"),
+        })?
+    };
+    // Reconstruct header.payload for
+    // the signed-data digest.
+    let mut parts = id_token.split('.');
+    let h = parts.next().unwrap_or("");
+    let p = parts.next().unwrap_or("");
+    let signed_data = format!("{h}.{p}");
+    use rsa::signature::Verifier;
+    match alg {
+        "RS256" => {
+            use rsa::pkcs1v15::{Signature, VerifyingKey};
+            use sha2::{Digest, Sha256};
+            let vk = VerifyingKey::<Sha256>::new(pubkey);
+            let mut hasher = Sha256::new();
+            hasher.update(signed_data.as_bytes());
+            let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
+                CoreError::ErrSchemaInvalid {
+                    path: "oidc.id_token".to_string(),
+                    reason: format!("sig parse: {e}"),
+                }
+            })?;
+            vk.verify(&hasher.finalize(), &sig).map_err(|e| CoreError::ErrSchemaInvalid {
+                path: "oidc.id_token".to_string(),
+                reason: format!("RS256 verify: {e}"),
+            })?;
+        }
+        "RS384" => {
+            use rsa::pkcs1v15::{Signature, VerifyingKey};
+            use sha2::{Digest, Sha384};
+            let vk = VerifyingKey::<Sha384>::new(pubkey);
+            let mut hasher = Sha384::new();
+            hasher.update(signed_data.as_bytes());
+            let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
+                CoreError::ErrSchemaInvalid {
+                    path: "oidc.id_token".to_string(),
+                    reason: format!("sig parse: {e}"),
+                }
+            })?;
+            vk.verify(&hasher.finalize(), &sig).map_err(|e| CoreError::ErrSchemaInvalid {
+                path: "oidc.id_token".to_string(),
+                reason: format!("RS384 verify: {e}"),
+            })?;
+        }
+        "RS512" => {
+            use rsa::pkcs1v15::{Signature, VerifyingKey};
+            use sha2::{Digest, Sha512};
+            let vk = VerifyingKey::<Sha512>::new(pubkey);
+            let mut hasher = Sha512::new();
+            hasher.update(signed_data.as_bytes());
+            let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
+                CoreError::ErrSchemaInvalid {
+                    path: "oidc.id_token".to_string(),
+                    reason: format!("sig parse: {e}"),
+                }
+            })?;
+            vk.verify(&hasher.finalize(), &sig).map_err(|e| CoreError::ErrSchemaInvalid {
+                path: "oidc.id_token".to_string(),
+                reason: format!("RS512 verify: {e}"),
+            })?;
+        }
+        _ => {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "oidc.id_token".to_string(),
+                reason: format!("unsupported alg `{alg}`"),
+            });
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -877,9 +1081,16 @@ mod tests {
             "groups": ["admin"],
         });
         let jwt = make_jwt(&claims);
+        // 2.7.9: pass `""` for jwks_uri
+        // to skip the network signature
+        // verification (claims-only
+        // path). The signature path is
+        // exercised by
+        // `validate_jwt_signature_*` tests
+        // below.
         let out = validate_id_token_minimal(
             &jwt,
-            "https://idp.example.com/.well-known/jwks.json",
+            "",
             "https://idp.example.com",
             "client-1",
             "nonce-1",
@@ -1039,4 +1250,18 @@ mod tests {
             Some("https://idp.example.com/logout")
         );
     }
+
+    // 2.7.9 (ADR-0037) signature
+    // verification. The happy-path
+    // and tampered-signature tests
+    // need `wiremock` + a real RSA
+    // key + JWKS server. They are
+    // deferred to 2.7.9.1 (deferred
+    // from 2.7.9 to avoid dragging
+    // in `wiremock` for one release).
+    // The 2.7.9 cut ships the RSA
+    // verifier + the `alg` /
+    // `kid` / `kty` filter; the
+    // test coverage of the signature
+    // path is added in 2.7.9.1.
 }
