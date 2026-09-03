@@ -316,6 +316,78 @@ impl PendingDeployRepository {
         }
         self.get(id).await
     }
+
+    /// 2.5.2 / ADR-0033: list every
+    /// `pending_deploys` row that still has
+    /// `target_id = NULL` (i.e. a pre-2.5.0
+    /// deploy that the operator hasn't yet
+    /// re-bound to the target registry). The
+    /// operator uses this as a backfill
+    /// checklist.
+    ///
+    /// The `environment_filter` is optional;
+    /// if `Some`, only orphans in that
+    /// environment are returned. The result is
+    /// sorted by `requested_at` (oldest first)
+    /// so the operator works through the
+    /// backlog chronologically.
+    pub async fn list_orphans(
+        &self,
+        environment_filter: Option<Environment>,
+    ) -> CoreResult<Vec<PendingDeployRow>> {
+        let rows: Vec<PendingDeployRowTuple> = match environment_filter {
+            Some(e) => {
+                sqlx::query_as(
+                    "SELECT id, system_id, plan_summary, requested_by, requested_at, \
+                        status, environment, target_id, approved_by, approved_at, \
+                        rejection_reason, applied_at \
+                 FROM pending_deploys WHERE target_id IS NULL AND environment = ?1 \
+                 ORDER BY requested_at ASC",
+                )
+                .bind(e.as_str())
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_as(
+                    "SELECT id, system_id, plan_summary, requested_by, requested_at, \
+                        status, environment, target_id, approved_by, approved_at, \
+                        rejection_reason, applied_at \
+                 FROM pending_deploys WHERE target_id IS NULL \
+                 ORDER BY requested_at ASC",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        rows.into_iter().map(decode_row).collect()
+    }
+
+    /// 2.5.2 / ADR-0033: explicit backfill. The
+    /// caller (the CLI) is responsible for
+    /// resolving the target name to an id via
+    /// `TargetRepository::find_by_env_name` first;
+    /// this method is a pure UPDATE. Returns
+    /// the updated row, or `None` if the id
+    /// does not exist.
+    pub async fn set_target_id(
+        &self,
+        id: i64,
+        target_id: i64,
+    ) -> CoreResult<Option<PendingDeployRow>> {
+        let affected = sqlx::query(
+            "UPDATE pending_deploys SET target_id = ?1 WHERE id = ?2",
+        )
+        .bind(target_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if affected == 0 {
+            return Ok(None);
+        }
+        self.get(id).await
+    }
 }
 
 type PendingDeployRowTuple = (

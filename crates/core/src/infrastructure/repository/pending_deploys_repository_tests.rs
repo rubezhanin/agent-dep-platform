@@ -144,3 +144,74 @@ async fn approve_uses_real_user_foreign_key() {
         .expect("returns row");
     assert_eq!(out.approved_by, Some(admin.user.id));
 }
+
+// -----------------------------------------------------------------------
+// 2.5.2 (ADR-0033) — backfill tooling
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_orphans_returns_only_null_target_id_rows() {
+    let (_dir, repo, users) = fresh_db().await;
+    let op = users.create("op", Role::Operator).await.expect("op");
+    repo.request("sys-a", "{}", op.user.id, Environment::Dev, None)
+        .await
+        .expect("request a");
+    repo.request("sys-b", "{}", op.user.id, Environment::Staging, None)
+        .await
+        .expect("request b");
+    repo.request("sys-c", "{}", op.user.id, Environment::Dev, None)
+        .await
+        .expect("request c");
+    let all = repo.list_orphans(None).await.expect("list all");
+    assert_eq!(all.len(), 3);
+    let only_dev = repo
+        .list_orphans(Some(Environment::Dev))
+        .await
+        .expect("list dev");
+    assert_eq!(only_dev.len(), 2);
+    assert!(only_dev.iter().all(|r| r.environment == Environment::Dev));
+    let only_staging = repo
+        .list_orphans(Some(Environment::Staging))
+        .await
+        .expect("list staging");
+    assert_eq!(only_staging.len(), 1);
+    assert_eq!(only_staging[0].system_id, "sys-b");
+    // Oldest first.
+    assert_eq!(all[0].system_id, "sys-a");
+    assert_eq!(all[1].system_id, "sys-b");
+    assert_eq!(all[2].system_id, "sys-c");
+}
+
+#[tokio::test]
+async fn set_target_id_updates_row() {
+    let (_dir, repo, users) = fresh_db().await;
+    let op = users.create("op", Role::Operator).await.expect("op");
+    let row = repo
+        .request("sys-x", "{}", op.user.id, Environment::Dev, None)
+        .await
+        .expect("request");
+    assert_eq!(row.target_id, None);
+    let out = repo
+        .set_target_id(row.id, 42)
+        .await
+        .expect("set")
+        .expect("returns row");
+    assert_eq!(out.target_id, Some(42));
+    // Setting it again updates in place.
+    let out2 = repo
+        .set_target_id(row.id, 99)
+        .await
+        .expect("set 2")
+        .expect("returns row");
+    assert_eq!(out2.target_id, Some(99));
+}
+
+#[tokio::test]
+async fn set_target_id_returns_none_for_missing_id() {
+    let (_dir, repo, _users) = fresh_db().await;
+    let out = repo
+        .set_target_id(99999, 42)
+        .await
+        .expect("set nonexistent");
+    assert!(out.is_none(), "missing id must return None");
+}
