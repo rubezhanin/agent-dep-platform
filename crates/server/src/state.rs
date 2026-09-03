@@ -9,6 +9,8 @@ use agent_dep_core::infrastructure::repository::targets_repository::TargetReposi
 use agent_dep_core::infrastructure::repository::users_repository::UserRepository;
 use agent_dep_core::infrastructure::sqlite::Db;
 
+use crate::oidc::{OidcConfig, OidcPending};
+
 #[derive(Clone)]
 pub struct ServerState {
     pub db: Db,
@@ -23,6 +25,17 @@ pub struct ServerState {
     pub secrets: SecretRepository,
     /// 2.5.0: fleet — named target registry.
     pub targets: TargetRepository,
+    /// 2.7.6 (ADR-0034): OIDC config. When
+    /// `is_enabled()` is false, the OIDC endpoints
+    /// return 503 "not configured". Bearer-token
+    /// auth is unaffected.
+    pub oidc: OidcConfig,
+    /// 2.7.6: in-memory map of `state` -> (PKCE
+    /// verifier, nonce, created_at). Single-process
+    /// only. A shared store (DB or Redis) is a
+    /// 2.7.x enhancement for multi-process
+    /// deployments.
+    pub oidc_pending: OidcPending,
     /// Retained for 2.0.0→2.1.0 migration: if the
     /// `users` table is empty on first start and this
     /// is `Some(legacy)`, the server creates an

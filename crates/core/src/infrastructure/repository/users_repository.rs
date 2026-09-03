@@ -52,18 +52,23 @@ pub struct UserRow {
     pub created_at: String,
     pub last_seen_at: Option<String>,
     pub disabled_at: Option<String>,
+    /// 2.7.6 (ADR-0034): stable OIDC subject
+    /// (the `sub` claim). `None` for
+    /// bearer-token users (2.0.0-2.7.5).
+    pub external_id: Option<String>,
 }
 
 /// Tuple shape returned by `sqlx::query_as` for
 /// `SELECT id, name, role, token_hash, created_at,
-/// last_seen_at, disabled_at FROM users`. The seven
-/// fields map 1:1 to [`UserRow`].
+/// last_seen_at, disabled_at, external_id FROM users`.
+/// The eight fields map 1:1 to [`UserRow`].
 pub type UserRowTuple = (
     i64,
     String,
     String,
     String,
     String,
+    Option<String>,
     Option<String>,
     Option<String>,
 );
@@ -130,6 +135,7 @@ impl UserRepository {
             created_at: now_str,
             last_seen_at: None,
             disabled_at: None,
+            external_id: None,
         };
         Ok(UserCreated { user, token })
     }
@@ -141,7 +147,7 @@ impl UserRepository {
     pub async fn find_by_token(&self, plain_token: &str) -> CoreResult<Option<UserRow>> {
         let token_hash = sha256_hex(plain_token.as_bytes());
         let row: Option<UserRowTuple> = sqlx::query_as(
-            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at \
+            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at, external_id \
              FROM users WHERE token_hash = ?1",
         )
         .bind(&token_hash)
@@ -149,7 +155,16 @@ impl UserRepository {
         .await?;
         match row {
             None => Ok(None),
-            Some((id, name, role_str, token_hash, created_at, last_seen_at, disabled_at)) => {
+            Some((
+                id,
+                name,
+                role_str,
+                token_hash,
+                created_at,
+                last_seen_at,
+                disabled_at,
+                external_id,
+            )) => {
                 if disabled_at.is_some() {
                     return Ok(None);
                 }
@@ -162,6 +177,7 @@ impl UserRepository {
                     created_at,
                     last_seen_at,
                     disabled_at,
+                    external_id,
                 }))
             }
         }
@@ -220,13 +236,15 @@ impl UserRepository {
     /// `last_seen_at` and `disabled_at` are.
     pub async fn list(&self) -> CoreResult<Vec<UserRow>> {
         let rows: Vec<UserRowTuple> = sqlx::query_as(
-            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at \
+            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at, external_id \
              FROM users ORDER BY id ASC",
         )
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
-        for (id, name, role_str, token_hash, created_at, last_seen_at, disabled_at) in rows {
+        for (id, name, role_str, token_hash, created_at, last_seen_at, disabled_at, external_id) in
+            rows
+        {
             out.push(UserRow {
                 id,
                 name,
@@ -235,6 +253,7 @@ impl UserRepository {
                 created_at,
                 last_seen_at,
                 disabled_at,
+                external_id,
             });
         }
         Ok(out)
@@ -270,9 +289,132 @@ impl UserRepository {
             .await?;
         Ok(true)
     }
+
+    /// 2.7.6 (ADR-0034): look up a user by
+    /// OIDC `sub` claim. Returns `None` if no
+    /// user with this `external_id` exists.
+    pub async fn find_by_external_id(&self, external_id: &str) -> CoreResult<Option<UserRow>> {
+        if external_id.is_empty() {
+            return Ok(None);
+        }
+        let row: Option<UserRowTuple> = sqlx::query_as(
+            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at, external_id \
+             FROM users WHERE external_id = ?1",
+        )
+        .bind(external_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            None => Ok(None),
+            Some((
+                id,
+                name,
+                role_str,
+                token_hash,
+                created_at,
+                last_seen_at,
+                disabled_at,
+                external_id,
+            )) => {
+                if disabled_at.is_some() {
+                    return Ok(None);
+                }
+                let role = Role::parse(&role_str)?;
+                Ok(Some(UserRow {
+                    id,
+                    name,
+                    role,
+                    token_hash,
+                    created_at,
+                    last_seen_at,
+                    disabled_at,
+                    external_id,
+                }))
+            }
+        }
+    }
+
+    /// 2.7.6 (ADR-0034): create a user with an
+    /// OIDC `sub` claim as the stable
+    /// `external_id`. Returns the user row
+    /// (the bearer token is issued separately
+    /// via `store_token_hash`).
+    pub async fn create_with_external_id(
+        &self,
+        name: &str,
+        role: Role,
+        external_id: &str,
+    ) -> CoreResult<UserRow> {
+        if name.is_empty() {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "users.name".to_string(),
+                reason: "name must not be empty".to_string(),
+            });
+        }
+        if external_id.is_empty() {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "users.external_id".to_string(),
+                reason: "external_id must not be empty".to_string(),
+            });
+        }
+        let now: DateTime<Utc> = Utc::now();
+        let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        // Initial token_hash is the SHA-256 of
+        // an empty string; it gets overwritten
+        // by `store_token_hash` on first
+        // bearer-token issuance.
+        let initial_hash = sha256_hex(b"");
+        let row: (i64,) = sqlx::query_as(
+            "INSERT INTO users (name, role, token_hash, created_at, external_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
+        )
+        .bind(name)
+        .bind(role.as_str())
+        .bind(&initial_hash)
+        .bind(&now_str)
+        .bind(external_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.message().contains("UNIQUE") => {
+                CoreError::ErrSchemaInvalid {
+                    path: "users.external_id".to_string(),
+                    reason: format!("a user with external_id `{external_id}` already exists"),
+                }
+            }
+            _ => CoreError::ErrSqlx(e),
+        })?;
+        Ok(UserRow {
+            id: row.0,
+            name: name.to_string(),
+            role,
+            token_hash: initial_hash,
+            created_at: now_str,
+            last_seen_at: None,
+            disabled_at: None,
+            external_id: Some(external_id.to_string()),
+        })
+    }
+
+    /// 2.7.6 (ADR-0034): overwrite the
+    /// `token_hash` for a user. Used by the
+    /// OIDC callback handler to issue a
+    /// fresh local bearer token on every
+    /// OIDC login.
+    pub async fn store_token_hash(&self, user_id: i64, token_hash: &str) -> CoreResult<()> {
+        sqlx::query("UPDATE users SET token_hash = ?1 WHERE id = ?2")
+            .bind(token_hash)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
-fn generate_token() -> String {
+/// Generate a fresh 256-bit bearer token, base64url
+/// (no padding). Public for use by the OIDC
+/// callback handler in 2.7.6 (ADR-0034).
+pub fn generate_token() -> String {
     use base64::Engine;
     use rand::RngCore;
     let mut bytes = [0u8; 32];
@@ -280,7 +422,9 @@ fn generate_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+/// SHA-256 hex digest. Public for the OIDC
+/// callback handler in 2.7.6 (ADR-0034).
+pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     hex::encode(h.finalize())

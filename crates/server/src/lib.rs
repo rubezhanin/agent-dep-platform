@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod catalog;
 pub mod handlers;
+pub mod oidc;
 pub mod plan;
 pub mod state;
 
@@ -179,8 +180,16 @@ pub fn router(state: ServerState) -> Router {
             state.clone(),
             auth::require_bearer,
         ));
+    // 2.7.6 OIDC (ADR-0034). The OIDC
+    // endpoints are PUBLIC — no bearer
+    // required. They sit OUTSIDE the
+    // `require_bearer` middleware.
+    let oidc_routes = Router::new()
+        .route("/v1/auth/oidc/login", get(oidc::login_handler))
+        .route("/v1/auth/oidc/callback", get(oidc::callback_handler));
     Router::new()
         .route("/v1/health", get(handlers::health))
+        .merge(oidc_routes)
         .merge(authed)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
@@ -376,6 +385,8 @@ pub async fn boot_default_state() -> Result<ServerState> {
             .map_err(|e| anyhow::anyhow!("init vault: {e}"))?
     };
     let targets = TargetRepository::new(db.pool().clone());
+    let oidc = oidc::OidcConfig::from_env();
+    let oidc_pending = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     Ok(ServerState {
         db,
         audit,
@@ -383,6 +394,8 @@ pub async fn boot_default_state() -> Result<ServerState> {
         deploys,
         secrets,
         targets,
+        oidc,
+        oidc_pending,
         legacy_token: Arc::new(Some(legacy_token)),
     })
 }

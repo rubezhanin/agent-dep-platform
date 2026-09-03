@@ -72,11 +72,23 @@ async fn find_by_env_name_resolves_correctly() {
 async fn unique_per_environment_name() {
     let (_dir, targets) = fresh_db().await;
     targets
-        .create("prod-blue", Environment::Production, "/srv/a", PathKind::Posix, None)
+        .create(
+            "prod-blue",
+            Environment::Production,
+            "/srv/a",
+            PathKind::Posix,
+            None,
+        )
         .await
         .expect("first");
     let err = targets
-        .create("prod-blue", Environment::Production, "/srv/b", PathKind::Posix, None)
+        .create(
+            "prod-blue",
+            Environment::Production,
+            "/srv/b",
+            PathKind::Posix,
+            None,
+        )
         .await
         .expect_err("duplicate must fail");
     let msg = format!("{err:?}");
@@ -170,6 +182,7 @@ async fn accepts_paths_with_matching_path_kind() {
         )
         .await
         .expect_err("posix path on windows kind must be rejected");
+    assert!(format!("{err:?}").contains("path") || format!("{err:?}").contains("kind"));
     // Windows path on POSIX kind — rejected.
     let err = targets
         .create(
@@ -181,6 +194,7 @@ async fn accepts_paths_with_matching_path_kind() {
         )
         .await
         .expect_err("windows path on posix kind must be rejected");
+    assert!(format!("{err:?}").contains("path") || format!("{err:?}").contains("kind"));
 }
 
 #[tokio::test]
@@ -239,7 +253,9 @@ fn path_kind_validate_windows() {
         .validate_path("\\\\server\\share\\dir")
         .unwrap();
     // UNC path with double forward slash.
-    PathKind::Windows.validate_path("//server/share/dir").unwrap();
+    PathKind::Windows
+        .validate_path("//server/share/dir")
+        .unwrap();
     // POSIX is rejected.
     let err = PathKind::Windows.validate_path("/srv/hermes").unwrap_err();
     let msg = format!("{err:?}");
@@ -250,7 +266,13 @@ fn path_kind_validate_windows() {
 async fn create_windows_target_rejects_posix_path() {
     let (_dir, targets) = fresh_db().await;
     let err = targets
-        .create("win", Environment::Dev, "/srv/hermes", PathKind::Windows, None)
+        .create(
+            "win",
+            Environment::Dev,
+            "/srv/hermes",
+            PathKind::Windows,
+            None,
+        )
         .await
         .expect_err("must reject POSIX path on Windows kind");
     let msg = format!("{err:?}");
@@ -275,4 +297,3 @@ async fn create_windows_target_accepts_windows_path() {
     assert_eq!(get.path_kind, PathKind::Windows);
     assert_eq!(get.path, "C:\\Users\\op\\hermes");
 }
-

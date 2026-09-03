@@ -64,6 +64,9 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
     let deploys = PendingDeployRepository::new(db.pool().clone());
     let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase").expect("vault");
     let targets = TargetRepository::new(db.pool().clone());
+    let oidc = agent_dep_server::oidc::OidcConfig::default();
+    let oidc_pending: agent_dep_server::oidc::OidcPending =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let state = ServerState {
         db,
         audit,
@@ -71,6 +74,8 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
         deploys,
         secrets,
         targets,
+        oidc,
+        oidc_pending,
         legacy_token: Arc::new(legacy.map(|s| s.to_string())),
     };
     let app = router(state);
@@ -224,6 +229,9 @@ spec:
     let deploys = PendingDeployRepository::new(db.pool().clone());
     let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase").expect("vault");
     let targets = TargetRepository::new(db.pool().clone());
+    let oidc = agent_dep_server::oidc::OidcConfig::default();
+    let oidc_pending: agent_dep_server::oidc::OidcPending =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let state = ServerState {
         db,
         audit,
@@ -231,6 +239,8 @@ spec:
         deploys,
         secrets,
         targets,
+        oidc,
+        oidc_pending,
         legacy_token: Arc::new(Some(token.clone())),
     };
     let app = router(state);
