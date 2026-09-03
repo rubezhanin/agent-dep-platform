@@ -7,6 +7,7 @@ authors.workspace = true
 
 [dependencies]
 agent_dep_core = { path = "../core" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

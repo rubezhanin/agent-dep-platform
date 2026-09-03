@@ -81,9 +81,11 @@ impl Finding {
     fn redact(reason: &str) -> String {
         // Truncate to 200 chars and ensure no embedded raw secret
         // leaks via Reason. We trust the regex authors; this is a
-        // belt-and-suspenders last line.
-        if reason.len() > 200 {
-            format!("{}…", &reason[..200])
+        // belt-and-suspenders last line. Counts chars (not bytes)
+        // so the limit is stable across multi-byte content.
+        if reason.chars().count() > 200 {
+            let truncated: String = reason.chars().take(200).collect();
+            format!("{truncated}…")
         } else {
             reason.to_string()
         }

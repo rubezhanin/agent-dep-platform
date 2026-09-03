@@ -99,8 +99,8 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
             agent_dep_cli::cli_def::McpAction::Remove { name } => mcp::remove(&name),
         },
         Command::Hermes { action } => match action {
-            agent_dep_cli::cli_def::HermesAction::Probe { plugin_id } => {
-                hermes::probe(plugin_id).await
+            agent_dep_cli::cli_def::HermesAction::Probe { plugin_id, llm } => {
+                hermes::probe(plugin_id, llm).await
             }
         },
         Command::Completion { shell } => completion::run(&shell),

@@ -201,7 +201,18 @@ pub enum McpAction {
 #[derive(Subcommand, Debug)]
 pub enum HermesAction {
     /// Run the static-structural health probe on a
-    /// Flow A router plugin (1.4.0, ADR-0012). The
-    /// dynamic LLM probe is deferred to 2.x.
-    Probe { plugin_id: String },
+    /// Flow A router plugin (1.4.0, ADR-0012).
+    /// 2.7.4 (ADR-0032) adds `--llm` to extend
+    /// the structural probe with an LLM-based
+    /// semantic review.
+    Probe {
+        plugin_id: String,
+        /// 2.7.4 (ADR-0032): also run the
+        /// LLM-based semantic review. Requires
+        /// `AGENCY_LLM_ENDPOINT` /
+        /// `AGENCY_LLM_MODEL` /
+        /// `AGENCY_LLM_API_KEY` env vars.
+        #[arg(long)]
+        llm: bool,
+    },
 }
