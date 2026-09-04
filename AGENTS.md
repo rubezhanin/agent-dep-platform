@@ -12,35 +12,51 @@ app that safely deploys agent systems from Git repositories into Hermes Agent.
   (`TZ_Enterprise_Agent_Deployment_Platform_Final.md`) is gitignored too.
 - Specs: `docs/superpowers/specs/` (gitignored)
 - Plans: `docs/superpowers/plans/` (gitignored)
-- ADRs: `docs/adr/0001..0008.md` (gitignored; ADR-0001 superseded by 0008)
+- ADRs: `docs/adr/0001..0039.md` (gitignored; ADR-0001 superseded by 0008)
 
 ## Status
 
-**MVP-1.0 (TZ v2 schema + Hermes router plugin)** — 296 workspace tests
-passing, `svelte-check` 0/0, all CI gates green. See `README.md` for
-the full Phase 1..6 breakdown. Two manual follow-ups remain before
-release tagging:
+**v2.8.0 (TZ v2 schema + Hermes router plugin + enterprise
+server + OIDC + Real Git ingest)** — 31 tags, 489/0 tests,
+`svelte-check` 0/0, all CI gates green. All TZ §45 MUST-HAVE
+slices are closed (through v2.5.0), all TZ §23.3 advanced-
+scanner items are closed (through v2.7.0), 2.x enterprise
+server (audit / users / approvals / vault / fleet / OIDC
+framework + real client + refresh + logout + DB-backed state +
+RSA signature verification) is closed (through v2.7.10), and
+1.x real Git source ingest is closed (v2.8.0).
+
+Two manual follow-ups remain:
 
 - **Native-Russian copy review** (TZ §57 Q1) — review surface lives
   at `docs/i18n-review-ru.md`. Bilingual parity is auto-tested.
-- **Secondary-platform smoke** — Windows verified; Ubuntu 20.04 VPS
-  was reachable on prior session, not re-verified in this one.
+- **2.5.3 NOT NULL on `pending_deploys.target_id`** — deferred until
+  the operator completes the 2.5.2 backfill via
+  `list_orphans` + `set_target_id` (ADR-0033).
 
 ## Layout
 
 Multi-crate Cargo workspace. Domain/application lives in `core`;
 Tauri and CLI are thin consumers. The Hermes adapter is its own
 crate so other runtimes (e.g. OpenAI Codex) can implement
-`RuntimeAdapter` without touching `core`.
+`RuntimeAdapter` without touching `core`. The 2.x `server` crate
+holds `agency-server` (axum 0.7) — every 2.x HTTP surface
+(audit / users / approvals / vault / fleet / OIDC) is a
+`crates/server/src/<domain>.rs` module that delegates to a
+`agent_dep_core` repository.
 
 ```
 crates/
   core/              domain, application, infrastructure
-                     (sqlite, cas, filesystem, repository)
+                     (sqlite, cas, filesystem, git_fetcher, repository)
                      TZ v2 schema: Skill, AgentYaml, SystemFileV2
   hermes-adapter/    RuntimeAdapter trait + HermesAdapter
-                     + materialize_router_plugin
+                     + materialize_router_plugin + llm_probe
   cli/               agency CLI (clap)
+  server/            axum 0.7 HTTP API (audit, systems, deploys,
+                     secrets, users, environments, targets) +
+                     OIDC (framework + real client + refresh +
+                     logout + DB-backed state) + ADR-0017..0038
   tauri-app/         Tauri 2 host + IPC commands
 src/                 Svelte 5 + Vite frontend
 docs/                i18n-review-ru.md is committed; adr/ and
@@ -89,10 +105,28 @@ ts_export` (regenerate TS), `npm install`, `npm run check`
   canonicalize step needs an existing parent).
 - **Backend services that take a `&Db`/`&Pool` from the caller**:
   application services (`DeploymentService`, `JournalService`,
-  `IngestRepository`, `DeployedArtifactsRepository`) are pure
+  `IngestRepository`, `DeployedArtifactsRepository`,
+  `UserRepository`, `OidcPendingRepository`, etc.) are pure
   functions of state. They never own a `Pool`. The CLI / Tauri
-  IPC layer builds the pool once in `setup()` and threads it
-  through.
+  IPC / `agency-server` layer builds the pool once and threads
+  it through.
+- **Schema migrations**: numbered (`001_*.sql` ... `017_*.sql`).
+  Every migration MUST:
+  1. Add the migration file
+  2. Bump `meta.schema_version` in the same file
+  3. Update the 3 schema-version test sites
+     (`crates/core/src/infrastructure/sqlite/sqlite_tests.rs`,
+     `crates/core/src/application/journal/journal_tests.rs`,
+     `crates/cli/src/cli_tests.rs`)
+  4. Run `cargo test -p agent_dep_core --test ts_export` to
+     regenerate TS DTOs (only if you added new types).
+  Failure to follow 1-3 leaves the test suite green-but-wrong
+  (the migration runs but the assertion against
+  `CURRENT_SCHEMA_VERSION` is stale).
+- **`2.5.3` NOT NULL constraint** (pending): when the operator
+  reports the 2.5.2 backfill is complete, the migration is
+  `ALTER TABLE pending_deploys MODIFY COLUMN target_id INTEGER
+  NOT NULL` + the matching bump.
 
 ### Type sharing (Rust ↔ TypeScript)
 
@@ -152,6 +186,31 @@ ts_export` (regenerate TS), `npm install`, `npm run check`
   `.catch(() => defaultValue)` so the UI never crashes on a
   stub.
 
+### Server (axum 0.7 — 2.x)
+
+- **OIDC flow** lives in `crates/server/src/oidc.rs` (framework:
+  config, state map, role mapping, provisioning) and
+  `crates/server/src/oidc_client.rs` (transport: discovery,
+  PKCE S256 /authorize URL, code exchange, ID-token
+  validation). The `OidcClient` trait is `dyn`-safe via
+  `async_trait`. The 2.7.10 `OidcPendingRepository` is
+  DB-backed; do not reintroduce the in-memory HashMap.
+- **State**: `ServerState` in `crates/server/src/state.rs`.
+  All async handlers receive it as `State<ServerState>`. The
+  `boot_default_state()` constructor in `lib.rs` builds the
+  pool + every repository + the OIDC client + the 60s GC
+  task for `oidc_pending_state`.
+- **Schema migrations** (2.x): see the schema-migrations
+  bullet under "Rust / domain" above. The 2.x migrations
+  are 008 (users) through 017 (oidc_pending_state).
+- **Public OIDC routes** (outside `require_bearer`):
+  - `GET  /v1/auth/oidc/login`     (302)
+  - `GET  /v1/auth/oidc/callback`  (200)
+  - `POST /v1/auth/oidc/refresh`  (200; 2.7.8)
+  - `GET  /v1/auth/oidc/logout`   (302 or 200; 2.7.8)
+  No new OIDC route should sit inside `require_bearer` —
+  the IdP never has a local bearer.
+
 ### Tests
 
 - **Integration test placement**: for state machines /
@@ -203,20 +262,33 @@ ts_export` (regenerate TS), `npm install`, `npm run check`
 
 - **TZ §45 OUT OF MVP** (deferred to 1.x/2.x per spec §7):
   RBAC, SSO/OIDC, approvals, fleet, multi-environment,
-  vault, advanced scanner, SBOM/SLSA, fuzzing.
-- **1.x**: real Git source ingestion (SSH/HTTPS), `nix` +
-  `git2` dependency, SemVer range resolution (MVP is exact
-  only per ADR-0003), Hermes 0.19+ flow B (MCP server
-  manifests, deferred per ADR-0008 §12.4A).
-- **2.x**: enterprise server (ADR-0007) — `core/` stays
-  frozen for 1.x; new layers (skills, i18n, reconciliation,
-  policy, lock, renderers) are added incrementally.
+  vault, advanced scanner, SBOM/SLSA, fuzzing. (As of
+  v2.8.0, all of these are **closed** through 2.x
+  enterprise server + 2.7.x OIDC + 2.5.x fleet/vault +
+  2.6.x scanner + 2.7.x plugins.)
+- **1.x**: real Git source ingestion (SSH/HTTPS) — **closed
+  in 2.8.0** via `crates/core/src/infrastructure/git_fetcher.rs`
+  + the `git2` crate with `vendored-libgit2`. The `nix`
+  dependency + the deeper `git2` features (LFS, sparse
+  checkout, shallow clone) are 2.8.x enhancements. SemVer
+  range resolution (MVP is exact only per ADR-0003) is
+  still 1.x-deferred. Hermes 0.19+ flow B (MCP server
+  manifests) is deferred per ADR-0008 §12.4A.
+- **2.x**: enterprise server (ADR-0007) — `core/` stayed
+  frozen for 1.x; the 2.x layers (skills, i18n,
+  reconciliation, policy, lock, renderers, server, OIDC,
+  Git ingest) are now closed.
+- **3.x** (TZ §7): multi-region, SBOM/SLSA, fuzzing,
+  air-gap, multi-host fleet orchestration (server pushes
+  to remote machines — current fleet is registry-only).
+  Also: 3.0.0 API freeze documenting the public 2.x
+  surface.
 
 ## When you are stuck
 
 1. Read the relevant ADR in `docs/adr/`. If the topic touches
-   deployment, journal, scanner, or storage — there is almost
-   certainly an ADR for it.
+   deployment, journal, scanner, OIDC, or storage — there is
+   almost certainly an ADR for it.
 2. Read the matching section of the source TZ at
    `TZ_Enterprise_Agent_Deployment_Platform_Enterprise_v2.md`
    (root, gitignored).

@@ -50,7 +50,27 @@ argon2 = "0.5"
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 async-trait = "0.1"
-rsa = { version = "0.9", features = ["sha2"] }
+rsa = { version = "0.9", features = ["sha2", "getrandom"] }
+# 2.7.7.1 (ES256/ES384): ECDSA P-256
+# and P-384 public keys for JWS
+# signature verification. The `ecdsa`
+# feature pulls in `ecdsa` + `sha2`
+# for `VerifyingKey<Sha*>::verify`.
+p256 = { version = "0.13", features = ["ecdsa", "sha2"] }
+p384 = { version = "0.13", features = ["ecdsa", "sha2"] }
+# `signature` is the trait crate that
+# `rsa` / `p256` / `p384` use to expose
+# `Verifier` + `Signer`. Pulled in
+# explicitly so the server crate can
+# `use signature::Verifier;` once and
+# reach all three back-ends.
+signature = { version = "2", features = ["std"] }
+# 2.7.4 (ADR-0032): Ed25519 plugin
+# manifest signing. The `rand_core`
+# feature lets the trust-store tests
+# generate ephemeral key pairs
+# without a heavy `getrandom` setup.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 git2 = { version = "0.20", features = ["vendored-libgit2"] }
 
 [profile.release]

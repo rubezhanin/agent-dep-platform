@@ -5,12 +5,16 @@ deploying agent systems from Git repositories into Hermes Agent.
 
 ## Status
 
-**v2.7.2 (TZ v2 schema + Hermes router plugin + advanced
-scanner)** — 22 tags on main, all TZ §45 MUST-HAVE
-slices landed (through v2.5.0), all TZ §23.3 advanced-
-scanner items landed (through v2.7.0). **433 tests passing
-on Windows**, `svelte-check` 0/0, all CI gates green.
-See [`CHANGELOG.md`](./CHANGELOG.md) for the per-release
+**v2.8.0 (TZ v2 schema + Hermes router plugin + enterprise
+server + OIDC + Real Git ingest)** — 31 tags on main, all TZ
+§45 MUST-HAVE slices landed (through v2.5.0), all TZ §23.3
+advanced-scanner items landed (through v2.7.0), 2.x enterprise
+server (audit / users / approvals / vault / fleet / OIDC
+framework + real client + refresh + logout + DB-backed state +
+RSA signature verification) closed (through v2.7.10), and
+1.x real Git source ingest closed (v2.8.0). **489 tests
+passing on Windows**, `svelte-check` 0/0, all CI gates
+green. See [`CHANGELOG.md`](./CHANGELOG.md) for the per-release
 narrative.
 
 ```
@@ -18,7 +22,7 @@ $ .\scripts\ci.ps1
 ==>
 ==> cargo fmt --check
 ==> cargo clippy
-==> cargo test        (433 passed; 0 failed)
+==> cargo test        (489 passed; 0 failed; 3 ignored)
 ==> ts-rs regen
 ==> npm install
 ==> npm run check     (svelte-check: 0 errors, 0 warnings)
@@ -42,21 +46,28 @@ cargo test --workspace
 
 ```
 crates/
-  core/              domain, application, infrastructure (sqlite, cas, filesystem, repository)
-  hermes-adapter/    RuntimeAdapter trait + HermesAdapter + router plugin
+  core/              domain, application, infrastructure
+                     (sqlite, cas, filesystem, git_fetcher, repository)
+  hermes-adapter/    RuntimeAdapter trait + HermesAdapter +
+                     router plugin + llm_probe
   cli/               agency CLI (clap)
+  server/            axum 0.7 HTTP API (audit, systems, deploys,
+                     secrets, users, environments, targets) +
+                     OIDC (framework + real client + refresh +
+                     logout + DB-backed state)
   tauri-app/         Tauri 2 host + IPC commands
 src/                 Svelte 5 + Vite frontend
 docs/
   superpowers/       specs and plans (gitignored)
-  adr/               8 ADRs (ADR-0001 .. ADR-0008) (gitignored)
+  adr/               39 ADRs (ADR-0001 .. ADR-0039) (gitignored)
 scripts/             local CI scripts (PowerShell)
 ```
 
 ## What's done
 
 ### MVP-0 — Bootstrap skeleton
-- Multi-crate Cargo workspace (`core`, `hermes-adapter`, `cli`, `tauri-app`)
+- Multi-crate Cargo workspace (`core`, `hermes-adapter`, `cli`,
+  `tauri-app`, `server`)
 - CoreError taxonomy (TZ §35) — 14 variants
 - Path safety with proptest property-based tests (3 properties: safe paths
   stay in root, traversal rejected, resolve is idempotent)
@@ -80,18 +91,19 @@ scripts/             local CI scripts (PowerShell)
 - **End-to-end smoke verified** with an isolated `HERMES_HOME`.
 
 ### MVP-2 — ADRs (TZ §44 prerequisite for active implementation)
-- 8 ADRs accepted; see `docs/adr/`:
-
-| # | File | Topic |
-|---|---|---|
-| 0001 | `0001-hermes-protocol.md` | Superseded by 0008 |
-| 0002 | `0002-deployment-filesystem-semantics.md` | File-level atomic temp+rename, journal for dirs |
-| 0003 | `0003-lock-file-and-versioning.md` | Exact versions in MVP, lockfile authoritative |
-| 0004 | `0004-local-storage-boundary.md` | SQLite/CAS layout, migration backup policy |
-| 0005 | `0005-security-scanner-scope.md` | 13 rules, 3 severities, no NLP heuristics |
-| 0006 | `0006-recovery-journal.md` | `operations` table, idempotent recovery, bounded 100 |
-| 0007 | `0007-enterprise-server-evolution.md` | Domain frozen across phases, server in 2.x |
-| 0008 | `0008-hermes-protocol-v2.md` | Two extension surfaces: Flow A router plugin (agency-agents), Flow B remote MCP (Linear/n8n, deferred to 1.x) |
+- 39 ADRs accepted; see `docs/adr/`. Key milestones:
+  - 0001–0008: MVP-2 + Hermes protocol v2
+  - 0009–0016: TZ §23.3 (audit, users, approvals, vault, fleet, plugins)
+  - 0017–0022: 2.x enterprise server scope (ADR-0017) and pillars
+    (audit, RBAC, approvals, vault)
+  - 0023–0029: fleet (PathKind), plugins, scanner (Unicode, secret,
+    prompt-injection, SARIF, LLM probe)
+  - 0030–0031: plugin auto-discovery + manifest
+  - 0032: dynamic LLM probe
+  - 0033: target backfill tooling
+  - 0034–0038: OIDC framework, real client, refresh + logout, RSA
+    signature verification, DB-backed `OidcPending`
+  - 0039: real Git source ingest
 
 ### MVP-3 — Ingestion, persistence, scanner, journal, composition
 - **Local catalog ingest** (`agency catalog update <path>`): parses
@@ -174,6 +186,92 @@ scripts/             local CI scripts (PowerShell)
   `list_agents_in_latest_snapshot`, `DeployedArtifactsRepository::
   list_distinct_systems`, `JournalService::list_recent(limit)`.
 
+### 1.5..1.7 — TZ §23.3 advanced scanner (closed through v2.7.0)
+- **CAS-indexed backup retention** (1.5.1, ADR-0016)
+- **i18n review apply** + **clap_complete** (1.6.0, ADR-0014/0015)
+- **`mcp list` / `mcp remove` + plan `--drift`** (1.6.0)
+
+### 2.0..2.4 — Enterprise server (TZ §45 + 2.x MUST-HAVE)
+- **2.0.0**: `agency-server` (axum 0.7) with bearer auth + audit
+  log; `audit_log` table; new ADR-0017/0018 scope.
+- **2.1.0**: Per-user RBAC. `users` table, sha256-only token
+  storage. `Viewer` / `Operator` / `Admin` roles. Migration from
+  2.0.0 single-bearer-token to per-user (ADR-0019).
+- **2.2.0**: Approvals workflow. `pending_deploys` state machine;
+  server re-runs the plan server-side so the operator cannot
+  smuggle in a different plan (ADR-0020).
+- **2.3.0**: Vault. AES-256-GCM + Argon2id (OWASP 2026 params:
+  m=19MiB, t=2, p=1). App-level salt + per-secret nonce.
+  `version` column. List view never includes the value
+  (ADR-0021).
+- **2.4.0**: Multi-environment. Hard-coded `Dev` / `Staging` /
+  `Production` enum. `environments` table. Per-environment
+  deployment (ADR-0022).
+
+### 2.5..2.7 — Fleet, plugins, scanner, OIDC (TZ §23.3 + §45 close)
+- **2.5.0** Fleet: `targets` table, multi-environment path
+  resolution, `pending_deploys.target_id` nullable column for
+  backfill compatibility (ADR-0023).
+- **2.5.2** Target backfill tooling: `list_orphans` +
+  `set_target_id` for operators who inherited a pre-fleet
+  `pending_deploys` table (ADR-0033).
+- **2.6.0** Prompt-injection heuristics (6 rules) for the
+  security scanner (ADR-0024).
+- **2.6.1** More complete secret scanner (Slack / Stripe /
+  Google / OpenAI / Anthropic / JWT) (ADR-0025).
+- **2.6.2** Unicode / confusable (homoglyph Block, bidi-override
+  Warn) (ADR-0026).
+- **2.6.3** Infrastructure fix: `dev-test.ps1` / `ci.ps1` /
+  `check-ts-drift.ps1` null-guard for `$env:HOME` (Windows).
+- **2.6.4** SARIF output (ADR-0027) — `findings_to_sarif` +
+  `agency catalog scan --format sarif`.
+- **2.7.0** Third-party scanner plugins (ADR-0028):
+  `PluginScanner`, JSON envelope protocol, `--plugin NAME:PATH`.
+- **2.7.1** Fleet `PathKind` discriminator (ADR-0029) —
+  `PathKind::validate_path()` does NOT use `Path::is_absolute`
+  (cross-platform disagreement). POSIX vs Windows regex.
+- **2.7.2** Plugin auto-discovery (ADR-0030) — `discover_plugins`
+  reads `~/.agency/scanners.d/`, `AGENCY_SCANNERS_DIR`.
+- **2.7.3** Plugin manifest (ADR-0031) — `plugin.toml` with
+  name / version / binary / timeout_seconds / max_output_bytes /
+  env / capabilities. `toml = "0.8"`.
+- **2.7.4** Dynamic LLM probe (ADR-0032) — `LlmClient` trait,
+  `OpenAiCompatibleClient`, `MockLlmClient`. `agency hermes
+  probe <plugin> --llm`. AGENCY_LLM_ENDPOINT / MODEL / API_KEY /
+  MOCK_RESPONSE env vars.
+- **2.7.6** OIDC framework (ADR-0034) — `OidcConfig` from 8 env
+  vars, `OidcPending` in-memory map, `map_claims_to_role`,
+  `provision_user_from_claims`, `mock_oidc_claims`, two new
+  public axum routes.
+- **2.7.7** OIDC real wire-protocol client (ADR-0035) — discovery,
+  PKCE S256 /authorize URL, code exchange, ID-token iss / aud /
+  nonce validation. `AGENCY_OIDC_MOCK` default flipped from `1`
+  to `0`.
+- **2.7.8** OIDC token refresh + logout (ADR-0036) —
+  `POST /v1/auth/oidc/refresh` and `GET /v1/auth/oidc/logout`.
+  `users.token_expires_at` (schema 15 -> 16). Bearer expiry
+  enforced by `auth::require_bearer` middleware.
+- **2.7.9** Full RSA signature verification (ADR-0037) — RS256 /
+  RS384 / RS512 verified against the JWKS. ES / PS deferred to
+  2.7.7.1 (now 2.7.9.1). Closes the 2.7.7 "not safe against a
+  malicious IdP" caveat.
+- **2.7.10** DB-backed `OidcPending` (ADR-0038) — replaces the
+  2.7.6 in-memory `Arc<Mutex<HashMap>>` with a SQLite
+  `oidc_pending_state` table. Enables multi-process /
+  multi-instance `agency-server` deployments. Schema 16 -> 17.
+
+### 2.8.0 — Real Git source ingest
+- (ADR-0009 + ADR-0039) `GitFetcher` in
+  `crates/core/src/infrastructure/git_fetcher.rs`. Uses the
+  `git2` crate with `vendored-libgit2` (so the binary is
+  portable across Windows / Linux / macOS without requiring
+  the system `libgit2-dev` package).
+  - `clone_to(url, ref_, dest)` — clone a remote repo
+  - `fetch(dest, ref_)` — fetch + fast-forward an existing
+    clone
+  - Both async via `tokio::task::spawn_blocking` (git2 is sync)
+  - HTTPS + SSH via `~/.ssh/config` + `ssh-agent`
+
 ## Migration from previous state
 
 For users coming from a pre-MVP-1.0 install (schema_version <= 3,
@@ -183,7 +281,7 @@ i.e. before `skills` / `deployed_artifacts` were added):
    migrations in order. Opening the old DB on a new build
    automatically picks up migrations 004 (operations_journal was
    already in MVP-3), 005 (skills) and 006 (deployed_artifacts).
-   No data loss. `schema_version` advances to 6 on first open.
+   No data loss. `schema_version` advances to 17 on first open.
 2. **TS DTOs**: `cargo test -p agent_dep_core --test ts_export`
    regenerates `src/lib/types.generated.ts`. The script
    `scripts/check-ts-drift.ps1` enforces that the file matches
@@ -201,6 +299,17 @@ i.e. before `skills` / `deployed_artifacts` were added):
    `agency deploy install` writes the `agency-agents-router`
    plugin under `<hermes_home>/plugins/`. Hermes 0.18.2 picks
    it up on next start.
+6. **`agency-server` 2.x**: the new HTTP API is **additive** —
+   the existing 2.0.0 single-bearer-token continues to work for
+   scripts. Per-user RBAC + bearer-expiry are opt-in via the
+   `users` table; operators can keep using a single
+   `AGENCY_SERVER_TOKEN` env var.
+7. **OIDC**: opt-in via `AGENCY_OIDC_ISSUER` + `AGENCY_OIDC_CLIENT_ID`
+   (and friends). `AGENCY_OIDC_MOCK=1` keeps the dev mock. The
+   flow runs alongside bearer-token auth; both work.
+8. **Real Git source**: the `agency sources add` flow gains
+   `--git-url` + `--ref`. The existing `--local <path>` flow
+   is unchanged.
 
 ## Local CI
 

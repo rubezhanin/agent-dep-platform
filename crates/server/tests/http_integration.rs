@@ -30,6 +30,13 @@ struct TestServer {
     /// to one). Tests use the admin token for setup
     /// and create additional users for role checks.
     admin_token: String,
+    /// 2.5.3 (ADR-0033 follow-up): shared
+    /// `TargetRepository` for `_ensure_target`.
+    /// We share the same pool as the server so
+    /// INSERTs in the test are visible to the
+    /// running router without a WAL-visibility
+    /// race across two pools.
+    targets: std::sync::Arc<TargetRepository>,
     _dir: tempfile::TempDir,
 }
 
@@ -63,7 +70,15 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
     };
     let deploys = PendingDeployRepository::new(db.pool().clone());
     let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase").expect("vault");
-    let targets = TargetRepository::new(db.pool().clone());
+    // 2.5.3: build one `TargetRepository`
+    // and share it between `state` (consumed
+    // by `router`) and `TestServer` (used by
+    // `_ensure_target`). Two separate
+    // `TargetRepository` instances over the
+    // same `SqlitePool` can race on WAL
+    // visibility in some Windows configs,
+    // which is what bit us at first.
+    let targets_repo = TargetRepository::new(db.pool().clone());
     let oidc = agent_dep_server::oidc::OidcConfig::default();
     let oidc_pending = std::sync::Arc::new(
         agent_dep_core::infrastructure::repository::oidc_pending_repository::OidcPendingRepository::new(
@@ -73,12 +88,12 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
     let oidc_client: Arc<dyn agent_dep_server::oidc_client::OidcClient> =
         Arc::new(agent_dep_server::oidc_client::MockOidcClient);
     let state = ServerState {
-        db,
+        db: db.clone(),
         audit,
         users,
         deploys,
         secrets,
-        targets,
+        targets: targets_repo.clone(),
         oidc,
         oidc_pending,
         oidc_client,
@@ -95,6 +110,7 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
     TestServer {
         base,
         admin_token,
+        targets: std::sync::Arc::new(targets_repo),
         _dir: dir,
     }
 }
@@ -472,6 +488,61 @@ You are be.
     std::fs::write(cat.join("agents").join("engineering").join("be.md"), be_md).unwrap();
 }
 
+/// 2.5.3 (ADR-0033 follow-up) helper:
+/// create a `Target` row via the
+/// server's `POST /v1/targets` endpoint
+/// using the admin token. This goes
+/// through `state.targets` directly,
+/// so a subsequent `state.targets.
+/// find_by_env_name` inside
+/// `request_deploy` MUST see it
+/// (same `state`, same pool).
+/// Idempotent: a 201 is success, a
+/// 4xx is fine if the target was
+/// already created in this boot —
+/// we look the id up via the shared
+/// `targets_repo` afterwards.
+async fn _ensure_target(
+    srv: &TestServer,
+    environment: &str,
+    name: &str,
+) -> i64 {
+    let body = json!({
+        "name": name,
+        "environment": environment,
+        "path": "/srv/hermes",
+        "path_kind": "posix",
+    });
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/targets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&body)
+        .send()
+        .await
+        .expect("post target");
+    let status = resp.status();
+    let resp_body = resp.text().await.expect("target body");
+    if status.is_success() {
+        let v: serde_json::Value = serde_json::from_str(&resp_body).expect("json");
+        return v["id"].as_i64().expect("target id");
+    }
+    // 4xx — likely a duplicate from an
+    // earlier test in this boot. Look
+    // the row up via the shared repo.
+    use agent_dep_core::infrastructure::repository::pending_deploys_repository::Environment;
+    let env = Environment::parse(environment).expect("env parse");
+    let existing = srv
+        .targets
+        .find_by_env_name(env, name)
+        .await
+        .expect("find target");
+    existing.unwrap_or_else(|| {
+        panic!(
+            "POST /v1/targets failed (status={status} body={resp_body}) and target is not visible afterwards"
+        )
+    }).id
+}
+
 async fn _request_deploy(srv: &TestServer, token: &str) -> (i64, serde_json::Value) {
     // The catalog lives next to the test binary's
     // own tempdir; we use a fresh subdir so the test
@@ -479,18 +550,28 @@ async fn _request_deploy(srv: &TestServer, token: &str) -> (i64, serde_json::Val
     let cat = srv._dir.path().join("approvals_catalog");
     std::fs::create_dir_all(&cat).unwrap();
     _write_approvals_catalog(&cat);
+    // 2.5.3 (ADR-0033 follow-up):
+    // every `POST /v1/deploys` MUST
+    // declare a `target`. We create
+    // a hermetic target for this
+    // test.
+    let _ = _ensure_target(srv, "dev", "approval-target").await;
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/deploys", srv.base))
         .bearer_auth(token)
         .json(&json!({
             "catalog": cat.to_string_lossy(),
             "system_yaml": APPROVALS_SYS,
+            "environment": "dev",
+            "target": "approval-target",
         }))
         .send()
         .await
         .expect("post deploy");
-    assert_eq!(resp.status(), 201, "request deploy: {:?}", resp);
-    let v: serde_json::Value = resp.json().await.expect("json");
+    let status = resp.status();
+    let body = resp.text().await.expect("body");
+    assert_eq!(status, 201, "request deploy: status={} body={}", status, body);
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
     (v["deploy"]["id"].as_i64().expect("id"), v)
 }
 
@@ -765,6 +846,10 @@ async fn _request_deploy_with_env(
     let cat = srv._dir.path().join("env_catalog");
     std::fs::create_dir_all(&cat).unwrap();
     _write_approvals_catalog(&cat);
+    // 2.5.3: every deploy declares a
+    // target.
+    let target_name = format!("env-target-{env}");
+    let _ = _ensure_target(srv, env, &target_name).await;
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/deploys", srv.base))
         .bearer_auth(token)
@@ -772,6 +857,7 @@ async fn _request_deploy_with_env(
             "catalog": cat.to_string_lossy(),
             "system_yaml": APPROVALS_SYS,
             "environment": env,
+            "target": target_name,
         }))
         .send()
         .await

@@ -24,6 +24,9 @@ once_cell = { workspace = true }
 regex = "1"
 semver = "1"
 toml = "0.8"
+# 2.7.4 (ADR-0032): Ed25519 plugin
+# manifest signature verification.
+ed25519-dalek = { workspace = true }
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 base64 = { workspace = true }
 rand = { workspace = true }

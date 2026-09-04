@@ -413,3 +413,175 @@ binary = "./semgrep.sh"
         "name-mismatched manifest must be skipped, got {found:?}"
     );
 }
+
+// ---------------------------------------------------------------------
+// 2.7.4 (ADR-0032) — plugin manifest
+// signature + trust store tests.
+//
+// These tests live in `plugin_tests.rs`
+// rather than in `trust_store.rs`
+// because they exercise the
+// end-to-end `parse → verify` flow
+// against a real `plugin.toml` byte
+// buffer.
+// ---------------------------------------------------------------------
+
+use super::super::trust_store::TrustStore;
+use base64::Engine as _;
+use ed25519_dalek::{Signer as _, SigningKey};
+use sha2::{Digest, Sha256};
+
+/// Build a minimal `plugin.toml`
+/// string and return
+/// `(manifest_toml_bytes, base_payload_without_sig)`.
+fn minimal_manifest_toml(name: &str) -> (String, String) {
+    // Two-field payload; we keep it
+    // simple so the canonical
+    // re-serialisation is
+    // deterministic.
+    let payload = format!(
+        "name = \"{name}\"\nversion = \"1.0.0\"\nbinary = \"plugin.sh\"\n"
+    );
+    (payload.clone(), payload)
+}
+
+/// Sign a manifest's canonical
+/// bytes and return
+/// `(signer_id, public_key_b64, signed_toml)`.
+fn signed_manifest(name: &str) -> (String, String, String) {
+    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let pk_bytes = sk.verifying_key().to_bytes();
+    let pk_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk_bytes);
+    let mut h = Sha256::new();
+    h.update(pk_bytes);
+    let signer_id = hex::encode(&h.finalize()[..8]);
+    let (payload, _raw) = minimal_manifest_toml(name);
+    let canonical = payload.as_bytes();
+    let sig = sk.sign(canonical);
+    let sig_b64 =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes());
+    let signed = format!(
+        "{payload}signer_id = \"{signer_id}\"\nsignature = \"{sig_b64}\"\n"
+    );
+    (signer_id, pk_b64, signed)
+}
+
+fn trust_store_with(signer_id: &str, pk_b64: &str) -> TrustStore {
+    // Build the trust store via the
+    // public `parse` API (the
+    // internal `signers` map is
+    // private; constructing one
+    // through a JSON document is
+    // also a useful round-trip
+    // test in its own right).
+    let json = serde_json::json!({
+        "signers": [{
+            "id": signer_id,
+            "public_key": pk_b64,
+            "label": "test-signer",
+        }]
+    })
+    .to_string();
+    TrustStore::parse(json.as_bytes()).expect("parse trust store")
+}
+
+#[test]
+fn manifest_parse_accepts_signed_toml() {
+    let (_id, _pk, toml) = signed_manifest("good");
+    let m = PluginManifest::parse(toml.as_bytes()).expect("parse signed");
+    assert_eq!(m.name, "good");
+    assert!(m.signature.is_some());
+    assert!(m.signer_id.is_some());
+}
+
+#[test]
+fn manifest_parse_rejects_partial_signature() {
+    // signature present, no signer_id
+    let bad = "name = \"x\"\nversion = \"1.0.0\"\nbinary = \"p.sh\"\nsignature = \"abc\"\n";
+    let err = PluginManifest::parse(bad.as_bytes()).expect_err("must reject");
+    assert!(format!("{err:?}").contains("signer_id"));
+
+    // signer_id present, no signature
+    let bad2 = "name = \"x\"\nversion = \"1.0.0\"\nbinary = \"p.sh\"\nsigner_id = \"abc\"\n";
+    let err2 = PluginManifest::parse(bad2.as_bytes()).expect_err("must reject");
+    assert!(format!("{err2:?}").contains("signature"));
+}
+
+#[test]
+fn verify_signature_happy_path() {
+    let (id, pk, toml) = signed_manifest("good");
+    let ts = trust_store_with(&id, &pk);
+    let m = PluginManifest::parse(toml.as_bytes()).expect("parse");
+    m.verify_signature(&ts)
+        .expect("valid signature must verify");
+}
+
+#[test]
+fn verify_signature_rejects_unsigned_manifest() {
+    // 2.7.4 production policy: an
+    // unsigned manifest is REJECTED
+    // outright, even when the
+    // trust store is non-empty.
+    let (payload, _raw) = minimal_manifest_toml("plain");
+    let m = PluginManifest::parse(payload.as_bytes()).expect("parse");
+    let (_id, pk, _toml) = signed_manifest("good");
+    let ts = trust_store_with("anything", &pk);
+    let err = m.verify_signature(&ts).expect_err("unsigned must reject");
+    assert!(format!("{err:?}").contains("unsigned"));
+}
+
+#[test]
+fn verify_signature_rejects_tampered_name() {
+    // Sign a manifest with one
+    // name; flip the name in the
+    // bytes; verify fails.
+    let (id, pk, toml) = signed_manifest("original");
+    let ts = trust_store_with(&id, &pk);
+    // Replace `original` with
+    // `attacker` in the manifest
+    // (after the signature is
+    // computed).
+    let tampered = toml.replace("original", "attacker");
+    let m = PluginManifest::parse(tampered.as_bytes()).expect("parse");
+    let err = m
+        .verify_signature(&ts)
+        .expect_err("tampered must reject");
+    assert!(format!("{err:?}").contains("signature verification failed"));
+}
+
+#[test]
+fn verify_signature_rejects_wrong_signer() {
+    // Sign with key A; trust store
+    // has key B under the same id.
+    let (id, _pk_a, toml) = signed_manifest("plug");
+    let (_id2, pk_b, _toml2) = signed_manifest("plug");
+    let ts = trust_store_with(&id, &pk_b);
+    let m = PluginManifest::parse(toml.as_bytes()).expect("parse");
+    let err = m
+        .verify_signature(&ts)
+        .expect_err("wrong key must reject");
+    assert!(format!("{err:?}").contains("signature verification failed"));
+}
+
+#[test]
+fn verify_signature_rejects_unknown_signer() {
+    let (_id, _pk, toml) = signed_manifest("plug");
+    // Trust store is empty.
+    let ts = TrustStore::default();
+    let m = PluginManifest::parse(toml.as_bytes()).expect("parse");
+    let err = m
+        .verify_signature(&ts)
+        .expect_err("unknown signer must reject");
+    assert!(format!("{err:?}").contains("unknown signer"));
+}
+
+#[test]
+fn canonical_bytes_strip_signature_and_signer_id() {
+    let (_id, _pk, toml) = signed_manifest("plug");
+    let m = PluginManifest::parse(toml.as_bytes()).expect("parse");
+    let canonical = m.canonical_bytes().expect("canonical");
+    let s = std::str::from_utf8(&canonical).expect("utf8");
+    assert!(!s.contains("signature"), "canonical must strip signature: {s}");
+    assert!(!s.contains("signer_id"), "canonical must strip signer_id: {s}");
+    assert!(s.contains("plug"), "canonical must keep name: {s}");
+}

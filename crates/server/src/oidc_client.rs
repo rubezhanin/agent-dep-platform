@@ -662,15 +662,28 @@ async fn validate_id_token_minimal(
             reason: "no `alg` in JWS header".to_string(),
         })?;
     // 2.7.9 (ADR-0037): full RSA
-    // signature verification. ES
-    // and PS algorithms are deferred
-    // to 2.7.9.1.
-    if !matches!(alg, "RS256" | "RS384" | "RS512") {
+    // signature verification. 2.7.7.1
+    // adds ES256/ES384 (ECDSA P-256 /
+    // P-384) and PS256/PS384/PS512
+    // (RSA-PSS). HS* and the RSA
+    // `none` trick are still rejected
+    // here.
+    if !matches!(
+        alg,
+        "RS256"
+            | "RS384"
+            | "RS512"
+            | "ES256"
+            | "ES384"
+            | "PS256"
+            | "PS384"
+            | "PS512"
+    ) {
         return Err(CoreError::ErrSchemaInvalid {
             path: "oidc.id_token".to_string(),
             reason: format!(
-                "unsupported alg `{alg}` (2.7.9 supports RS256/RS384/RS512; \
-                 ES/PS deferred to 2.7.9.1)"
+                "unsupported alg `{alg}` (2.7.7.1 supports RS256/RS384/RS512, \
+                 ES256/ES384, PS256/PS384/PS512)"
             ),
         });
     }
@@ -808,13 +821,30 @@ fn find_jwk(jwks: &serde_json::Value, kid: &str) -> CoreResult<serde_json::Value
     })
 }
 
-/// 2.7.9 (ADR-0037): verify the RSA
-/// signature on the JWS. Fetches
-/// the JWKS, finds the JWK with
-/// the matching `kid`, and verifies
-/// the signature against the
-/// `RsaPublicKey` constructed from
-/// `n` and `e`.
+/// 2.7.9 (ADR-0037) — verify the
+/// signature on the JWS. 2.7.7.1
+/// extended the dispatch to `ES256` /
+/// `ES384` (ECDSA P-256 / P-384) and
+/// `PS256` / `PS384` / `PS512`
+/// (RSA-PSS). The function:
+/// 1. Fetches the JWKS,
+/// 2. Finds the JWK with the matching
+///    `kid`,
+/// 3. Dispatches on `alg`:
+///    - RSA-family (RS*, PS*): builds
+///      an `RsaPublicKey` from `n` and
+///      `e`, then verifies with the
+///      right `Signature` scheme
+///      (`pkcs1v15` for RS*,
+///      `pss::Signature` for PS*),
+///    - EC-family (ES*): decodes the
+///      SEC1 uncompressed point from
+///      `x || y` (with a leading
+///      `0x04`), builds a
+///      `p256::PublicKey` or
+///      `p384::PublicKey`, and verifies
+///      an `ecdsa::Signature` parsed
+///      from `r || s`.
 async fn verify_jwt_signature(
     id_token: &str,
     header_b64: &str,
@@ -847,7 +877,8 @@ async fn verify_jwt_signature(
         .ok_or_else(|| CoreError::ErrSchemaInvalid {
             path: "oidc.id_token".to_string(),
             reason: "no `alg` in JWS header".to_string(),
-        })?;
+        })?
+        .to_string();
     let kid = header
         .get("kid")
         .and_then(|v| v.as_str())
@@ -871,14 +902,278 @@ async fn verify_jwt_signature(
             path: "oidc.jwks".to_string(),
             reason: format!("JWK `{kid}` missing `kty`"),
         })?;
-    if kty != "RSA" {
-        return Err(CoreError::ErrSchemaInvalid {
-            path: "oidc.jwks".to_string(),
-            reason: format!(
-                "JWK `{kid}` has unsupported kty `{kty}` (2.7.9 supports RSA)"
-            ),
-        });
+    // Reconstruct header.payload for
+    // the signed-data digest.
+    let mut parts = id_token.split('.');
+    let h = parts.next().unwrap_or("");
+    let p = parts.next().unwrap_or("");
+    let signed_data = format!("{h}.{p}");
+    use signature::Verifier;
+    match alg.as_str() {
+        // ----- RSA (PKCS#1 v1.5) -----
+        "RS256" | "RS384" | "RS512" => {
+            if kty != "RSA" {
+                return Err(CoreError::ErrSchemaInvalid {
+                    path: "oidc.jwks".to_string(),
+                    reason: format!(
+                        "JWK `{kid}` has kty `{kty}` but alg `{alg}` requires RSA"
+                    ),
+                });
+            }
+            let pubkey = decode_rsa_pubkey(&jwk, kid, &b64)?;
+            match alg.as_str() {
+                "RS256" => {
+                    use rsa::pkcs1v15::{Signature, VerifyingKey};
+                    use sha2::{Digest, Sha256};
+                    let vk = VerifyingKey::<Sha256>::new(pubkey);
+                    let mut hasher = Sha256::new();
+                    hasher.update(signed_data.as_bytes());
+                    let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("RS256 sig parse: {e}"),
+                        }
+                    })?;
+                    vk.verify(signed_data.as_bytes(), &sig).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("RS256 verify: {e}"),
+                        }
+                    })?;
+                }
+                "RS384" => {
+                    use rsa::pkcs1v15::{Signature, VerifyingKey};
+                    use sha2::{Digest, Sha384};
+                    let vk = VerifyingKey::<Sha384>::new(pubkey);
+                    let mut hasher = Sha384::new();
+                    hasher.update(signed_data.as_bytes());
+                    let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("RS384 sig parse: {e}"),
+                        }
+                    })?;
+                    vk.verify(signed_data.as_bytes(), &sig).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("RS384 verify: {e}"),
+                        }
+                    })?;
+                }
+                "RS512" => {
+                    use rsa::pkcs1v15::{Signature, VerifyingKey};
+                    use sha2::{Digest, Sha512};
+                    let vk = VerifyingKey::<Sha512>::new(pubkey);
+                    let mut hasher = Sha512::new();
+                    hasher.update(signed_data.as_bytes());
+                    let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("RS512 sig parse: {e}"),
+                        }
+                    })?;
+                    vk.verify(signed_data.as_bytes(), &sig).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("RS512 verify: {e}"),
+                        }
+                    })?;
+                }
+                _ => unreachable!(),
+            }
+        }
+        // ----- RSA-PSS (2.7.7.1) -----
+        "PS256" | "PS384" | "PS512" => {
+            if kty != "RSA" {
+                return Err(CoreError::ErrSchemaInvalid {
+                    path: "oidc.jwks".to_string(),
+                    reason: format!(
+                        "JWK `{kid}` has kty `{kty}` but alg `{alg}` requires RSA"
+                    ),
+                });
+            }
+            let pubkey = decode_rsa_pubkey(&jwk, kid, &b64)?;
+            // `rsa::pss::Signature` is
+            // generic over the digest.
+            // The salt length is the
+            // output size of the digest
+            // (RFC 7518 §3.5: "the same
+            // size as the hash output");
+            // for our purposes the
+            // `rsa` crate picks a safe
+            // default via
+            // `VerifyingKey::new`.
+            use rsa::pss::{Signature, VerifyingKey};
+            match alg.as_str() {
+                "PS256" => {
+                    use sha2::{Digest, Sha256};
+                    let vk = VerifyingKey::<Sha256>::new(pubkey);
+                    let mut hasher = Sha256::new();
+                    hasher.update(signed_data.as_bytes());
+                    let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("PS256 sig parse: {e}"),
+                        }
+                    })?;
+                    vk.verify(signed_data.as_bytes(), &sig).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("PS256 verify: {e}"),
+                        }
+                    })?;
+                }
+                "PS384" => {
+                    use sha2::{Digest, Sha384};
+                    let vk = VerifyingKey::<Sha384>::new(pubkey);
+                    let mut hasher = Sha384::new();
+                    hasher.update(signed_data.as_bytes());
+                    let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("PS384 sig parse: {e}"),
+                        }
+                    })?;
+                    vk.verify(signed_data.as_bytes(), &sig).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("PS384 verify: {e}"),
+                        }
+                    })?;
+                }
+                "PS512" => {
+                    use sha2::{Digest, Sha512};
+                    let vk = VerifyingKey::<Sha512>::new(pubkey);
+                    let mut hasher = Sha512::new();
+                    hasher.update(signed_data.as_bytes());
+                    let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("PS512 sig parse: {e}"),
+                        }
+                    })?;
+                    vk.verify(signed_data.as_bytes(), &sig).map_err(|e| {
+                        CoreError::ErrSchemaInvalid {
+                            path: "oidc.id_token".to_string(),
+                            reason: format!("PS512 verify: {e}"),
+                        }
+                    })?;
+                }
+                _ => unreachable!(),
+            }
+        }
+        // ----- ECDSA (2.7.7.1) -----
+        "ES256" | "ES384" => {
+            if kty != "EC" {
+                return Err(CoreError::ErrSchemaInvalid {
+                    path: "oidc.jwks".to_string(),
+                    reason: format!(
+                        "JWK `{kid}` has kty `{kty}` but alg `{alg}` requires EC"
+                    ),
+                });
+            }
+            let crv = jwk
+                .get("crv")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| CoreError::ErrSchemaInvalid {
+                    path: "oidc.jwks".to_string(),
+                    reason: format!("JWK `{kid}` missing `crv`"),
+                })?;
+            let expected_crv = if alg == "ES256" { "P-256" } else { "P-384" };
+            if crv != expected_crv {
+                return Err(CoreError::ErrSchemaInvalid {
+                    path: "oidc.jwks".to_string(),
+                    reason: format!(
+                        "JWK `{kid}` has crv `{crv}` but alg `{alg}` requires `{expected_crv}`"
+                    ),
+                });
+            }
+            let x_b64 = jwk.get("x").and_then(|v| v.as_str()).ok_or_else(|| {
+                CoreError::ErrSchemaInvalid {
+                    path: "oidc.jwks".to_string(),
+                    reason: format!("JWK `{kid}` missing `x`"),
+                }
+            })?;
+            let y_b64 = jwk.get("y").and_then(|v| v.as_str()).ok_or_else(|| {
+                CoreError::ErrSchemaInvalid {
+                    path: "oidc.jwks".to_string(),
+                    reason: format!("JWK `{kid}` missing `y`"),
+                }
+            })?;
+            let x = b64.decode(x_b64).map_err(|e| CoreError::ErrSchemaInvalid {
+                path: "oidc.jwks".to_string(),
+                reason: format!("JWK `x` b64: {e}"),
+            })?;
+            let y = b64.decode(y_b64).map_err(|e| CoreError::ErrSchemaInvalid {
+                path: "oidc.jwks".to_string(),
+                reason: format!("JWK `y` b64: {e}"),
+            })?;
+            // SEC1 uncompressed point:
+            // 0x04 || x || y
+            let mut uncompressed = Vec::with_capacity(1 + x.len() + y.len());
+            uncompressed.push(0x04);
+            uncompressed.extend_from_slice(&x);
+            uncompressed.extend_from_slice(&y);
+            if alg == "ES256" {
+                use p256::ecdsa::{Signature, VerifyingKey};
+                let pubkey = p256::PublicKey::from_sec1_bytes(&uncompressed)
+                    .map_err(|e| CoreError::ErrSchemaInvalid {
+                        path: "oidc.jwks".to_string(),
+                        reason: format!("ES256 sec1 decode: {e}"),
+                    })?;
+                let vk = VerifyingKey::from(pubkey);
+                let sig = Signature::from_slice(&signature_bytes).map_err(|e| {
+                    CoreError::ErrSchemaInvalid {
+                        path: "oidc.id_token".to_string(),
+                        reason: format!("ES256 sig parse: {e}"),
+                    }
+                })?;
+                vk.verify(signed_data.as_bytes(), &sig).map_err(|e| {
+                    CoreError::ErrSchemaInvalid {
+                        path: "oidc.id_token".to_string(),
+                        reason: format!("ES256 verify: {e}"),
+                    }
+                })?;
+            } else {
+                use p384::ecdsa::{Signature, VerifyingKey};
+                let pubkey = p384::PublicKey::from_sec1_bytes(&uncompressed)
+                    .map_err(|e| CoreError::ErrSchemaInvalid {
+                        path: "oidc.jwks".to_string(),
+                        reason: format!("ES384 sec1 decode: {e}"),
+                    })?;
+                let vk = VerifyingKey::from(pubkey);
+                let sig = Signature::from_slice(&signature_bytes).map_err(|e| {
+                    CoreError::ErrSchemaInvalid {
+                        path: "oidc.id_token".to_string(),
+                        reason: format!("ES384 sig parse: {e}"),
+                    }
+                })?;
+                vk.verify(signed_data.as_bytes(), &sig).map_err(|e| {
+                    CoreError::ErrSchemaInvalid {
+                        path: "oidc.id_token".to_string(),
+                        reason: format!("ES384 verify: {e}"),
+                    }
+                })?;
+            }
+        }
+        _ => {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "oidc.id_token".to_string(),
+                reason: format!("unsupported alg `{alg}`"),
+            });
+        }
     }
+    Ok(())
+}
+
+/// 2.7.7.1 helper: decode an RSA public
+/// key from a JWK (`kty=RSA`) `n` and
+/// `e` (base64url big-endian).
+fn decode_rsa_pubkey<E: base64::Engine>(
+    jwk: &serde_json::Value,
+    kid: &str,
+    b64: &E,
+) -> CoreResult<rsa::RsaPublicKey> {
     let n_b64 = jwk
         .get("n")
         .and_then(|v| v.as_str())
@@ -893,91 +1188,22 @@ async fn verify_jwt_signature(
             path: "oidc.jwks".to_string(),
             reason: format!("JWK `{kid}` missing `e`"),
         })?;
-    let pubkey = {
-        let n_bytes = b64.decode(n_b64).map_err(|e| CoreError::ErrSchemaInvalid {
-            path: "oidc.jwks".to_string(),
-            reason: format!("JWK `n` b64: {e}"),
-        })?;
-        let e_bytes = b64.decode(e_b64).map_err(|e| CoreError::ErrSchemaInvalid {
-            path: "oidc.jwks".to_string(),
-            reason: format!("JWK `e` b64: {e}"),
-        })?;
-        rsa::RsaPublicKey::new(
-            rsa::BigUint::from_bytes_be(&n_bytes),
-            rsa::BigUint::from_bytes_be(&e_bytes),
-        )
-        .map_err(|e| CoreError::ErrSchemaInvalid {
-            path: "oidc.jwks".to_string(),
-            reason: format!("RsaPublicKey::new: {e}"),
-        })?
-    };
-    // Reconstruct header.payload for
-    // the signed-data digest.
-    let mut parts = id_token.split('.');
-    let h = parts.next().unwrap_or("");
-    let p = parts.next().unwrap_or("");
-    let signed_data = format!("{h}.{p}");
-    use rsa::signature::Verifier;
-    match alg {
-        "RS256" => {
-            use rsa::pkcs1v15::{Signature, VerifyingKey};
-            use sha2::{Digest, Sha256};
-            let vk = VerifyingKey::<Sha256>::new(pubkey);
-            let mut hasher = Sha256::new();
-            hasher.update(signed_data.as_bytes());
-            let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
-                CoreError::ErrSchemaInvalid {
-                    path: "oidc.id_token".to_string(),
-                    reason: format!("sig parse: {e}"),
-                }
-            })?;
-            vk.verify(&hasher.finalize(), &sig).map_err(|e| CoreError::ErrSchemaInvalid {
-                path: "oidc.id_token".to_string(),
-                reason: format!("RS256 verify: {e}"),
-            })?;
-        }
-        "RS384" => {
-            use rsa::pkcs1v15::{Signature, VerifyingKey};
-            use sha2::{Digest, Sha384};
-            let vk = VerifyingKey::<Sha384>::new(pubkey);
-            let mut hasher = Sha384::new();
-            hasher.update(signed_data.as_bytes());
-            let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
-                CoreError::ErrSchemaInvalid {
-                    path: "oidc.id_token".to_string(),
-                    reason: format!("sig parse: {e}"),
-                }
-            })?;
-            vk.verify(&hasher.finalize(), &sig).map_err(|e| CoreError::ErrSchemaInvalid {
-                path: "oidc.id_token".to_string(),
-                reason: format!("RS384 verify: {e}"),
-            })?;
-        }
-        "RS512" => {
-            use rsa::pkcs1v15::{Signature, VerifyingKey};
-            use sha2::{Digest, Sha512};
-            let vk = VerifyingKey::<Sha512>::new(pubkey);
-            let mut hasher = Sha512::new();
-            hasher.update(signed_data.as_bytes());
-            let sig = Signature::try_from(&signature_bytes[..]).map_err(|e| {
-                CoreError::ErrSchemaInvalid {
-                    path: "oidc.id_token".to_string(),
-                    reason: format!("sig parse: {e}"),
-                }
-            })?;
-            vk.verify(&hasher.finalize(), &sig).map_err(|e| CoreError::ErrSchemaInvalid {
-                path: "oidc.id_token".to_string(),
-                reason: format!("RS512 verify: {e}"),
-            })?;
-        }
-        _ => {
-            return Err(CoreError::ErrSchemaInvalid {
-                path: "oidc.id_token".to_string(),
-                reason: format!("unsupported alg `{alg}`"),
-            });
-        }
-    }
-    Ok(())
+    let n_bytes = b64.decode(n_b64).map_err(|e| CoreError::ErrSchemaInvalid {
+        path: "oidc.jwks".to_string(),
+        reason: format!("JWK `n` b64: {e}"),
+    })?;
+    let e_bytes = b64.decode(e_b64).map_err(|e| CoreError::ErrSchemaInvalid {
+        path: "oidc.jwks".to_string(),
+        reason: format!("JWK `e` b64: {e}"),
+    })?;
+    rsa::RsaPublicKey::new(
+        rsa::BigUint::from_bytes_be(&n_bytes),
+        rsa::BigUint::from_bytes_be(&e_bytes),
+    )
+    .map_err(|e| CoreError::ErrSchemaInvalid {
+        path: "oidc.jwks".to_string(),
+        reason: format!("RsaPublicKey::new: {e}"),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1167,6 +1393,519 @@ mod tests {
         .await
         .expect_err("must reject");
         assert!(format!("{err:?}").contains("nonce mismatch"));
+    }
+
+    // -----------------------------------------------------------------
+    // 2.7.7.1 — ES256/ES384 (ECDSA) and
+    // PS256/PS384/PS512 (RSA-PSS)
+    // signature verification tests.
+    //
+    // Each test:
+    // 1. Generates the matching key pair.
+    // 2. Signs a JWS.
+    // 3. Boots a tiny axum router that
+    //    serves a JWKS document with the
+    //    matching `kid` and `kty`/`crv` or
+    //    `n`/`e`.
+    // 4. Calls `validate_id_token_minimal`
+    //    (which in turn calls
+    //    `verify_jwt_signature`) and
+    //    expects Ok or Err as appropriate.
+    // -----------------------------------------------------------------
+
+    use std::net::SocketAddr;
+    use tokio::net::TcpListener;
+
+    /// Start a one-shot axum router
+    /// that serves a single JWKS
+    /// document at `/.well-known/jwks.json`.
+    /// Returns the JWKS URL.
+    async fn _boot_jwks(jwks: serde_json::Value) -> String {
+        use axum::{routing::get, Router};
+        // Capture the supplied
+        // JSON in a closure; `axum`
+        // lets us move it into the
+        // handler.
+        let app = Router::new().route(
+            "/.well-known/jwks.json",
+            get(move || {
+                let body = jwks.clone();
+                async move { axum::Json(body) }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr: SocketAddr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}/.well-known/jwks.json")
+    }
+
+    /// Sign `signed_data` with an RSA
+    /// PKCS#1 v1.5 key + `Sha256`,
+    /// build a JWK with the matching
+    /// `n` and `e`, and return both.
+    fn _rsa_pkcs1v15_sign(
+        alg: &'static str,
+        kid: &'static str,
+        signed_data: &[u8],
+    ) -> (String, serde_json::Value) {
+        use base64::Engine;
+        use rand::rngs::OsRng;
+        use rsa::pkcs1v15::SigningKey;
+        use rsa::signature::{Keypair, SignatureEncoding, Signer};
+        use rsa::traits::PublicKeyParts;
+        use rsa::RsaPrivateKey;
+        use sha2::Sha256;
+        let mut rng = OsRng;
+        let rsa_key = RsaPrivateKey::new(&mut rng, 2048).expect("rsa private key");
+        let sk = SigningKey::<Sha256>::new(rsa_key);
+        let pk = sk.verifying_key();
+        let n_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(pk.as_ref().n().to_bytes_be());
+        let e_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(pk.as_ref().e().to_bytes_be());
+        let header = serde_json::json!({"alg": alg, "kid": kid, "typ": "JWT"});
+        let h_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&header).unwrap());
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(signed_data);
+        let to_sign = format!("{h_b64}.{payload_b64}").into_bytes();
+        let sig = sk.sign(&to_sign);
+        let sig_b64 =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes());
+        let jws = format!("{h_b64}.{payload_b64}.{sig_b64}");
+        let jwk = serde_json::json!({
+            "keys": [{
+                "kty": "RSA",
+                "alg": alg,
+                "use": "sig",
+                "kid": kid,
+                "n": n_b64,
+                "e": e_b64,
+            }]
+        });
+        (jws, jwk)
+    }
+
+    /// Sign with RSA-PSS + `Sha256`.
+    fn _rsa_pss_sign(
+        alg: &'static str,
+        kid: &'static str,
+        signed_data: &[u8],
+    ) -> (String, serde_json::Value) {
+        use base64::Engine;
+        use rand::rngs::OsRng;
+        use rsa::pss::SigningKey;
+        use rsa::signature::{Keypair, SignatureEncoding};
+        use rsa::traits::PublicKeyParts;
+        use rsa::RsaPrivateKey;
+        use sha2::Sha256;
+        use signature::Signer;
+        let mut rng = OsRng;
+        let rsa_key = RsaPrivateKey::new(&mut rng, 2048).expect("rsa private key");
+        let sk = SigningKey::<Sha256>::new(rsa_key);
+        let pk = sk.verifying_key();
+        let n_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(pk.as_ref().n().to_bytes_be());
+        let e_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(pk.as_ref().e().to_bytes_be());
+        let header = serde_json::json!({"alg": alg, "kid": kid, "typ": "JWT"});
+        let h_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&header).unwrap());
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(signed_data);
+        let to_sign = format!("{h_b64}.{payload_b64}").into_bytes();
+        let sig = sk.sign(&to_sign);
+        let sig_b64 =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes());
+        let jws = format!("{h_b64}.{payload_b64}.{sig_b64}");
+        let jwk = serde_json::json!({
+            "keys": [{
+                "kty": "RSA",
+                "alg": alg,
+                "use": "sig",
+                "kid": kid,
+                "n": n_b64,
+                "e": e_b64,
+            }]
+        });
+        (jws, jwk)
+    }
+
+    /// Sign with P-256 ECDSA.
+    fn _p256_sign(
+        alg: &'static str,
+        kid: &'static str,
+        signed_data: &[u8],
+    ) -> (String, serde_json::Value) {
+        use base64::Engine;
+        use p256::ecdsa::SigningKey;
+        use signature::Signer;
+        let sk = SigningKey::random(&mut rand::rngs::OsRng);
+        let pk = sk.verifying_key();
+        let point = pk.to_encoded_point(false);
+        let x = point.x().expect("x").as_slice().to_vec();
+        let y = point.y().expect("y").as_slice().to_vec();
+        let x_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&x);
+        let y_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&y);
+        let header = serde_json::json!({"alg": alg, "kid": kid, "typ": "JWT"});
+        let h_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&header).unwrap());
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(signed_data);
+        let to_sign = format!("{h_b64}.{payload_b64}").into_bytes();
+        let sig: p256::ecdsa::Signature = sk.sign(&to_sign);
+        let sig_bytes = sig.to_bytes();
+        let sig_b64 =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig_bytes);
+        let jws = format!("{h_b64}.{payload_b64}.{sig_b64}");
+        let jwk = serde_json::json!({
+            "keys": [{
+                "kty": "EC",
+                "crv": "P-256",
+                "alg": alg,
+                "use": "sig",
+                "kid": kid,
+                "x": x_b64,
+                "y": y_b64,
+            }]
+        });
+        (jws, jwk)
+    }
+
+    /// Sign with P-384 ECDSA.
+    fn _p384_sign(
+        alg: &'static str,
+        kid: &'static str,
+        signed_data: &[u8],
+    ) -> (String, serde_json::Value) {
+        use base64::Engine;
+        use p384::ecdsa::SigningKey;
+        use signature::Signer;
+        let sk = SigningKey::random(&mut rand::rngs::OsRng);
+        let pk = sk.verifying_key();
+        let point = pk.to_encoded_point(false);
+        let x = point.x().expect("x").as_slice().to_vec();
+        let y = point.y().expect("y").as_slice().to_vec();
+        let x_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&x);
+        let y_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&y);
+        let header = serde_json::json!({"alg": alg, "kid": kid, "typ": "JWT"});
+        let h_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&header).unwrap());
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(signed_data);
+        let to_sign = format!("{h_b64}.{payload_b64}").into_bytes();
+        let sig: p384::ecdsa::Signature = sk.sign(&to_sign);
+        let sig_bytes = sig.to_bytes();
+        let sig_b64 =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig_bytes);
+        let jws = format!("{h_b64}.{payload_b64}.{sig_b64}");
+        let jwk = serde_json::json!({
+            "keys": [{
+                "kty": "EC",
+                "crv": "P-384",
+                "alg": alg,
+                "use": "sig",
+                "kid": kid,
+                "x": x_b64,
+                "y": y_b64,
+            }]
+        });
+        (jws, jwk)
+    }
+
+    /// Build a JWS where the
+    /// `signed_data = header.payload`,
+    /// so the test can use any
+    /// pre-built claims. We
+    /// reconstruct the JWS here
+    /// because the per-algorithm
+    /// helpers above already build a
+    /// complete JWS, and we just need
+    /// to provide claims.
+    fn _claims_payload(
+        _alg: &str,
+        iss: &str,
+        aud: &str,
+        nonce: &str,
+        sub: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "iss": iss,
+            "aud": aud,
+            "nonce": nonce,
+            "sub": sub,
+        })
+    }
+
+    /// Run the full
+    /// `validate_id_token_minimal`
+    /// happy path: a JWS signed with
+    /// the supplied helper, claims
+    /// matching `iss`/`aud`/`nonce`,
+    /// and a JWKS served from a
+    /// real (axum) HTTP endpoint.
+    async fn _validate_signed(
+        jws: &str,
+        jwks: serde_json::Value,
+        iss: &str,
+        aud: &str,
+        nonce: &str,
+    ) -> CoreResult<TokenClaims> {
+        let jwks_uri = _boot_jwks(jwks).await;
+        validate_id_token_minimal(
+            jws,
+            &jwks_uri,
+            iss,
+            aud,
+            nonce,
+            &reqwest::Client::new(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn es256_round_trip_valid_signature() {
+        let alg = "ES256";
+        let claims = _claims_payload(
+            alg,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+            "user-1",
+        );
+        let payload_bytes = serde_json::to_vec(&claims).unwrap();
+        let (jws, jwk) = _p256_sign(alg, "k-es256", &payload_bytes);
+        let out = _validate_signed(
+            &jws,
+            jwk,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+        )
+        .await
+        .expect("ES256 must verify");
+        assert_eq!(out.sub, "user-1");
+    }
+
+    #[tokio::test]
+    async fn es384_round_trip_valid_signature() {
+        let alg = "ES384";
+        let claims = _claims_payload(
+            alg,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+            "user-1",
+        );
+        let payload_bytes = serde_json::to_vec(&claims).unwrap();
+        let (jws, jwk) = _p384_sign(alg, "k-es384", &payload_bytes);
+        let out = _validate_signed(
+            &jws,
+            jwk,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+        )
+        .await
+        .expect("ES384 must verify");
+        assert_eq!(out.sub, "user-1");
+    }
+
+    #[tokio::test]
+    async fn ps256_round_trip_valid_signature() {
+        let alg = "PS256";
+        let claims = _claims_payload(
+            alg,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+            "user-1",
+        );
+        let payload_bytes = serde_json::to_vec(&claims).unwrap();
+        let (jws, jwk) = _rsa_pss_sign(alg, "k-ps256", &payload_bytes);
+        let out = _validate_signed(
+            &jws,
+            jwk,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+        )
+        .await
+        .expect("PS256 must verify");
+        assert_eq!(out.sub, "user-1");
+    }
+
+    #[tokio::test]
+    async fn es256_wrong_key_rejected() {
+        let alg = "ES256";
+        let claims = _claims_payload(
+            alg,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+            "user-1",
+        );
+        let payload_bytes = serde_json::to_vec(&claims).unwrap();
+        // Sign with one key…
+        let (jws, _jwk_for_signer) = _p256_sign(alg, "k-es256", &payload_bytes);
+        // …but publish a JWKS with a
+        // *different* key (same kid).
+        let (_jws2, jwk) = _p256_sign(alg, "k-es256", b"junk");
+        let err = _validate_signed(
+            &jws,
+            jwk,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+        )
+        .await
+        .expect_err("ES256 with wrong key must reject");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("ES256 verify") || msg.contains("verify"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ps256_wrong_key_rejected() {
+        let alg = "PS256";
+        let claims = _claims_payload(
+            alg,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+            "user-1",
+        );
+        let payload_bytes = serde_json::to_vec(&claims).unwrap();
+        let (jws, _jwk_for_signer) = _rsa_pss_sign(alg, "k-ps256", &payload_bytes);
+        let (_jws2, jwk) = _rsa_pss_sign(alg, "k-ps256", b"junk");
+        let err = _validate_signed(
+            &jws,
+            jwk,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+        )
+        .await
+        .expect_err("PS256 with wrong key must reject");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("PS256 verify") || msg.contains("verify"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn es256_with_p384_crv_rejected() {
+        // alg=ES256 but JWK has crv=P-384:
+        // the dispatch should refuse
+        // before any ECC math runs.
+        let alg = "ES256";
+        let claims = _claims_payload(
+            alg,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+            "user-1",
+        );
+        let payload_bytes = serde_json::to_vec(&claims).unwrap();
+        let (jws, _jwk_for_signer) = _p256_sign(alg, "k-es256", &payload_bytes);
+        // Manually craft a JWKS with
+        // crv=P-384 (mismatched).
+        let mut jwk = _p384_sign(alg, "k-es256", b"junk").1;
+        // Patch the kid to match.
+        jwk["keys"][0]["kid"] = serde_json::json!("k-es256");
+        let err = _validate_signed(
+            &jws,
+            jwk,
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+        )
+        .await
+        .expect_err("ES256 with P-384 crv must reject");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("requires `P-256`") || msg.contains("crv"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_jwt_rejects_hs256_unsupported_alg() {
+        // 2.7.7.1: HS256 is still
+        // unsupported (we have no
+        // symmetric-key story; OIDC
+        // public clients only need
+        // RS*/ES*/PS*). The header
+        // `alg: "HS256"` must be
+        // rejected by the dispatch in
+        // `validate_id_token_minimal`
+        // before any signature check
+        // runs.
+        let claims = _claims_payload(
+            "HS256",
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+            "user-1",
+        );
+        let header = serde_json::json!({"alg": "HS256", "kid": "k1"});
+        let h_b64 = base64url(serde_json::to_vec(&header).unwrap().as_slice());
+        let p_b64 = base64url(serde_json::to_vec(&claims).unwrap().as_slice());
+        let jwt = format!("{h_b64}.{p_b64}.{}", base64url(&[0u8; 32]));
+        let err = validate_id_token_minimal(
+            &jwt,
+            "",
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+            &reqwest::Client::new(),
+        )
+        .await
+        .expect_err("HS256 must reject");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("unsupported alg"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn validate_jwt_rejects_none_alg() {
+        // The classic `alg: "none"`
+        // trick: a JWS with an empty
+        // signature segment. The
+        // validator must refuse
+        // *before* the dispatch
+        // because `none` is not in
+        // the allowed list.
+        use base64::Engine;
+        let header = serde_json::json!({"alg": "none", "kid": "k1"});
+        let h_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&header).unwrap());
+        let claims = _claims_payload(
+            "none",
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+            "user-1",
+        );
+        let p_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).unwrap());
+        let jwt = format!("{h_b64}.{p_b64}.");
+        let err = validate_id_token_minimal(
+            &jwt,
+            "",
+            "https://idp.example.com",
+            "client-1",
+            "nonce-1",
+            &reqwest::Client::new(),
+        )
+        .await
+        .expect_err("alg=none must reject");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("unsupported alg"), "got: {msg}");
     }
 
     #[tokio::test]

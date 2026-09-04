@@ -241,35 +241,68 @@ fn parse_severity(s: &str) -> Option<Severity> {
 /// metadata (name, version, description) plus
 /// per-plugin tunables (timeout, output cap,
 /// env vars).
+///
+/// 2.7.4 (ADR-0032) — the manifest MAY
+/// carry an Ed25519 `signature` over the
+/// canonical form of the rest of the
+/// file. The operator-supplied
+/// `signer_id` is the lookup key in
+/// [`super::trust_store::TrustStore`].
+/// Manifests without a `signature` are
+/// accepted only when
+/// `verify_signature` is called with a
+/// trust store that allows them — the
+/// default is to REJECT unsigned
+/// manifests in production. Tests
+/// and the 2.7.3 fallback path use
+/// `verify_signature_opt` which treats
+/// the unsigned case as a soft
+/// warning.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginManifest {
     pub name: String,
     pub version: String,
     pub binary: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
     /// Per-plugin timeout override. If
     /// `None`, falls back to the global
     /// `AGENCY_PLUGIN_TIMEOUT_SECS` (or 30s
     /// default).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
     /// Per-plugin output cap override. If
     /// `None`, falls back to the global
     /// `AGENCY_PLUGIN_MAX_OUTPUT_BYTES` (or
     /// 256 MiB default).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_bytes: Option<usize>,
     /// Extra env vars to pass to the plugin
     /// process. Format: `KEY=VALUE`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
     /// Free-form capability tags. 2.7.3
     /// doesn't enforce a vocabulary.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// 2.7.4: Ed25519 signature over the
+    /// canonical form of this manifest
+    /// (the manifest with `signature` and
+    /// `signer_id` stripped). Base64-url
+    /// (no pad), 64 bytes decoded.
+    /// `None` means the manifest is
+    /// unsigned; `verify_signature` then
+    /// REJECTs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// 2.7.4: opaque signer id; the
+    /// trust store resolves it to a
+    /// public key. Required when
+    /// `signature` is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_id: Option<String>,
 }
 
 impl PluginManifest {
@@ -305,7 +338,80 @@ impl PluginManifest {
                 reason: "binary must not be empty".to_string(),
             });
         }
+        // 2.7.4 (ADR-0032): a manifest
+        // with a `signature` MUST
+        // also carry a `signer_id`,
+        // and vice versa. We do not
+        // verify here (no trust store
+        // in scope) — only at the
+        // call site, via
+        // `PluginManifest::verify_signature`.
+        if manifest.signature.is_some() && manifest.signer_id.is_none() {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "plugin.manifest.signer_id".to_string(),
+                reason: "signature present without signer_id".to_string(),
+            });
+        }
+        if manifest.signer_id.is_some() && manifest.signature.is_none() {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "plugin.manifest.signature".to_string(),
+                reason: "signer_id present without signature".to_string(),
+            });
+        }
         Ok(manifest)
+    }
+
+    /// 2.7.4: re-serialise the
+    /// manifest with the
+    /// `signature` and `signer_id`
+    /// fields stripped, returning
+    /// the bytes that the signer
+    /// must have signed. We use
+    /// `toml::to_string` (canonical
+    /// TOML form) so the operator
+    /// does not have to worry
+    /// about key ordering /
+    /// whitespace.
+    pub fn canonical_bytes(&self) -> CoreResult<Vec<u8>> {
+        let mut clone = self.clone();
+        clone.signature = None;
+        clone.signer_id = None;
+        let s = toml::to_string(&clone).map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "plugin.manifest.canonical".to_string(),
+            reason: format!("re-serialise: {e}"),
+        })?;
+        Ok(s.into_bytes())
+    }
+
+    /// 2.7.4: verify the Ed25519
+    /// signature against the
+    /// supplied `TrustStore`. Returns
+    /// `Ok(())` if the manifest is
+    /// signed and the signature
+    /// verifies under a known
+    /// signer. Returns `Err` if
+    /// the manifest is unsigned
+    /// (production policy: a
+    /// manifest MUST be signed) or
+    /// if verification fails.
+    pub fn verify_signature(
+        &self,
+        trust: &super::trust_store::TrustStore,
+    ) -> CoreResult<()> {
+        let signature = self.signature.as_deref().ok_or_else(|| {
+            CoreError::ErrSchemaInvalid {
+                path: "plugin.manifest.signature".to_string(),
+                reason: "manifest is unsigned; 2.7.4 requires a signature".to_string(),
+            }
+        })?;
+        let signer_id = self.signer_id.as_deref().ok_or_else(|| {
+            CoreError::ErrSchemaInvalid {
+                path: "plugin.manifest.signer_id".to_string(),
+                reason: "manifest has a signature but no signer_id".to_string(),
+            }
+        })?;
+        let canonical = self.canonical_bytes()?;
+        trust.verify(signer_id, &canonical, signature)
     }
 
     /// Resolve `binary` relative to the

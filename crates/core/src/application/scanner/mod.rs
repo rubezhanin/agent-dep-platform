@@ -809,6 +809,7 @@ pub fn findings_to_sarif(findings: &[Finding]) -> serde_json::Value {
 // ---------------------------------------------------------------------------
 
 pub mod plugin;
+pub mod trust_store;
 
 // ---------------------------------------------------------------------------
 // Tests

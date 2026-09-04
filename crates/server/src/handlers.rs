@@ -570,53 +570,77 @@ pub async fn request_deploy(
     // and we want a 4xx for an unknown target
     // even if the plan would otherwise succeed.
     let env = req.environment.unwrap_or(Environment::Dev);
-    let target_id: Option<i64> = match req.target.as_deref() {
-        None => None,
-        Some(name) => match state.targets.find_by_env_name(env, name).await {
-            Ok(Some(row)) => Some(row.id),
-            Ok(None) => {
-                let _ = state
-                    .audit
-                    .record(
-                        &user.name,
-                        action,
-                        None,
-                        AuditOutcome::Error,
-                        Some(&format!(
-                            "target `{name}` not found in environment `{}`",
-                            env.as_str()
-                        )),
-                    )
-                    .await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "error": format!(
-                            "target `{name}` not found in environment `{}`",
-                            env.as_str()
-                        )
-                    })),
+    // 2.5.3 (ADR-0033 follow-up):
+    // `pending_deploys.target_id` is
+    // now NOT NULL. The legacy
+    // `target: None` path is gone
+    // for `POST /v1/deploys`; the
+    // operator must declare the
+    // target at request time. The
+    // CLI path (`agency deploy
+    // apply --target <name>`) is
+    // updated separately.
+    let target_name = match req.target.as_deref() {
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "target is required (2.5.3: pending_deploys.target_id is NOT NULL). \
+                              Set `target` in the request body."
+                })),
+            )
+                .into_response();
+        }
+        Some(n) => n,
+    };
+    let target_id: Option<i64> = match state
+        .targets
+        .find_by_env_name(env, target_name)
+        .await
+    {
+        Ok(Some(row)) => Some(row.id),
+        Ok(None) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Error,
+                    Some(&format!(
+                        "target `{target_name}` not found in environment `{}`",
+                        env.as_str()
+                    )),
                 )
-                    .into_response();
-            }
-            Err(e) => {
-                let _ = state
-                    .audit
-                    .record(
-                        &user.name,
-                        action,
-                        None,
-                        AuditOutcome::Error,
-                        Some(&format!("target lookup: {e}")),
+                .await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "target `{target_name}` not found in environment `{}`",
+                        env.as_str()
                     )
-                    .await;
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": e.to_string()})),
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            let _ = state
+                .audit
+                .record(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Error,
+                    Some(&format!("target lookup: {e}")),
                 )
-                    .into_response();
-            }
-        },
+                .await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
     };
     match plan::compute_plan(&req.catalog, &req.system_yaml).await {
         Ok(summary) => {

@@ -430,7 +430,49 @@ pub fn extract_frontmatter_pub(text: &str) -> Result<(UpstreamAgentFrontmatter, 
     extract_frontmatter(text)
 }
 
+/// 2.8.1 (ADR-0040): cross-layer glue
+/// for the Git-source path. Lives
+/// here — not in
+/// `infrastructure::git_fetcher` —
+/// because the lower layer must not
+/// depend on `IngestService`. This
+/// function: 1) clones (or
+/// fast-forwards) the working copy
+/// for `source` via the appropriate
+/// `GitFetcher` impl, 2) hands the
+/// resulting path to
+/// `IngestService::ingest_local`, and
+/// 3) patches the synthetic
+/// `commit_sha` from the content
+/// hash to the real Git HEAD SHA
+/// on the returned snapshot.
+///
+/// For `SourceKind::Local`, the fetch
+/// step is skipped; the local path
+/// is passed straight to
+/// `ingest_local`.
+pub fn ingest_source(
+    source: &Source,
+    working_copy_root: &std::path::Path,
+) -> CoreResult<(IngestResult, IngestReport)> {
+    use crate::infrastructure::git_fetcher::{GitFetcher, HttpsFetcher, SshFetcher};
+    let dest = working_copy_root.join(source.id.to_string());
+    let fetch = match &source.kind {
+        crate::domain::source::SourceKind::GitHttps { .. } => {
+            HttpsFetcher.clone_or_update(source, &dest)
+        }
+        crate::domain::source::SourceKind::GitSsh { .. } => {
+            SshFetcher.clone_or_update(source, &dest)
+        }
+        crate::domain::source::SourceKind::Local { .. } => {
+            return IngestService::new().ingest_local(source, None);
+        }
+    }?;
+    let svc = IngestService::new();
+    let (mut result, report) = svc.ingest_local(source, Some(&fetch.working_copy))?;
+    result.snapshot.commit_sha = fetch.commit_sha;
+    Ok((result, report))
+}
+
 #[cfg(test)]
 mod ingest_tests;
-
-pub mod git_fetcher;

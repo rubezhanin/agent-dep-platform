@@ -50,6 +50,15 @@ async-trait = { workspace = true }
 # `sha2` feature for
 # `pkcs1v15::SigningKey<Sha*>`.
 rsa = { workspace = true }
+# 2.7.7.1: ES256/ES384 (ECDSA P-256
+# / P-384) + PS256/PS384/PS512
+# (RSA-PSS) signature verification.
+# The ES algorithms need `p256` and
+# `p384`; PS algorithms use `rsa`'s
+# `pss` module + `sha2`.
+p256 = { workspace = true }
+p384 = { workspace = true }
+signature = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

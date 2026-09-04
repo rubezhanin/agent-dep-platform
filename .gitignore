@@ -17,6 +17,10 @@ dist/
 # Logs
 *.log
 
+# Local scratch / debug output (e.g. `cargo test … 2>&1 | Out-File *.txt`).
+# Keeps the working tree clean between sessions.
+*.txt
+
 # OS
 .DS_Store
 Thumbs.db

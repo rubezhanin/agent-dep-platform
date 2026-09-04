@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use agent_dep_core::application::ingest::git_fetcher::{classify_url, ingest_source};
-use agent_dep_core::application::ingest::IngestService;
+use agent_dep_core::application::ingest::{ingest_source, IngestService};
+use agent_dep_core::infrastructure::git_fetcher::classify_url;
 use agent_dep_core::application::scanner::plugin::{discover_plugins, PluginScanner};
 use agent_dep_core::application::scanner::{
     findings_to_sarif, Finding, RegexScanner, ScanPolicy, Scanner, Severity,

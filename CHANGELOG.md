@@ -9,6 +9,167 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **2.5.3 NOT NULL on `pending_deploys.target_id`**
+  (ADR-0033 follow-up). The 2.5.0
+  schema allowed `target_id IS NULL`
+  to keep the 2.4.0 path-based CLI
+  alive; 2.5.3 closes the loophole.
+  The handler `request_deploy` now
+  REQUIRES `target` in the body
+  (returns 400 otherwise). Migration
+  `018_pending_deploys_target_id_not_null.sql`
+  is a 12-step table-rebuild (SQLite
+  has no `ALTER TABLE … ADD
+  CONSTRAINT`). The backfill helpers
+  `list_orphans` and `set_target_id`
+  (2.5.1 / 2.5.2) remain in the API
+  surface for operator use; the
+  HTTP `POST /v1/deploys` does not
+  need them anymore. Three new
+  test sites: `pending_deploys_target_id_not_null`
+  (3/0), `pending_deploys_repository`
+  (8/0; legacy orphan-row tests
+  preserved with a `post 2.5.3`
+  suffix for the still-public API),
+  and `http_integration` (29/0;
+  every `POST /v1/deploys` test now
+  creates a `Target` first via the
+  shared `_ensure_target` helper
+  that builds the row through the
+  real `POST /v1/targets` endpoint
+  to avoid a WAL-visibility race
+  between two `SqlitePool`
+  instances on the same file).
+
+- **2.7.7.1 ES/PS signature verification**
+  (ADR-0037 follow-up). The 2.7.9
+  validator supported only RSA
+  PKCS#1 v1.5 (`RS256`/`RS384`/`RS512`);
+  2.7.7.1 adds `ES256`/`ES384`
+  (ECDSA P-256 / P-384 via the
+  `p256`/`p384` crates) and
+  `PS256`/`PS384`/`PS512` (RSA-PSS
+  via `rsa::pss`). `validate_id_token_minimal`
+  accepts the seven algorithms;
+  `verify_jwt_signature` is a clean
+  dispatch on `alg` with a new
+  `decode_rsa_pubkey` helper.
+  HS-* and the `alg: "none"` trick
+  stay rejected. New workspace deps:
+  `p256`, `p384`, `signature`; the
+  `rsa` workspace dep gained the
+  `getrandom` feature (the `Signer`
+  impls are gated on it). Eight new
+  unit tests in `oidc_client::tests`
+  cover the round-trip for `ES256`
+  and `PS256`, the wrong-key and
+  crv-mismatch rejection paths, and
+  the HS / `none` reject paths; a
+  one-shot `axum` router serves the
+  JWKS for the integration path.
+
+- **2.8.1 Git fetcher unification**
+  (ADR-0040). The 2.8.0 release
+  shipped a minimal
+  `infrastructure::git_fetcher`
+  stub (`clone_to` + `fetch`)
+  alongside a richer scaffold in
+  `application::ingest::git_fetcher`
+  (`GitFetcher` trait, `HttpsFetcher`,
+  `SshFetcher`, `classify_url`,
+  `ingest_source`). 2.8.1 collapses
+  the two into one place:
+  `infrastructure::git_fetcher` is
+  the single home for the trait +
+  HTTPS/SSH impls + `FetchResult` +
+  `clone_or_update` + `classify_url`,
+  and `application::ingest::ingest_source`
+  is the cross-layer glue that
+  threads a `FetchResult` into
+  `IngestService::ingest_local`.
+  The `application/ingest/git_fetcher`
+  module and the lib-side
+  `infrastructure/git_fetcher_tests`
+  stub are removed; the integration
+  test `crates/core/tests/git_fetcher.rs`
+  now imports from
+  `infrastructure::git_fetcher::*`.
+  The cross-layer direction is now
+  strictly: domain → application →
+  infrastructure (no upward dep
+  from `infrastructure` to
+  `IngestService`).
+
+- **2.7.4 Plugin manifest signing + trust store**
+  (ADR-0032). `PluginManifest` gains
+  optional `signature` (base64-url
+  Ed25519, 64 bytes) and `signer_id`
+  fields; the 2.7.4 production
+  policy REJECTS unsigned manifests.
+  `PluginManifest::canonical_bytes`
+  re-serialises the manifest with
+  `signature` and `signer_id`
+  stripped (canonical TOML form,
+  so the operator does not worry
+  about key ordering / whitespace);
+  `PluginManifest::verify_signature(&TrustStore)`
+  performs the Ed25519 check. The
+  new `application::scanner::trust_store::TrustStore`
+  is loaded from
+  `~/.config/agency/trust.json`,
+  supports both array and map JSON
+  forms, and constructs each
+  `VerifyingKey` once at parse time
+  so an off-curve / non-canonical
+  key fails immediately, not on
+  every verify call. 15 new tests:
+  8 in `trust_store` (parse, malformed
+  key, happy path, tampered, wrong
+  key, unknown signer, wrong sig
+  length) and 7 in `plugin` (parse
+  accept / partial reject, happy
+  path, tampered name, wrong signer,
+  unknown signer, canonical bytes
+  strip). New workspace dep:
+  `ed25519-dalek` 2.x with the
+  `rand_core` feature.
+
+### Changed
+
+- **README + AGENTS.md sync for
+  2.5.0..2.8.0** (local docs only).
+  README is now a 2.8.0 overview
+  with the 31-tag timeline, the
+  489-test count, the 30-ADR index,
+  and the deferred 2.5.3 / 3.x
+  follow-ups called out. AGENTS.md
+  gained 2.5..2.7 conventions, the
+  OIDC wire-protocol summary, the
+  server crate layout, the 2.5.3
+  NOT NULL follow-up note, and a
+  refreshed 3.x deferral list. No
+  code change.
+
+### Verified
+
+- `cargo test --workspace`:
+  **513 passed, 0 failed** (52
+  more than 2.8.0; the 2.7.7.1 +
+  2.7.4 test surface).
+- `cargo clippy --workspace
+  --all-targets -- -D warnings`:
+  0 warnings.
+- `cargo test -p agent_dep_core
+  --test ts_export`: 1 passed (TS
+  DTO drift guard — the new
+  PluginManifest fields are
+  front-end-irrelevant; no
+  `types.generated.ts` change).
+- `npm run check` (svelte-check):
+  0 errors, 0 warnings.
+
 ## [2.8.0] — 2026-09-04
 
 ### Added

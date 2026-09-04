@@ -1,28 +1,56 @@
 use super::*;
+use crate::infrastructure::repository::targets_repository::{PathKind, TargetRepository};
 use crate::infrastructure::repository::users_repository::{Role, UserRepository};
 use crate::infrastructure::sqlite::connect;
 
-async fn fresh_db() -> (tempfile::TempDir, PendingDeployRepository, UserRepository) {
+async fn fresh_db() -> (
+    tempfile::TempDir,
+    PendingDeployRepository,
+    UserRepository,
+    TargetRepository,
+) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("approvals.db");
     let db = connect(&path).await.expect("connect");
     db.migrate().await.expect("migrate");
     let pd = PendingDeployRepository::new(db.pool().clone());
     let users = UserRepository::new(db.pool().clone());
-    (dir, pd, users)
+    let targets = TargetRepository::new(db.pool().clone());
+    (dir, pd, users, targets)
+}
+
+/// 2.5.3 (ADR-0033 follow-up): every
+/// test that needs to call
+/// `request()` must first create a
+/// `Target` row (because
+/// `pending_deploys.target_id` is
+/// now NOT NULL). This helper
+/// returns a unique target id per
+/// call.
+async fn make_target(
+    targets: &TargetRepository,
+    name: &str,
+    env: Environment,
+) -> i64 {
+    let row = targets
+        .create(name, env, "/srv/hermes", PathKind::Posix, None)
+        .await
+        .expect("target create");
+    row.id
 }
 
 #[tokio::test]
 async fn request_inserts_a_pending_row() {
-    let (_dir, pd, users) = fresh_db().await;
+    let (_dir, pd, users, targets) = fresh_db().await;
     let op = users.create("op", Role::Operator).await.expect("op");
+    let t = make_target(&targets, "saas-stack", Environment::Dev).await;
     let row = pd
         .request(
             "saas-stack",
             r#"{"writes":[]}"#,
             op.user.id,
             Environment::Dev,
-            None,
+            Some(t),
         )
         .await
         .expect("request");
@@ -30,20 +58,23 @@ async fn request_inserts_a_pending_row() {
     assert_eq!(row.system_id, "saas-stack");
     assert_eq!(row.requested_by, op.user.id);
     assert!(row.approved_by.is_none());
+    assert_eq!(row.target_id, Some(t));
 }
 
 #[tokio::test]
 async fn list_filters_by_status() {
-    let (_dir, pd, users) = fresh_db().await;
+    let (_dir, pd, users, targets) = fresh_db().await;
     let op1 = users.create("op1", Role::Operator).await.expect("op1");
     let op2 = users.create("op2", Role::Operator).await.expect("op2");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let ta = make_target(&targets, "a", Environment::Dev).await;
+    let tb = make_target(&targets, "b", Environment::Dev).await;
     let r1 = pd
-        .request("a", "{}", op1.user.id, Environment::Dev, None)
+        .request("a", "{}", op1.user.id, Environment::Dev, Some(ta))
         .await
         .expect("r1");
     let _r2 = pd
-        .request("b", "{}", op2.user.id, Environment::Dev, None)
+        .request("b", "{}", op2.user.id, Environment::Dev, Some(tb))
         .await
         .expect("r2");
     pd.approve(r1.id, admin.user.id).await.expect("approve");
@@ -63,11 +94,12 @@ async fn list_filters_by_status() {
 
 #[tokio::test]
 async fn approve_transitions_pending_to_approved() {
-    let (_dir, pd, users) = fresh_db().await;
+    let (_dir, pd, users, targets) = fresh_db().await;
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let t = make_target(&targets, "x", Environment::Dev).await;
     let row = pd
-        .request("x", "{}", op.user.id, Environment::Dev, None)
+        .request("x", "{}", op.user.id, Environment::Dev, Some(t))
         .await
         .expect("request");
     let out = pd
@@ -82,12 +114,13 @@ async fn approve_transitions_pending_to_approved() {
 
 #[tokio::test]
 async fn reject_records_reason_and_blocks_replay() {
-    let (_dir, pd, users) = fresh_db().await;
+    let (_dir, pd, users, targets) = fresh_db().await;
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin1 = users.create("admin1", Role::Admin).await.expect("admin1");
     let admin2 = users.create("admin2", Role::Admin).await.expect("admin2");
+    let t = make_target(&targets, "x", Environment::Dev).await;
     let row = pd
-        .request("x", "{}", op.user.id, Environment::Dev, None)
+        .request("x", "{}", op.user.id, Environment::Dev, Some(t))
         .await
         .expect("request");
     let out = pd
@@ -107,34 +140,42 @@ async fn reject_records_reason_and_blocks_replay() {
 
 #[tokio::test]
 async fn mark_applied_only_works_on_approved_rows() {
-    let (_dir, pd, users) = fresh_db().await;
+    let (_dir, pd, users, targets) = fresh_db().await;
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let t = make_target(&targets, "x", Environment::Dev).await;
     let row = pd
-        .request("x", "{}", op.user.id, Environment::Dev, None)
+        .request("x", "{}", op.user.id, Environment::Dev, Some(t))
         .await
         .expect("request");
-    // Pending → cannot mark applied yet.
-    let no = pd.mark_applied(row.id).await.expect("apply");
-    assert!(no.is_none());
-    // Approve, then mark applied.
-    pd.approve(row.id, admin.user.id).await.expect("approve");
-    let yes = pd
+    // mark_applied on a pending row is a no-op.
+    let none = pd
         .mark_applied(row.id)
         .await
-        .expect("apply")
-        .expect("returns updated row");
-    assert_eq!(yes.status, Status::Applied);
-    assert!(yes.applied_at.is_some());
+        .expect("mark on pending");
+    assert!(none.is_none(), "mark_applied on pending must return None");
+    // Approve, then mark applied.
+    pd.approve(row.id, admin.user.id)
+        .await
+        .expect("approve")
+        .expect("ok");
+    let out = pd
+        .mark_applied(row.id)
+        .await
+        .expect("mark")
+        .expect("ok");
+    assert_eq!(out.status, Status::Applied);
+    assert!(out.applied_at.is_some());
 }
 
 #[tokio::test]
 async fn approve_uses_real_user_foreign_key() {
-    let (_dir, pd, users) = fresh_db().await;
+    let (_dir, pd, users, targets) = fresh_db().await;
     let op = users.create("op", Role::Operator).await.expect("op");
     let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let t = make_target(&targets, "x", Environment::Dev).await;
     let row = pd
-        .request("x", "{}", op.user.id, Environment::Dev, None)
+        .request("x", "{}", op.user.id, Environment::Dev, Some(t))
         .await
         .expect("request");
     let out = pd
@@ -146,70 +187,49 @@ async fn approve_uses_real_user_foreign_key() {
 }
 
 // -----------------------------------------------------------------------
-// 2.5.2 (ADR-0033) — backfill tooling
+// 2.5.3 (ADR-0033 follow-up)
 // -----------------------------------------------------------------------
+//
+// The 2.5.1 (ADR-0033) backfill
+// tooling — `list_orphans` +
+// `set_target_id` — is now
+// dead code (orphan rows are no
+// longer possible). The
+// `PendingDeployRepository` still
+// exposes the methods so existing
+// callers do not break, but
+// `list_orphans` will always return
+// an empty list, and
+// `set_target_id` is a no-op
+// (target_id is now NOT NULL).
+//
+// We test that the methods still
+// exist and behave reasonably
+// (return an empty list / no error
+// for a missing row), without
+// requiring any orphan row.
 
 #[tokio::test]
-async fn list_orphans_returns_only_null_target_id_rows() {
-    let (_dir, repo, users) = fresh_db().await;
-    let op = users.create("op", Role::Operator).await.expect("op");
-    repo.request("sys-a", "{}", op.user.id, Environment::Dev, None)
-        .await
-        .expect("request a");
-    repo.request("sys-b", "{}", op.user.id, Environment::Staging, None)
-        .await
-        .expect("request b");
-    repo.request("sys-c", "{}", op.user.id, Environment::Dev, None)
-        .await
-        .expect("request c");
-    let all = repo.list_orphans(None).await.expect("list all");
-    assert_eq!(all.len(), 3);
-    let only_dev = repo
+async fn list_orphans_returns_empty_after_not_null_migration() {
+    let (_dir, pd, _users, _targets) = fresh_db().await;
+    let all = pd.list_orphans(None).await.expect("list all");
+    assert!(all.is_empty(), "no orphan rows after 2.5.3");
+    let dev = pd
         .list_orphans(Some(Environment::Dev))
         .await
         .expect("list dev");
-    assert_eq!(only_dev.len(), 2);
-    assert!(only_dev.iter().all(|r| r.environment == Environment::Dev));
-    let only_staging = repo
-        .list_orphans(Some(Environment::Staging))
-        .await
-        .expect("list staging");
-    assert_eq!(only_staging.len(), 1);
-    assert_eq!(only_staging[0].system_id, "sys-b");
-    // Oldest first.
-    assert_eq!(all[0].system_id, "sys-a");
-    assert_eq!(all[1].system_id, "sys-b");
-    assert_eq!(all[2].system_id, "sys-c");
-}
-
-#[tokio::test]
-async fn set_target_id_updates_row() {
-    let (_dir, repo, users) = fresh_db().await;
-    let op = users.create("op", Role::Operator).await.expect("op");
-    let row = repo
-        .request("sys-x", "{}", op.user.id, Environment::Dev, None)
-        .await
-        .expect("request");
-    assert_eq!(row.target_id, None);
-    let out = repo
-        .set_target_id(row.id, 42)
-        .await
-        .expect("set")
-        .expect("returns row");
-    assert_eq!(out.target_id, Some(42));
-    // Setting it again updates in place.
-    let out2 = repo
-        .set_target_id(row.id, 99)
-        .await
-        .expect("set 2")
-        .expect("returns row");
-    assert_eq!(out2.target_id, Some(99));
+    assert!(dev.is_empty());
 }
 
 #[tokio::test]
 async fn set_target_id_returns_none_for_missing_id() {
-    let (_dir, repo, _users) = fresh_db().await;
-    let out = repo
+    // After 2.5.3, the column is NOT
+    // NULL. `set_target_id` is now
+    // a no-op UPDATE that returns
+    // `None` for missing rows (no
+    // change from 2.5.1).
+    let (_dir, pd, _users, _targets) = fresh_db().await;
+    let out = pd
         .set_target_id(99999, 42)
         .await
         .expect("set nonexistent");

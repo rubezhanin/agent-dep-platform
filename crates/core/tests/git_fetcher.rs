@@ -8,10 +8,11 @@
 //! an end-to-end SSH test would need a live `ssh-agent` and is
 //! opt-in via `AGENCY_SSH_TEST=1` (skipped in CI).
 
-use agent_dep_core::application::ingest::git_fetcher::{
-    classify_url, ingest_source, GitFetcher, HttpsFetcher, SshFetcher,
-};
+use agent_dep_core::application::ingest::ingest_source;
 use agent_dep_core::domain::source::{Source, SourceKind};
+use agent_dep_core::infrastructure::git_fetcher::{
+    classify_url, GitFetcher, HttpsFetcher, SshFetcher,
+};
 use git2::Repository;
 use std::fs;
 use std::path::Path;
