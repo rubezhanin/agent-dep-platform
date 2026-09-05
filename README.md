@@ -42,6 +42,39 @@ cargo test --workspace
 .\scripts\ci.ps1
 ```
 
+## Deploy
+
+`agency-server` (the axum HTTP API) is a single static
+binary that runs on any 64-bit Linux VPS. The Tauri
+desktop app stays on operator workstations; the CLI
+(`agency`) ships as a separate binary.
+
+The end-to-end VPS walkthrough — Docker Compose + Caddy
+TLS + caddy-managed `Let's Encrypt`, plus a parallel
+`systemd`-only path — lives in **[`docs/DEPLOY.md`](docs/DEPLOY.md)**.
+
+Minimal Docker Compose start:
+
+```bash
+git clone https://github.com/<owner>/agent-dep-platform.git
+cd agent-dep-platform
+export AGENCY_DOMAIN=agency.example.com
+echo 'AGENCY_VAULT_PASSPHRASE=replace-me' > agency.env
+set -a; source agency.env; set +a
+docker compose up -d --build
+docker compose logs -f agency-server   # first-boot: copy the admin token
+curl -kfsS -H "Authorization: Bearer <token>" https://${AGENCY_DOMAIN}/v1/audit
+```
+
+The `Dockerfile`, `docker-compose.yml`, `Caddyfile`, and
+`packaging/systemd/agency-server.service` are all in the
+repo root and tracked.
+
+Hermes is **already on the VPS** (per the 2.9.0 deploy
+checklist); the server discovers it through
+`which("hermes")` and the optional `HERMES_HOME` env
+var. Nothing extra to install.
+
 ## Layout
 
 ```

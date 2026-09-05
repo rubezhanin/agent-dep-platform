@@ -464,6 +464,36 @@ pub fn parse_port(args: &[String]) -> u16 {
     0
 }
 
+/// 2.9.0: read the bind IP from the
+/// CLI (`--bind <ip>`) or the
+/// `AGENCY_BIND_IP` env var. Default
+/// is `0.0.0.0` (all interfaces) so
+/// the binary is VPS-ready out of
+/// the box. Integration tests and
+/// the dev loop override with
+/// `--bind 127.0.0.1`.
+pub fn parse_bind(args: &[String]) -> String {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--bind" {
+            if let Some(v) = args.get(i + 1) {
+                let trimmed = v.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+        i += 1;
+    }
+    if let Ok(v) = std::env::var("AGENCY_BIND_IP") {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    "0.0.0.0".to_string()
+}
+
 pub async fn run(addr: SocketAddr) -> Result<()> {
     let state = boot_default_state().await?;
     let app = router(state);

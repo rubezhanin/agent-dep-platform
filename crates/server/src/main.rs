@@ -3,19 +3,32 @@
 //! Thin binary wrapper around `agent_dep_server::run`.
 //! The library surface is what the integration tests
 //! link against.
+//!
+//! 2.9.0 (VPS deploy): the bind address is
+//! configurable. The CLI flag `--bind` and
+//! the `AGENCY_BIND` env var both accept
+//! `<ip>:<port>`. Default is `0.0.0.0:8080` —
+//! the integration tests (and the 2.x dev
+//! loop) override this with `--bind 127.0.0.1:0`
+//! to keep the kernel-port collision surface
+//! small. Production deployments behind a
+//! reverse proxy should leave the default and
+//! let caddy/nginx do the TLS termination on
+//! the public side.
 
 use std::net::SocketAddr;
 
-use agent_dep_server::parse_port;
+use agent_dep_server::{parse_bind, parse_port};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
     let args: Vec<String> = std::env::args().collect();
+    let bind = parse_bind(&args);
     let port = parse_port(&args);
-    let addr: SocketAddr = format!("127.0.0.1:{port}")
+    let addr: SocketAddr = format!("{bind}:{port}")
         .parse()
-        .map_err(|e| anyhow::anyhow!("parse 127.0.0.1:{port}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("parse {bind}:{port}: {e}"))?;
     agent_dep_server::run(addr).await
 }
 

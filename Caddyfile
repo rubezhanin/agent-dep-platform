@@ -1,0 +1,81 @@
+# Caddyfile — agency-server reverse proxy + TLS.
+#
+# Used by `docker-compose.yml`. The
+# `AGENCY_DOMAIN` env is set in the
+# compose file; on first run, Caddy
+# will issue a self-signed certificate
+# for that domain. To get a real
+# Let's Encrypt cert, point
+# `AGENCY_DOMAIN` at a public hostname
+# and open ports 80 + 443.
+
+{$AGENCY_DOMAIN:localhost} {
+    # 1.1 — forward the real
+    # client IP + scheme to the
+    # upstream so the audit log
+    # captures them.
+    reverse_proxy agency-server:8080 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # 1.2 — health probe. The
+    # `agency-server` `GET /v1/health`
+    # is unauthenticated and cheap
+    # (a single SQLite read).
+    log
+
+    # 1.3 — tighten the response
+    # surface. None of these are
+    # critical for an internal
+    # tool, but they keep
+    # opportunistic scanners from
+    # harvesting the response
+    # banner.
+    header {
+        # Hide the upstream server
+        # identity.
+        Server ""
+        # Disable MIME sniffing.
+        X-Content-Type-Options "nosniff"
+        # No framing — the SPA is
+        # shipped as a desktop app
+        # (Tauri) and the API
+        # responses are JSON.
+        X-Frame-Options "DENY"
+        # HSTS — only meaningful when
+        # the cert is real (Let's
+        # Encrypt). Harmless on a
+        # self-signed cert.
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        # No referrer leakage.
+        Referrer-Policy "no-referrer"
+        # Lock down the API
+        # capabilities. The SPA is
+        # the only legitimate
+        # consumer; the operator
+        # drives `agency` over
+        # loopback or the private
+        # network.
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        # Content-Security-Policy is
+        # irrelevant for the JSON
+        # API (no inline HTML).
+        # Kept here for the SPA
+        # side of the same origin
+        # when the operator later
+        # chooses to host the SPA
+        # from this server too.
+        Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+    }
+
+    # 1.4 — request body cap. The
+    # largest legitimate body is
+    # a `POST /v1/deploys` plan
+    # (a few KB of YAML); 2 MiB is
+    # plenty of headroom.
+    request_body {
+        max_size 2MB
+    }
+}

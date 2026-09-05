@@ -1,0 +1,162 @@
+# docker-compose.yml — agency-server production stack.
+#
+# Brings up two services on a private
+# `agency` network:
+#
+#   agency-server  (distroless, port 8080)
+#     - persistent SQLite at /var/lib/agency/data/agency.db
+#     - admin token at /var/lib/agency/server.token (auto-created on first boot)
+#     - audit log inside the same SQLite file
+#
+#   caddy  (TLS terminator + reverse proxy)
+#     - reads TLS certs from `./caddy_data` / `./caddy_config`
+#     - on first start with no cert present, Caddy issues
+#       a self-signed cert so HTTPS works out of the box.
+#       Replace with a real ACME hostname (e.g. agency.example.com)
+#       to get Let's Encrypt automatically.
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f agency-server
+#   # first-boot: copy the admin token from the journal
+#   TOKEN=$(docker compose exec -T agency-server cat /var/lib/agency/server.token)
+#   curl -s -H "Authorization: Bearer $TOKEN" https://localhost/v1/audit
+#
+# See `docs/DEPLOY.md` for the full walkthrough and
+# for the equivalent systemd-only path (no Docker).
+
+services:
+  agency-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agency-server:dev
+    container_name: agency-server
+    restart: unless-stopped
+    # Drop capabilities, mount only
+    # the data dir, no network
+    # isolation between the two
+    # services (caddy talks to
+    # agency-server on the private
+    # network). The compose `user:`
+    # override is a belt-and-braces
+    # on top of the distroless
+    # `nonroot`.
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    environment:
+      # Persistent state lives
+      # in the named volume
+      # `agency-data`. The
+      # container-internal path
+      # is what the binary
+      # resolves; do NOT
+      # change `AGENCY_SERVER_DATA_DIR`
+      # without also updating the
+      # volume mount.
+      AGENCY_SERVER_DATA_DIR: /var/lib/agency
+      # Bind 0.0.0.0:8080 inside
+      # the container. Caddy
+      # reaches it on the
+      # private network.
+      AGENCY_BIND_IP: 0.0.0.0
+      AGENCY_BIND_PORT: "8080"
+      # 2.3.0 vault passphrase. The
+      # compose example uses a
+      # placeholder — replace with
+      # `echo -n "..." | docker
+      # secret create agency_vault
+      # _ -` and pass `AGENCY_VAULT_PASSPHRASE_FILE=/run/secrets/agency_vault`
+      # in production.
+      AGENCY_VAULT_PASSPHRASE: ${AGENCY_VAULT_PASSPHRASE:-change-me-please}
+      # 2.7.7 (ADR-0035): use the
+      # real OIDC client by
+      # default. Override to `1`
+      # only for the dev loop where
+      # you do not yet have a real
+      # IdP wired up.
+      AGENCY_OIDC_MOCK: ${AGENCY_OIDC_MOCK:-0}
+      # OIDC issuer / client / secret
+      # — required when
+      # AGENCY_OIDC_MOCK=0. Pull
+      # from the host env so secrets
+      # never appear in this file.
+      AGENCY_OIDC_ISSUER: ${AGENCY_OIDC_ISSUER:-}
+      AGENCY_OIDC_CLIENT_ID: ${AGENCY_OIDC_CLIENT_ID:-}
+      AGENCY_OIDC_CLIENT_SECRET: ${AGENCY_OIDC_CLIENT_SECRET:-}
+      AGENCY_OIDC_REDIRECT_URI: ${AGENCY_OIDC_REDIRECT_URI:-}
+      # 2.7.8 (ADR-0036): the
+      # operator-supplied trusted
+      # JWT signing keys (PEM or
+      # JWKS URL). Empty = the
+      # server discovers via
+      # AGENCY_OIDC_JWKS_URL.
+      AGENCY_OIDC_JWKS_URL: ${AGENCY_OIDC_JWKS_URL:-}
+      # 2.7.4 (ADR-0032): operator-
+      # supplied trust store for
+      # signed plugin manifests.
+      AGENCY_PLUGIN_TRUST_STORE: /etc/agency/trust.json
+    volumes:
+      - agency-data:/var/lib/agency
+      # Operator-supplied trust
+      # store for plugin signing.
+      # Read-only. Mount a real
+      # file from the host here.
+      - ./etc/trust.json:/etc/agency/trust.json:ro
+    networks:
+      - agency
+    healthcheck:
+      # distroless has no shell /
+      # wget — use caddy to probe
+      # the upstream instead (see
+      # `caddy` service). The
+      # healthcheck on this side
+      # only verifies the process
+      # is alive; the real check
+      # is "caddy can reach us".
+      test: ["CMD", "/usr/local/bin/agency-server", "--help"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: agency-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Caddy v2 picks up the
+      # `domain` from this env
+      # when the Caddyfile uses
+      # `{env.AGENCY_DOMAIN}`.
+      AGENCY_DOMAIN: ${AGENCY_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - agency
+    depends_on:
+      - agency-server
+
+volumes:
+  agency-data:
+    # SQLite state + admin token.
+    # Back this up with the same
+    # cadence as any other DB.
+  caddy_data:
+  caddy_config:
+
+networks:
+  agency:
+    driver: bridge

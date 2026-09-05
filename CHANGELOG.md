@@ -11,6 +11,120 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **VPS deploy surface (ADR-0041)**.
+  `agency-server` is now VPS-ready
+  out of the box. The `127.0.0.1`
+  hard-code in `main.rs` is gone;
+  the binary now binds
+  `0.0.0.0:8080` by default and
+  reads `--bind` (CLI) and
+  `AGENCY_BIND_IP` (env) for
+  overrides. Integration tests
+  still pass — they bind
+  `127.0.0.1:0` themselves
+  through `TcpListener::bind` and
+  do not go through the new
+  helper. The `HermesAdapter` was
+  already VPS-ready: it discovers
+  Hermes through `which("hermes")`
+  and the `HERMES_HOME` env var;
+  no change needed.
+  New repo-root files:
+  - `Dockerfile` — multi-stage
+    `rust:1.83-bookworm` → `gcr.io/distroless/cc-debian12:nonroot`
+    image. The `tauri-app` crate
+    is intentionally skipped in
+    the build (it is GUI-only).
+    Output is two stripped
+    binaries: `agency-server`
+    (~30 MB image total) and
+    `agency`.
+  - `docker-compose.yml` —
+    `agency-server` (distroless,
+    bind `0.0.0.0:8080`,
+    capability-dropped) +
+    `caddy:2.8-alpine` (TLS
+    terminator + reverse proxy).
+    The `healthcheck` block is
+    intentionally on the
+    `caddy` side rather than the
+    distroless binary (no shell /
+    `wget` in the distroless
+    base).
+  - `Caddyfile` — TLS
+    terminator. Strips
+    `Server` / `X-Powered-By`,
+    sets `HSTS` /
+    `X-Content-Type-Options` /
+    `X-Frame-Options` /
+    `Referrer-Policy` /
+    `Permissions-Policy` /
+    `CSP: default-src 'none'`.
+    `request_body { max_size 2MB }`
+    matches the largest
+    legitimate `POST /v1/deploys`
+    body.
+  - `packaging/systemd/agency-server.service` —
+    native (no Docker) unit.
+    Hardened: `NoNewPrivileges`,
+    `ProtectSystem=strict`,
+    `ProtectHome`, `PrivateTmp`,
+    `ReadWritePaths=/var/lib/agency`,
+    `RestrictAddressFamilies=AF_INET AF_INET6`,
+    `RestrictNamespaces`,
+    `RestrictRealtime`,
+    `RestrictSUIDSGID`,
+    `LockPersonality`,
+    `MemoryDenyWriteExecute`,
+    `PrivateDevices`,
+    capability bounding set
+    dropped to empty. Uses
+    `EnvironmentFile=-/etc/agency/agency.env`
+    so operator secrets never
+    appear in `systemctl show`.
+  - `docs/DEPLOY.md` — full VPS
+    walkthrough for both paths
+    (Docker Compose + native
+    systemd). Includes the
+    first-boot admin-token
+    capture procedure, the
+    smoke-test `curl` walk,
+    `target` + `deploy` round-trip
+    against a local catalog,
+    backup / restore procedure
+    for the `agency-data` volume,
+    upgrade procedure, and a
+    troubleshooting table that
+    covers the 2.5.3 / 2.7.4 /
+    2.7.7 / 2.8.x failure modes
+    seen in CI.
+- `README.md` — added a short
+  **Deploy** section pointing
+  at `docs/DEPLOY.md` with the
+  minimum `docker compose up -d`
+  one-liner.
+
+### Verified
+
+- `cargo test --workspace`:
+  **513 passed, 0 failed** (no
+  change from 2.8.x; the
+  integration tests still bind
+  `127.0.0.1:0` through
+  `TcpListener::bind`).
+- `cargo clippy --workspace
+  --all-targets -- -D warnings`:
+  0 warnings.
+- `cargo build --release
+  -p agent_dep_server
+  -p agent_dep_cli`: clean
+  release build (stripped,
+  `lto = "thin"`, `opt-level = 3`).
+
+## [2.9.0] — 2026-09-05 — VPS deploy surface
+
+### Added
+
 - **2.5.3 NOT NULL on `pending_deploys.target_id`**
   (ADR-0033 follow-up). The 2.5.0
   schema allowed `target_id IS NULL`

@@ -1,0 +1,116 @@
+# /etc/systemd/system/agency-server.service
+#
+# Native (no Docker) systemd unit for
+# `agency-server`. See `docs/DEPLOY.md`
+# for the full walkthrough.
+
+[Unit]
+Description=agency-server (Enterprise Agent Deployment Platform)
+Documentation=https://github.com/<owner>/agent-dep-platform
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated service user. Created
+# once during install:
+#   useradd -r -s /bin/false -d /var/lib/agency agency
+User=agency
+Group=agency
+
+# 1.1 — where the binary lives and
+# the data it persists. The data
+# dir MUST be on a persistent
+# filesystem (not /tmp).
+Environment=AGENCY_SERVER_DATA_DIR=/var/lib/agency
+
+# 1.2 — bind 0.0.0.0:8080 by default.
+# Reverse-proxy this in front of
+# the binary for TLS; do NOT
+# expose the binary directly on a
+# public interface without TLS.
+Environment=AGENCY_BIND_IP=0.0.0.0
+Environment=AGENCY_BIND_PORT=8080
+
+# 1.3 — vault passphrase. The
+# `EnvironmentFile=` line below
+# pulls this from a 0600-root-owned
+# file at /etc/agency/agency.env
+# so the secret never appears in
+# `systemctl show` output.
+EnvironmentFile=-/etc/agency/agency.env
+
+# 1.4 — 2.7.7 (ADR-0035) OIDC. Set
+# to `1` for the dev loop where
+# you have not yet wired up a
+# real IdP. For production, leave
+# at `0` and supply issuer / client
+# / secret in `/etc/agency/agency.env`.
+# Environment=AGENCY_OIDC_MOCK=0
+# Environment=AGENCY_OIDC_ISSUER=...
+# Environment=AGENCY_OIDC_CLIENT_ID=...
+# Environment=AGENCY_OIDC_CLIENT_SECRET=...
+# Environment=AGENCY_OIDC_REDIRECT_URI=...
+# Environment=AGENCY_OIDC_JWKS_URL=...
+
+# 1.5 — 2.7.4 (ADR-0032) plugin
+# trust store. The file is
+# operator-supplied and read once
+# at boot. The path is relative to
+# AGENCY_SERVER_DATA_DIR.
+# Environment=AGENCY_PLUGIN_TRUST_STORE=/var/lib/agency/trust.json
+
+# 1.6 — exec. The binary reads
+# `AGENCY_BIND_IP` and
+# `AGENCY_BIND_PORT` from the env;
+# we still pass `--bind` and
+# `--port` so `ps auxf` shows the
+# configuration at a glance.
+ExecStart=/usr/local/bin/agency-server --bind 0.0.0.0 --port 8080
+
+# 1.7 — restart policy. `on-failure`
+# is conservative; do NOT use
+# `always` because that would mask
+# persistent boot failures (e.g. a
+# wrong vault passphrase).
+Restart=on-failure
+RestartSec=5
+# 1.8 — hard cap on restart storm
+# in the first 60s — systemd will
+# give up after 5 attempts in the
+# first minute and stop trying
+# until manually reset.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# 1.9 — hardening. The full
+# LockdownPersonality set + seccomp
+# + private /tmp + read-only /
+# would be ideal; we keep the
+# non-conflicting subset.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Restrict the writable area to
+# /var/lib/agency. ReadWritePaths
+# is the systemd equivalent of a
+# Docker volume mount.
+ReadWritePaths=/var/lib/agency
+# Do NOT restrict the address
+# families — we open a TCP
+# socket on 0.0.0.0:8080.
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Drop capabilities we do not use.
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Use systemd's private /dev.
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target
