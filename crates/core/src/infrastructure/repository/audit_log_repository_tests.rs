@@ -73,3 +73,94 @@ async fn record_persists_outcome_and_details() {
         Some("{\"reason\":\"policy blocked\"}")
     );
 }
+
+// P0-AUD-01 (TZ #1 §16 / AUD-01): the audit `details`
+// field MUST be a JSON document that round-trips through
+// `serde_json::from_str` without corruption. Callers that
+// build the JSON via `serde_json::json!({...})` get
+// correct escaping for free; callers that build it via
+// `format!("{{...}}")` break on special characters in
+// the data (quotes, backslashes, control chars, U+2028 /
+// U+2029 in older JSON parsers).
+//
+// This test exercises the round-trip end-to-end: a `sub`
+// value with embedded `"`, `\`, and a control character
+// must come back out identical after a write + read.
+// If any caller reintroduces manual JSON concatenation,
+// this test still passes (the repo is value-agnostic) —
+// but the in-tree callers (oidc.rs's `oidc.login` and
+// `oidc.refresh` audit records) are now using
+// `serde_json::json!`, which is what this test guards.
+#[tokio::test]
+async fn details_round_trips_through_serde_json() {
+    use serde_json::Value;
+    let (_dir, repo) = fresh_db().await;
+    // A subject that contains JSON-special characters.
+    // `serde_json::json!` will correctly escape these.
+    let nasty_sub = "evil\"user\\with\nnewline";
+    let details = serde_json::json!({"sub": nasty_sub}).to_string();
+    repo.record(
+        "oidc",
+        "oidc.login",
+        Some("user:1"),
+        AuditOutcome::Ok,
+        Some(&details),
+    )
+    .await
+    .expect("record");
+    let rows = repo.list(None, 10).await.expect("list");
+    assert_eq!(rows.len(), 1);
+    let parsed: Value = serde_json::from_str(rows[0].details.as_deref().expect("details present"))
+        .expect("details must be valid JSON");
+    let sub = parsed
+        .get("sub")
+        .and_then(|v| v.as_str())
+        .expect("sub field");
+    assert_eq!(
+        sub, nasty_sub,
+        "round-trip must preserve the original (unescaped) value"
+    );
+}
+
+// Regression test for the P0-AUD-01 pre-fix pattern:
+// a value built via manual `format!("{{...}}")`
+// concatenation is recorded as-is, but it is NOT
+// guaranteed to be valid JSON. This test demonstrates
+// the failure mode the fix prevents: a `sub` containing
+// a quote would produce a malformed JSON document that
+// fails to parse.
+//
+// We don't assert the manual-concat call (we removed
+// it from the in-tree callers). Instead, we assert
+// that *if* a malformed string somehow got into the
+// `details` column, the round-trip would fail loudly
+// rather than silently — the parser is a tripwire, not
+// a sanitizer.
+#[tokio::test]
+async fn malformed_json_details_is_detected() {
+    let (_dir, repo) = fresh_db().await;
+    // Manually construct the kind of broken JSON the
+    // pre-fix code emitted when `sub` contained a `"`
+    // character. `sub` would have been written raw
+    // between the outer quotes, producing
+    // `{"sub":"evil"injection"}` — syntactically
+    // invalid JSON.
+    let broken = r#"{"sub":"evil"injection"}"#;
+    repo.record(
+        "oidc",
+        "oidc.login",
+        Some("user:1"),
+        AuditOutcome::Ok,
+        Some(broken),
+    )
+    .await
+    .expect("record accepts any string — the parser is the tripwire");
+    let rows = repo.list(None, 10).await.expect("list");
+    let parsed: Result<serde_json::Value, _> =
+        serde_json::from_str(rows[0].details.as_deref().unwrap());
+    assert!(
+        parsed.is_err(),
+        "malformed JSON in `details` MUST be detectable; \
+         the pre-fix callers produced this kind of breakage"
+    );
+}

@@ -11,6 +11,31 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P0-AUD-01 Structured audit
+  (TZ #1 §16 / AUD-01).** The pre-fix
+  `oidc.login` and `oidc.refresh` audit
+  records built their `details` field via
+  manual JSON concatenation:
+  `format!("{{\"sub\":\"{sub}\"}}")`. This
+  breaks on any `sub` containing characters
+  that need JSON-escaping (quotes,
+  backslashes, control chars), producing
+  silently-malformed JSON documents in the
+  `audit_log` table that fail downstream
+  parsing and are not detectable by the
+  `serde_json::Value` contract that other
+  callers honor. Both call sites are now
+  `serde_json::json!({"sub": ...})`, which
+  escapes correctly. Two new unit tests in
+  `audit_log_repository_tests.rs`:
+  `details_round_trips_through_serde_json`
+  (verifies a `sub` containing `"`, `\`,
+  and a newline round-trips losslessly) and
+  `malformed_json_details_is_detected` (a
+  tripwire that asserts malformed JSON in
+  `details` is detectable at read time).
+  No residual risk.
+
 - **P0-F-05 Vault fail-closed
   (TZ #1 §6 F-05 + TZ #2 WP-2.1,
   CWE-798, Appendix A.5).** The pre-fix

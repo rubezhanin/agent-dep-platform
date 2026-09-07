@@ -36,6 +36,7 @@
 | Date | Gate | Verdict | Reviewer | Notes |
 |---|---|---|---|---|
 | 2026-09-07 | Phase 0 → Phase 1 (partial: P0-F-05 only) | PASS-WITH-NOTES | self | Phase 0 Foundation complete (ADR-0043 ratified, 9 foundation files, 114+11+10=135 active tests). P0-F-05 closed (RR-001). 9 of 10 P0 still open. Continue Phase 1. |
+| 2026-09-07 | P0-AUD-01 closed | PASS | self | 2 manual JSON concat call sites in `oidc.rs` (login + refresh) replaced with `serde_json::json!`. 2 new unit tests in `audit_log_repository_tests.rs` (round-trip + malformed-tripwire). 8 of 10 P0 still open. |
 
 ### 2.2. ADR reviews
 

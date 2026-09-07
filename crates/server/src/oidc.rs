@@ -202,21 +202,14 @@ pub async fn handle_login(state: &ServerState) -> CoreResult<(String, String)> {
     // work.
     state
         .oidc_pending
-        .insert(
-            &state_token,
-            &pkce,
-            &nonce,
-            chrono::Utc::now().timestamp(),
-        )
+        .insert(&state_token, &pkce, &nonce, chrono::Utc::now().timestamp())
         .await?;
     // 2.7.7 (ADR-0035): delegate URL
     // assembly to the configured
     // `OidcClient` (real or mock).
-    let authorize_url = state.oidc_client.authorize_url(
-        &state_token,
-        &code_challenge,
-        &nonce,
-    )?;
+    let authorize_url = state
+        .oidc_client
+        .authorize_url(&state_token, &code_challenge, &nonce)?;
     Ok((authorize_url, state_token))
 }
 
@@ -331,7 +324,17 @@ pub async fn provision_user_from_claims(
             "oidc.login",
             Some(&format!("user:{}", user.id)),
             AuditOutcome::Ok,
-            Some(&format!("{{\"sub\":\"{sub}\"}}")),
+            // P0-AUD-01 (TZ #1 §16 / AUD-01):
+            // structured audit details via
+            // `serde_json::json!` instead of
+            // manual `format!("{{...}}")` JSON
+            // concatenation. Manual concatenation
+            // breaks if `sub` contains characters
+            // that need JSON-escaping (quotes,
+            // backslashes, control chars), and
+            // produces silently-malformed rows
+            // that fail downstream parsing.
+            Some(&serde_json::json!({"sub": sub}).to_string()),
         )
         .await;
     Ok(OidcCallbackResult {
@@ -571,11 +574,7 @@ pub async fn refresh_handler(
     };
     let new_local_token = generate_token();
     let new_hash = sha256_hex(new_local_token.as_bytes());
-    if let Err(e) = state
-        .users
-        .store_token_hash(user.id, &new_hash)
-        .await
-    {
+    if let Err(e) = state.users.store_token_hash(user.id, &new_hash).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("store token: {e}")})),
@@ -601,7 +600,13 @@ pub async fn refresh_handler(
             "oidc.refresh",
             Some(&format!("user:{}", user.id)),
             AuditOutcome::Ok,
-            Some(&format!("{{\"sub\":\"{}\"}}", refreshed.claims.sub)),
+            // P0-AUD-01 (TZ #1 §16 / AUD-01):
+            // structured audit details via
+            // `serde_json::json!` instead of
+            // manual JSON concatenation. See
+            // the matching fix in `oidc.login`
+            // above for the full rationale.
+            Some(&serde_json::json!({"sub": refreshed.claims.sub}).to_string()),
         )
         .await;
     (
@@ -682,9 +687,7 @@ pub async fn logout_handler(
 /// when the IdP doesn't publish one.
 async fn end_session_url_for(state: &ServerState) -> Option<String> {
     let any: &dyn std::any::Any = state.oidc_client.as_any();
-    if let Some(real) =
-        any.downcast_ref::<crate::oidc_client::RealOidcClient>()
-    {
+    if let Some(real) = any.downcast_ref::<crate::oidc_client::RealOidcClient>() {
         if let Ok(Some(url)) = real.end_session_url_async().await {
             return Some(url);
         }
