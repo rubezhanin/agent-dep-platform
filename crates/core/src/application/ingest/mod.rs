@@ -451,11 +451,43 @@ pub fn extract_frontmatter_pub(text: &str) -> Result<(UpstreamAgentFrontmatter, 
 /// step is skipped; the local path
 /// is passed straight to
 /// `ingest_local`.
-pub fn ingest_source(
+///
+/// 2.11.0 (P1-G-01 / P1-G-02, CWE-918):
+/// the URL is checked against the
+/// supplied `UrlPolicy` BEFORE the
+/// fetcher is invoked. The check
+/// rejects `http://`, `file://`,
+/// `ssh://` to a non-allowlisted
+/// host, and any URL whose host
+/// resolves to a loopback /
+/// RFC 1918 / link-local / metadata
+/// address. The fetcher is a
+/// defense-in-depth layer; the
+/// policy is the primary gate.
+pub fn ingest_source_with_policy(
     source: &Source,
     working_copy_root: &std::path::Path,
+    policy: &crate::infrastructure::url_policy::UrlPolicy,
 ) -> CoreResult<(IngestResult, IngestReport)> {
-    use crate::infrastructure::git_fetcher::{GitFetcher, HttpsFetcher, SshFetcher};
+    use crate::infrastructure::git_fetcher::{
+        classify_url_with_policy, GitFetcher, HttpsFetcher, SshFetcher,
+    };
+    // Pre-flight: classify the URL
+    // and run the policy. The
+    // fetcher would do this again
+    // (defense in depth), but
+    // failing fast here gives the
+    // operator / CLI a clean
+    // error before any TCP /
+    // libgit2 setup.
+    let url = match &source.kind {
+        crate::domain::source::SourceKind::GitHttps { url } => url.clone(),
+        crate::domain::source::SourceKind::GitSsh { url } => url.clone(),
+        crate::domain::source::SourceKind::Local { .. } => {
+            return IngestService::new().ingest_local(source, None);
+        }
+    };
+    classify_url_with_policy(&url, policy)?;
     let dest = working_copy_root.join(source.id.to_string());
     let fetch = match &source.kind {
         crate::domain::source::SourceKind::GitHttps { .. } => {
@@ -472,6 +504,23 @@ pub fn ingest_source(
     let (mut result, report) = svc.ingest_local(source, Some(&fetch.working_copy))?;
     result.snapshot.commit_sha = fetch.commit_sha;
     Ok((result, report))
+}
+
+/// Test-mode wrapper for callers
+/// that pre-date the
+/// `UrlPolicy` (the
+/// `git_fetcher` integration test,
+/// the old CLI). Uses
+/// `UrlPolicy::permissive_test()`.
+pub fn ingest_source(
+    source: &Source,
+    working_copy_root: &std::path::Path,
+) -> CoreResult<(IngestResult, IngestReport)> {
+    ingest_source_with_policy(
+        source,
+        working_copy_root,
+        &crate::infrastructure::url_policy::UrlPolicy::permissive_test(),
+    )
 }
 
 #[cfg(test)]

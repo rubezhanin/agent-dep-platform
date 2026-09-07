@@ -64,11 +64,7 @@ pub struct FetchResult {
 /// `~/.ssh/config`, talks to
 /// `ssh-agent`).
 pub trait GitFetcher: Send + Sync {
-    fn clone_or_update(
-        &self,
-        source: &Source,
-        dest: &Path,
-    ) -> CoreResult<FetchResult>;
+    fn clone_or_update(&self, source: &Source, dest: &Path) -> CoreResult<FetchResult>;
 }
 
 /// HTTPS fetcher. Uses libgit2's HTTP
@@ -80,11 +76,7 @@ pub trait GitFetcher: Send + Sync {
 pub struct HttpsFetcher;
 
 impl GitFetcher for HttpsFetcher {
-    fn clone_or_update(
-        &self,
-        source: &Source,
-        dest: &Path,
-    ) -> CoreResult<FetchResult> {
+    fn clone_or_update(&self, source: &Source, dest: &Path) -> CoreResult<FetchResult> {
         let url = match &source.kind {
             SourceKind::GitHttps { url } => url.clone(),
             other => {
@@ -109,11 +101,7 @@ impl GitFetcher for HttpsFetcher {
 pub struct SshFetcher;
 
 impl GitFetcher for SshFetcher {
-    fn clone_or_update(
-        &self,
-        source: &Source,
-        dest: &Path,
-    ) -> CoreResult<FetchResult> {
+    fn clone_or_update(&self, source: &Source, dest: &Path) -> CoreResult<FetchResult> {
         let url = match &source.kind {
             SourceKind::GitSsh { url } => url.clone(),
             other => {
@@ -142,11 +130,7 @@ impl GitFetcher for SshFetcher {
 /// the fetch. When absent, we leave
 /// the working copy on whatever the
 /// remote's `HEAD` resolves to.
-fn clone_or_update(
-    url: &str,
-    dest: &Path,
-    pinned_ref: Option<&str>,
-) -> CoreResult<FetchResult> {
+fn clone_or_update(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResult<FetchResult> {
     if dest.exists() && dest.join(".git").exists() {
         update_existing(url, dest, pinned_ref)
     } else {
@@ -154,11 +138,7 @@ fn clone_or_update(
     }
 }
 
-fn fresh_clone(
-    url: &str,
-    dest: &Path,
-    pinned_ref: Option<&str>,
-) -> CoreResult<FetchResult> {
+fn fresh_clone(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResult<FetchResult> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(CoreError::ErrIo)?;
     }
@@ -170,20 +150,16 @@ fn fresh_clone(
     fetch_opts.download_tags(git2::AutotagOption::All);
     builder.fetch_options(fetch_opts);
 
-    let repo = builder.clone(url, dest).map_err(|e| {
-        CoreError::ErrGitClone {
+    let repo = builder
+        .clone(url, dest)
+        .map_err(|e| CoreError::ErrGitClone {
             url: url.to_string(),
             reason: format!("{e}"),
-        }
-    })?;
+        })?;
     resolve_head(&repo, url)
 }
 
-fn update_existing(
-    url: &str,
-    dest: &Path,
-    pinned_ref: Option<&str>,
-) -> CoreResult<FetchResult> {
+fn update_existing(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResult<FetchResult> {
     let repo = Repository::open(dest).map_err(|e| CoreError::ErrGitOpen {
         path: dest.display().to_string(),
         reason: format!("{e}"),
@@ -196,8 +172,9 @@ fn update_existing(
     // rather than silently re-aim
     // a working copy at a different
     // upstream.
-    let current_remote =
-        repo.find_remote("origin").map_err(|e| CoreError::ErrGitOpen {
+    let current_remote = repo
+        .find_remote("origin")
+        .map_err(|e| CoreError::ErrGitOpen {
             path: dest.display().to_string(),
             reason: format!("no `origin` remote: {e}"),
         })?;
@@ -239,20 +216,19 @@ fn update_existing(
                     ref_name: r.to_string(),
                     reason: format!("{e}"),
                 })?;
-            resolved.target().ok_or_else(|| CoreError::ErrGitInvalidRef {
-                ref_name: r.to_string(),
-                reason: "reference has no target (annotated tag without object?)"
-                    .to_string(),
-            })?
+            resolved
+                .target()
+                .ok_or_else(|| CoreError::ErrGitInvalidRef {
+                    ref_name: r.to_string(),
+                    reason: "reference has no target (annotated tag without object?)".to_string(),
+                })?
         }
-        None => repo
-            .head()
-            .ok()
-            .and_then(|h| h.target())
-            .ok_or_else(|| CoreError::ErrGitInvalidRef {
+        None => repo.head().ok().and_then(|h| h.target()).ok_or_else(|| {
+            CoreError::ErrGitInvalidRef {
                 ref_name: "HEAD".to_string(),
                 reason: "HEAD is unborn (no commits yet)".to_string(),
-            })?,
+            }
+        })?,
     };
     let commit = repo
         .find_commit(commit_oid)
@@ -270,10 +246,7 @@ fn update_existing(
     })
 }
 
-fn resolve_head(
-    repo: &Repository,
-    url: &str,
-) -> CoreResult<FetchResult> {
+fn resolve_head(repo: &Repository, url: &str) -> CoreResult<FetchResult> {
     let head = repo.head().map_err(|e| CoreError::ErrGitClone {
         url: url.to_string(),
         reason: format!("HEAD not found after clone: {e}"),
@@ -291,16 +264,44 @@ fn resolve_head(
 }
 
 /// Detect the kind of a user-supplied
-/// URL. Returns `GitSsh` for
-/// `git@host:path` and
-/// `[user@]host:path`; `GitHttps` for
-/// everything that starts with
-/// `http://`, `https://`, or `file://`
-/// (the last is the test escape
-/// hatch); and an `ErrSourceNotFound`
-/// for anything else.
-pub fn classify_url(
+/// URL and run it through the
+/// `UrlPolicy` (P1-G-01 / P1-G-02,
+/// CWE-918). Production callers
+/// MUST use the `*_with_policy`
+/// entry point; the bare `classify_url`
+/// is the test-mode wrapper.
+///
+/// Scheme mapping (post-policy):
+/// * `https://` is `GitHttps` (allowed
+///   in production; subject to host
+///   allowlist + SSRF guard).
+/// * `http://` is blocked by default;
+///   only `permissive_test` and the
+///   explicit `AGENCY_GIT_ALLOW_HTTP=1`
+///   opt-in allow it. Even when
+///   allowed, the host is still
+///   subject to the allowlist and the
+///   SSRF guard.
+/// * `ssh://` is `GitSsh` (subject to
+///   host allowlist + SSRF guard).
+/// * `git://` is `GitSsh` (legacy
+///   unauthenticated daemon protocol;
+///   subject to the same allowlist).
+/// * `file://` is blocked in production
+///   (test-only via `permissive_test`
+///   / `AGENCY_GIT_ALLOW_FILE=1`).
+/// * `git@host:path` and `host:path`
+///   are `GitSsh` (subject to host
+///   allowlist + SSRF guard).
+///
+/// Any URL that fails the policy check
+/// returns `ErrSourceNotFound` with a
+/// descriptive message (the operator
+/// sees what was wrong in the audit
+/// log; the SPA gets a 4xx).
+pub fn classify_url_with_policy(
     url: &str,
+    policy: &crate::infrastructure::url_policy::UrlPolicy,
 ) -> Result<SourceKind, CoreError> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
@@ -308,6 +309,15 @@ pub fn classify_url(
             source_id: "(empty URL)".to_string(),
         });
     }
+    // 1. Run the policy check first.
+    //    The check is the single
+    //    source of truth for "is
+    //    this URL allowed to leave
+    //    the box?". The
+    //    scheme-mapping below is a
+    //    convenience layer on top.
+    let outcome = policy.check(trimmed)?;
+    // 2. Map to SourceKind.
     if trimmed.contains("://") {
         let scheme = trimmed.split_once("://").map(|(s, _)| s).unwrap_or("");
         match scheme {
@@ -339,10 +349,44 @@ pub fn classify_url(
             url: trimmed.to_string(),
         })
     } else {
+        // The policy check passed,
+        // so we know the URL is
+        // well-formed; the only
+        // remaining failure mode is
+        // a typo we couldn't classify.
+        // We've already established
+        // it's not empty; if the
+        // policy accepted it, the
+        // URL has a recognisable
+        // shape. This branch is
+        // essentially unreachable in
+        // practice but the type
+        // system requires it.
+        let _ = outcome; // suppress unused
         Err(CoreError::ErrSourceNotFound {
             source_id: format!("cannot classify URL `{trimmed}`"),
         })
     }
+}
+
+/// Test-only wrapper that uses the
+/// permissive policy. The
+/// `classify_url_*` unit tests and
+/// the legacy callers that pre-date
+/// the policy (the CLI
+/// `ingest_local` shortcut, the
+/// `git_fetcher` integration test)
+/// rely on this. Production code
+/// MUST use `classify_url_with_policy`
+/// with a policy constructed from
+/// `UrlPolicy::from_env()` (or
+/// `UrlPolicy::deny_default()` for the
+/// strictest posture).
+pub fn classify_url(url: &str) -> Result<SourceKind, CoreError> {
+    classify_url_with_policy(
+        url,
+        &crate::infrastructure::url_policy::UrlPolicy::permissive_test(),
+    )
 }
 
 // -------------------------------------------------------------------

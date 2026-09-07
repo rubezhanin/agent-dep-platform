@@ -2,13 +2,13 @@
 
 use std::path::{Path, PathBuf};
 
-use agent_dep_core::application::ingest::{ingest_source, IngestService};
-use agent_dep_core::infrastructure::git_fetcher::classify_url;
+use agent_dep_core::application::ingest::IngestService;
 use agent_dep_core::application::scanner::plugin::{discover_plugins, PluginScanner};
 use agent_dep_core::application::scanner::{
     findings_to_sarif, Finding, RegexScanner, ScanPolicy, Scanner, Severity,
 };
 use agent_dep_core::domain::source::{Source, SourceKind};
+use agent_dep_core::infrastructure::git_fetcher::classify_url;
 use agent_dep_core::infrastructure::repository::IngestRepository;
 use agent_dep_core::infrastructure::sqlite::{connect, Db};
 use anyhow::{Context, Result};
@@ -146,7 +146,41 @@ pub async fn add_at(url: &str, db_path: &Path, working_copy_root: &Path) -> Resu
             .with_context(|| format!("create_dir_all {}", working_copy_root.display()))?;
     }
 
+    // 2.11.0 (P1-G-01 / P1-G-02, CWE-918):
+    // build the URL policy from the
+    // environment and run the
+    // classify check BEFORE we
+    // touch the database. The
+    // policy rejects `http://`,
+    // `file://`, and any host not
+    // in `AGENCY_GIT_ALLOWED_HOSTS`,
+    // plus the SSRF guard (loopback
+    // / RFC 1918 / link-local /
+    // metadata). The CLI uses
+    // `permissive_test()` ONLY for
+    // the `--local` shortcut
+    // (which never goes through the
+    // fetcher); the network path
+    // always uses the
+    // env-configured policy.
+    use agent_dep_core::infrastructure::url_policy::UrlPolicy;
+    let policy = UrlPolicy::from_env();
     let kind = classify_url(url).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Re-classify with the policy
+    // explicitly (the bare
+    // `classify_url` uses
+    // `permissive_test`). Fail
+    // fast on a blocked URL with
+    // a clear CLI error.
+    agent_dep_core::infrastructure::git_fetcher::classify_url_with_policy(url, &policy).map_err(
+        |e| {
+            anyhow::anyhow!(
+                "URL policy rejected `{url}`: {e}\n\
+             set AGENCY_GIT_ALLOWED_HOSTS (comma-separated, \
+             wildcards `*.example.com` allowed) to permit this host"
+            )
+        },
+    )?;
     let source = Source::new(kind);
 
     let db = open_and_migrate(db_path).await?;
@@ -165,8 +199,12 @@ pub async fn add_at(url: &str, db_path: &Path, working_copy_root: &Path) -> Resu
     let mut source = source;
     source.id = source_id;
 
-    let (result, report) =
-        ingest_source(&source, working_copy_root).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let (result, report) = agent_dep_core::application::ingest::ingest_source_with_policy(
+        &source,
+        working_copy_root,
+        &policy,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     repo.record_snapshot(source_id, &result, &report)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;

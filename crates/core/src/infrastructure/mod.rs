@@ -7,3 +7,4 @@ pub mod filesystem;
 pub mod git_fetcher;
 pub mod repository;
 pub mod sqlite;
+pub mod url_policy;

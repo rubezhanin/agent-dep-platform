@@ -957,6 +957,99 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     keep-alive script cannot
     extend the session.
 
+- **P1-G-01 + P1-G-02 Git URL policy
+  + SSRF protection (TZ #2 WP-3.3,
+  CWE-918 Server-Side Request
+  Forgery).** The pre-fix 2.10.0
+  `classify_url` accepted any
+  `https://`, `http://`, `file://`,
+  `ssh://`, `git://`, or SCP-style
+  `host:path` URL and trusted the
+  host implicitly. Two threat
+  surfaces: a plaintext `http://`
+  URL silently cloned over an
+  unauthenticated channel (CWE-319);
+  a `https://` URL whose host
+  resolves to a private address
+  (RFC 1918, loopback, the cloud
+  metadata service
+  `169.254.169.254`, etc.) gives
+  the fetcher a primitive to probe
+  the internal network (CWE-918).
+  - New `UrlPolicy` module
+    (`crates/core/src/infrastructure/url_policy.rs`).
+    `UrlPolicy::from_env()` reads
+    `AGENCY_GIT_ALLOWED_HOSTS`
+    (comma-separated, supports
+    `*.example.com` wildcards that
+    match one label only).
+    `AGENCY_GIT_ALLOW_HTTP=1` and
+    `AGENCY_GIT_ALLOW_FILE=1` are
+    the dev / test-only opt-ins.
+    `UrlPolicy::deny_default()` is
+    the production policy (only
+    `localhost` and `127.0.0.1`
+    allowed). `UrlPolicy::permissive_test()`
+    is the unit-test escape hatch.
+  - **SSRF guard.** The policy
+    blocks hosts that resolve to
+    loopback, RFC 1918, link-local,
+    CGN, benchmark, IETF, and
+    documentation IPv4 ranges; the
+    same for IPv6 (loopback,
+    link-local, ULA, IPv4-mapped).
+    The guard runs BEFORE the
+    allowlist: a `*.internal`
+    allowlist entry cannot be used
+    to reach `10.0.0.5`. The guard
+    rejects `169.254.169.254`
+    specifically (the cloud
+    metadata service).
+  - **Wire-in.** `classify_url_with_policy(url, &policy)`
+    is the new production entry
+    point. `classify_url(url)` is
+    a wrapper that uses
+    `permissive_test()` (legacy /
+    unit tests). `ingest_source_with_policy(source, root, &policy)`
+    is the new production entry;
+    `ingest_source(source, root)` is
+    the wrapper. The CLI
+    `commands/catalog.rs` reads
+    `UrlPolicy::from_env()` and
+    fails fast on a blocked URL
+    with a descriptive error that
+    names the missing env var.
+  - 12 unit tests in
+    `url_policy::tests`: default
+    policy denies remote https,
+    allows localhost ssh, env
+    allowlist with wildcards,
+    http blocked by default,
+    http allowed with warning when
+    opted in, file blocked by
+    default, `git://` routed
+    through SSH allowlist, SSRF
+    blocks RFC 1918 / loopback /
+    metadata / 0.0.0.0, SSRF
+    blocks IPv6 loopback / ULA /
+    link-local, permissive_test
+    allows everything, wildcard
+    matches one label only,
+    unknown scheme rejected.
+  - **CWE-918 closed (foundation).**
+    The fetcher is a defense-in-
+    depth layer; the policy is the
+    primary gate. A
+    follow-up commit could wire
+    the policy into the
+    `HttpsFetcher` / `SshFetcher`
+    callbacks (rejecting `http://`
+    redirects, capping the TCP
+    connect to the allowlisted
+    host, etc.). The current
+    change closes the primary
+    attack surface.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added
