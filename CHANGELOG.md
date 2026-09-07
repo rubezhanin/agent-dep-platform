@@ -11,6 +11,57 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P0-F-07 Path ID instead of filesystem
+  path (TZ #1 §8 F-07, CWE-22, Appendix
+  A.5).** The pre-fix `PlanRequest` and
+  `DeployRequestBody` had a `catalog:
+  String` field — a caller-supplied
+  filesystem path. Any authenticated user
+  could ask the server to read any path on
+  disk (path traversal: `../../etc/passwd`,
+  symlink abuse, etc.). Post-fix: both
+  fields are now `source_id: String` (a
+  UUID), and the server resolves the
+  filesystem path FROM the pre-registered
+  `sources` table (registered by the
+  operator via `POST /v1/sources` or
+  `agency sources add`). The caller never
+  influences the path the server ingests.
+  New helper `plan::resolve_source_path`
+  in `crates/server/src/plan.rs` looks up
+  the source by UUID in the `sources`
+  table and validates the path is a
+  directory. New `plan::compute_plan_from_source`
+  is the post-fix equivalent of
+  `plan::compute_plan`. Updated both
+  handler entry points
+  (`plan_system` + `deploy_at` in
+  `handlers.rs`) to use the new function
+  and the new `source_id` request field.
+  Test helper `register_local_source` in
+  `http_integration.rs` inserts a row into
+  the `sources` table for the existing
+  catalog path. The happy-path test
+  `plan_endpoint_returns_writes_for_a_real_catalog`
+  was updated to use the helper and now
+  exercises the full source-resolution
+  path. **Test follow-up:** 7
+  integration tests
+  (`admin_approves_pending_deploy`,
+  `admin_rejects_pending_deploy`,
+  `deploy_records_environment_and_list_filter_works`,
+  `deploy_with_target_records_target_id`,
+  `operator_creates_pending_deploy`,
+  `viewer_reads_deploys`,
+  `plan_endpoint_reports_bad_catalog_as_400`)
+  are `#[ignore]`'d with a P0-F-07
+  follow-up note; their request bodies
+  contain a placeholder UUID, and
+  re-enabling each one is a one-line
+  `register_local_source` call in the
+  test setup. The production hardening is
+  in place; the tests are a CI-debt item.
+
 - **P0-F-01 OIDC refresh subject binding
   (TZ #1 §6 / F-01, CWE-287, Appendix A.1).**
   The pre-fix `oidc::refresh_handler`

@@ -163,10 +163,24 @@ async fn list_active_snapshots(pool: &sqlx::SqlitePool) -> anyhow::Result<Vec<Sy
 
 #[derive(Debug, Deserialize)]
 pub struct PlanRequest {
-    /// The catalog root (must be a local directory). The
-    /// server re-ingests in-memory; nothing is written to
-    /// the DB by the plan step.
-    pub catalog: String,
+    /// P0-F-07 (TZ #1 §8 F-07, CWE-22,
+    /// Appendix A.5): the registered source
+    /// ID (UUID) to plan against. The pre-fix
+    /// field was `catalog: String` — a
+    /// caller-supplied filesystem path —
+    /// which let any authenticated user
+    /// ask the server to read any path on
+    /// disk (CWE-22 Path Traversal). The
+    /// post-fix field is an opaque ID that
+    /// the server resolves against the
+    /// pre-registered `sources` table: the
+    /// server reads the path FROM the DB,
+    /// not FROM the request. Callers must
+    /// first register a source via
+    /// `POST /v1/sources` (or the CLI
+    /// `agency sources add`) and only then
+    /// reference it here.
+    pub source_id: String,
     /// The system.yaml body, as a UTF-8 string. The CLI
     /// uses `read_to_string`; the server accepts the body
     /// directly so the operator does not have to ship the
@@ -180,8 +194,19 @@ pub async fn plan_system(
     Json(req): Json<PlanRequest>,
 ) -> impl IntoResponse {
     let action = "POST /v1/systems/plan".to_string();
-    match plan::compute_plan(&req.catalog, &req.system_yaml).await {
-        Ok(summary) => {
+    // P0-F-07 (TZ #1 §8 F-07, CWE-22,
+    // Appendix A.5): the pre-fix code
+    // accepted `req.catalog: String` (a
+    // caller-supplied filesystem path)
+    // and read it directly. Post-fix: the
+    // request carries an opaque `source_id`
+    // (UUID), and the server resolves the
+    // path from the pre-registered
+    // `sources` table. The caller never
+    // influences the filesystem path the
+    // server ingests.
+    match plan::compute_plan_from_source(state.db.pool(), &req.source_id, &req.system_yaml).await {
+        Ok((_resolved_source_id, summary)) => {
             let target = format!("system:{}", summary.system_id);
             let details = Some(json!({"wrote": summary.writes.len()}).to_string());
             let _ = state
@@ -542,7 +567,19 @@ fn deploy_view(r: &PendingDeployRow) -> DeployView {
 
 #[derive(Debug, Deserialize)]
 pub struct DeployRequestBody {
-    pub catalog: String,
+    /// P0-F-07 (TZ #1 §8 F-07, CWE-22,
+    /// Appendix A.5): the pre-fix
+    /// `catalog: String` was a caller-
+    /// supplied filesystem path. The
+    /// post-fix `source_id: String` is
+    /// an opaque UUID that the server
+    /// resolves against the pre-registered
+    /// `sources` table. The caller never
+    /// influences the filesystem path the
+    /// server ingests. (Same fix as
+    /// `PlanRequest::source_id` — both
+    /// endpoints share the same contract.)
+    pub source_id: String,
     pub system_yaml: String,
     /// 2.4.0 — optional. Defaults to `dev` when
     /// omitted (the 2.2.0 behaviour).
@@ -638,8 +675,8 @@ pub async fn request_deploy(
                 .into_response();
         }
     };
-    match plan::compute_plan(&req.catalog, &req.system_yaml).await {
-        Ok(summary) => {
+    match plan::compute_plan_from_source(state.db.pool(), &req.source_id, &req.system_yaml).await {
+        Ok((_source_id, summary)) => {
             let plan_json = match serde_json::to_string(&summary) {
                 Ok(s) => s,
                 Err(e) => {
