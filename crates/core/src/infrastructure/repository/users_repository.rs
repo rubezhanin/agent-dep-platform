@@ -381,6 +381,58 @@ impl UserRepository {
         }
     }
 
+    /// 2.11.0 (P1-F-03b, CWE-613): look up a
+    /// user by primary key. Used by the
+    /// `require_session_or_bearer`
+    /// middleware: the `sessions` row
+    /// stores only `user_id`, and the
+    /// user row carries the role and
+    /// the `disabled_at` flag.
+    ///
+    /// Unlike `find_by_external_id`,
+    /// this returns the row even if the
+    /// user is disabled (the caller
+    /// decides what to do with a
+    /// disabled user — the middleware
+    /// rejects with 401, an admin
+    /// endpoint may want to see the
+    /// row for the audit log).
+    pub async fn find_by_id(&self, id: i64) -> CoreResult<Option<UserRow>> {
+        let row: Option<UserRowTuple> = sqlx::query_as(
+            "SELECT id, name, role, token_hash, created_at, last_seen_at, disabled_at, external_id, token_expires_at \
+             FROM users WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((
+            id,
+            name,
+            role_str,
+            token_hash,
+            created_at,
+            last_seen_at,
+            disabled_at,
+            external_id,
+            token_expires_at,
+        )) = row
+        else {
+            return Ok(None);
+        };
+        let role = Role::parse(&role_str)?;
+        Ok(Some(UserRow {
+            id,
+            name,
+            role,
+            token_hash,
+            created_at,
+            last_seen_at,
+            disabled_at,
+            external_id,
+            token_expires_at,
+        }))
+    }
+
     /// 2.7.6 (ADR-0034): create a user with an
     /// OIDC `sub` claim as the stable
     /// `external_id`. Returns the user row

@@ -1471,6 +1471,11 @@ mod tests {
             admin_groups: vec![],
             operator_groups: vec![],
             mock: false,
+            // 2.11.0 (P1-F-03b): not
+            // consulted by the URL
+            // builder; default is fine
+            // for this test.
+            cookie_secure: true,
         };
         let real = RealOidcClient::new(cfg);
         let url = real

@@ -12,6 +12,7 @@ pub mod handlers;
 pub mod oidc;
 pub mod oidc_client;
 pub mod plan;
+pub mod session_cookie;
 pub mod state;
 pub mod vault_init;
 
@@ -181,7 +182,7 @@ pub fn router(state: ServerState) -> Router {
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            auth::require_bearer,
+            auth::require_session_or_bearer,
         ));
     // 2.7.6 OIDC (ADR-0034). The OIDC
     // endpoints are PUBLIC — no bearer
@@ -416,6 +417,17 @@ pub async fn boot_default_state() -> Result<ServerState> {
     };
     let targets = TargetRepository::new(db.pool().clone());
     let oidc = oidc::OidcConfig::from_env();
+    // 2.11.0 (P1-F-03a/b, CWE-613):
+    // server-side session store. The
+    // callback/refresh handlers
+    // create rows; the middleware
+    // reads them; the GC task below
+    // reaps expired / revoked rows.
+    let sessions =
+        agent_dep_core::infrastructure::repository::sessions_repository::SessionRepository::new(
+            db.pool().clone(),
+        );
+    let cookie_secure = oidc.cookie_secure;
     // 2.7.10 (ADR-0038): DB-backed
     // OidcPending. The 2.7.6 in-memory
     // `Arc<Mutex<HashMap>>` is
@@ -444,6 +456,8 @@ pub async fn boot_default_state() -> Result<ServerState> {
         oidc_pending: oidc_pending.clone(),
         oidc_client,
         legacy_token: Arc::new(Some(legacy_token)),
+        sessions,
+        cookie_secure,
     };
     // 2.7.10 (ADR-0038): background
     // GC of the `oidc_pending_state`
@@ -461,6 +475,28 @@ pub async fn boot_default_state() -> Result<ServerState> {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 let _ = repo.gc_expired(600).await;
+            }
+        });
+    }
+    // 2.11.0 (P1-F-03b, CWE-613):
+    // background GC of the `sessions`
+    // table. Removes revoked rows
+    // and rows past their idle or
+    // absolute expiry. The cadence
+    // matches the `oidc_pending_state`
+    // GC (every 60s) so the two
+    // tasks share a single timer
+    // wheel. The session repo
+    // computes the expiry threshold
+    // itself; no argument needed.
+    {
+        let pool = state.db.pool().clone();
+        tokio::spawn(async move {
+            let repo =
+                agent_dep_core::infrastructure::repository::sessions_repository::SessionRepository::new(pool);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let _ = repo.gc_expired().await;
             }
         });
     }

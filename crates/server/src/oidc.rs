@@ -47,6 +47,19 @@ pub struct OidcConfig {
     /// switches the default to false and
     /// requires a real IdP.
     pub mock: bool,
+    /// 2.11.0 (P1-F-03b, CWE-613): the
+    /// `Secure` flag for the
+    /// `Set-Cookie` header. `true` in
+    /// production (HTTPS); `false` only
+    /// in dev / integration tests over
+    /// plain HTTP localhost. Read from
+    /// `AGENCY_COOKIE_SECURE` (default
+    /// `true`). The default is
+    /// deliberately safe: an operator
+    /// who wants the cookie to travel
+    /// over plain HTTP MUST set the env
+    /// var explicitly.
+    pub cookie_secure: bool,
 }
 
 impl OidcConfig {
@@ -80,6 +93,22 @@ impl OidcConfig {
                 .ok()
                 .map(|s| s == "1" || s == "true")
                 .unwrap_or(false),
+            // 2.11.0 (P1-F-03b, CWE-613):
+            // `Secure` flag for the session
+            // cookie. Defaults to `true`;
+            // `AGENCY_COOKIE_SECURE=0` (or
+            // `=false`) disables it for dev /
+            // integration tests over plain
+            // HTTP localhost. The `1` / `true`
+            // / unset → `true` rule follows
+            // the same pattern as
+            // `AGENCY_OIDC_MOCK` and the
+            // vault-passphrase env vars:
+            // opt-out, not opt-in.
+            cookie_secure: std::env::var("AGENCY_COOKIE_SECURE")
+                .ok()
+                .map(|s| !(s == "0" || s == "false" || s.is_empty()))
+                .unwrap_or(true),
         }
     }
 
@@ -459,19 +488,54 @@ pub async fn callback_handler(
     });
     // 4. Provision the local user.
     match provision_user_from_claims(&state, &claims_json).await {
-        Ok(out) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "token": out.token,
-                "user": {
-                    "id": out.user.id,
-                    "name": out.user.name,
-                    "role": format!("{:?}", out.user.role),
-                },
-                "expires_at": out.expires_at,
-            })),
-        )
-            .into_response(),
+        Ok(out) => {
+            // 2.11.0 (P1-F-03b, CWE-613):
+            // create a server-side session
+            // and emit the `Set-Cookie`
+            // header. The SPA's primary
+            // auth artifact is now the
+            // cookie; the JSON `token`
+            // field is kept for one
+            // release so a frontend
+            // migration can land
+            // independently of the server
+            // upgrade.
+            let (sid, _row) = match state
+                .sessions
+                .create(
+                    out.user.id,
+                    None, // IP would come from a ConnectInfo<SocketAddr> extractor; the callback is reached via browser redirect, so we don't have a clean source. The OIDC log records the sub; the audit log already covers the actor.
+                    None, // User-Agent: same caveat; the IdP's `login` event is the authoritative source.
+                )
+                .await
+            {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::warn!("OIDC callback session create: {e}");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": format!("{e}")})),
+                    )
+                        .into_response();
+                }
+            };
+            let cookie =
+                crate::session_cookie::make_session_cookie_header(&sid, state.cookie_secure);
+            (
+                StatusCode::OK,
+                [(axum::http::header::SET_COOKIE, cookie)],
+                Json(serde_json::json!({
+                    "token": out.token,
+                    "user": {
+                        "id": out.user.id,
+                        "name": out.user.name,
+                        "role": format!("{:?}", out.user.role),
+                    },
+                    "expires_at": out.expires_at,
+                })),
+            )
+                .into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("{e}")})),
@@ -528,8 +592,21 @@ pub struct RefreshedUser {
 }
 
 /// `POST /v1/auth/oidc/refresh`. Public.
+///
+/// 2.11.0 (P1-F-03b, CWE-613): accepts an
+/// optional `Cookie: agency_session=...`
+/// header. If a session cookie is
+/// present, the refresh revokes the
+/// existing session and creates a fresh
+/// one (cookie id rotation); the
+/// `Set-Cookie` header in the response
+/// carries the new id. The previous
+/// session is dead immediately — a
+/// captured `agency_session` value
+/// cannot outlive a single refresh.
 pub async fn refresh_handler(
     State(state): State<ServerState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<RefreshRequest>,
 ) -> Response {
     // 1. Find the local user by `sub`.
@@ -651,8 +728,53 @@ pub async fn refresh_handler(
             Some(&serde_json::json!({"sub": refreshed.claims.sub}).to_string()),
         )
         .await;
+    // 5. 2.11.0 (P1-F-03b, CWE-613): rotate
+    //    the session. The old cookie id (if
+    //    any) is revoked; a fresh session is
+    //    created and the new id is sent in
+    //    `Set-Cookie`. A captured pre-refresh
+    //    cookie is dead the moment this
+    //    handler returns.
+    if let Some(old_id) = crate::session_cookie::parse_session_cookie(&headers) {
+        let _ = state.sessions.revoke(&old_id).await;
+    }
+    let (new_sid, _row) = match state.sessions.create(user.id, None, None).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            // The refresh itself
+            // succeeded; the only thing
+            // that failed is the cookie
+            // install. Log it but still
+            // return the JSON body with
+            // the new bearer — the SPA
+            // can re-issue the refresh
+            // immediately to install a
+            // cookie. The bearer path
+            // remains functional for
+            // the one release window
+            // that gives the SPA time
+            // to migrate.
+            tracing::warn!("OIDC refresh session create: {e}");
+            return (
+                StatusCode::OK,
+                Json(RefreshResponse {
+                    token: new_local_token,
+                    user: RefreshedUser {
+                        id: user.id,
+                        name: user.name.clone(),
+                        role: format!("{:?}", user.role),
+                    },
+                    expires_at: refreshed.expires_at,
+                    refresh_token: refreshed.new_refresh_token,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let cookie = crate::session_cookie::make_session_cookie_header(&new_sid, state.cookie_secure);
     (
         StatusCode::OK,
+        [(axum::http::header::SET_COOKIE, cookie)],
         Json(RefreshResponse {
             token: new_local_token,
             user: RefreshedUser {
@@ -676,12 +798,44 @@ pub async fn refresh_handler(
 /// local `token_hash` for the
 /// currently-logged-in user (if the
 /// Authorization header is present).
+///
+/// 2.11.0 (P1-F-03b, CWE-613): also
+/// revokes the server-side session
+/// identified by the `agency_session`
+/// cookie (if present) and emits a
+/// `Set-Cookie: agency_session=;
+/// Max-Age=0` to instruct the browser
+/// to drop the cookie. The two paths
+/// (bearer + cookie) are independent:
+/// revoking the cookie does not touch
+/// the bearer and vice versa, so a
+/// caller that has both (e.g. an
+/// automated script that still uses
+/// `Authorization: Bearer` while a
+/// browser is also open) gets a
+/// complete logout.
 pub async fn logout_handler(
     State(state): State<ServerState>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    // 1. If a bearer is present,
+    // 1. Revoke the server-side session
+    //    if the cookie is present. This
+    //    is the authoritative step for
+    //    the CWE-613 fix: a stolen
+    //    cookie is dead the moment
+    //    `logout` returns.
+    let mut clear_cookie_header: Option<String> = None;
+    if let Some(sid) = crate::session_cookie::parse_session_cookie(&headers) {
+        if let Ok(true) = state.sessions.revoke(&sid).await {
+            clear_cookie_header = Some(crate::session_cookie::clear_session_cookie_header(
+                state.cookie_secure,
+            ));
+        }
+    }
+    // 2. If a bearer is present,
     //    invalidate the local token.
+    //    (Legacy path, kept for one
+    //    release.)
     if let Some(auth) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -702,24 +856,39 @@ pub async fn logout_handler(
             }
         }
     }
-    // 2. 302-redirect to the IdP's
+    // 3. 302-redirect to the IdP's
     //    end_session_endpoint if the
     //    real client has one cached.
     if let Some(end_session) = end_session_url_for(&state).await {
-        return (
+        // Append the `Set-Cookie: ...
+        // Max-Age=0` to the redirect
+        // response so the browser
+        // drops the cookie on its way
+        // to the IdP. Browsers DO
+        // process `Set-Cookie` on 302
+        // responses.
+        let mut response = (
             StatusCode::FOUND,
             [(axum::http::header::LOCATION, end_session)],
         )
             .into_response();
+        if let Some(c) = clear_cookie_header {
+            response.headers_mut().insert(
+                axum::http::header::SET_COOKIE,
+                c.parse().expect("static cookie header is ASCII"),
+            );
+        }
+        return response;
     }
-    // 3. Mock client (or IdP without
+    // 4. Mock client (or IdP without
     //    end_session_endpoint): return
     //    200 locally.
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"message": "logged out locally"})),
-    )
-        .into_response()
+    let json = Json(serde_json::json!({"message": "logged out locally"}));
+    if let Some(c) = clear_cookie_header {
+        (StatusCode::OK, [(axum::http::header::SET_COOKIE, c)], json).into_response()
+    } else {
+        (StatusCode::OK, json).into_response()
+    }
 }
 
 /// 2.7.8 helper: read the cached

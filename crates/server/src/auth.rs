@@ -156,6 +156,135 @@ async fn unauthorized(state: &ServerState, method: &str, path: &str, reason: &st
         .into_response()
 }
 
+/// 2.11.0 (P1-F-03b, TZ #2 WP-3.3, CWE-613):
+/// per-request auth middleware that
+/// prefers the `agency_session` cookie
+/// and falls back to the legacy
+/// `Authorization: Bearer` header.
+///
+/// Behaviour:
+/// 1. **Cookie first.** If a session
+///    cookie is present and the
+///    `SessionRepository::find` returns
+///    a valid row, the row is converted
+///    to an `AuthenticatedUser` via the
+///    `users` repository (the session
+///    only stores `user_id`; the role
+///    comes from the user row, which is
+///    the single source of truth for
+///    role) and the request proceeds.
+/// 2. **Bearer fallback.** If the
+///    cookie path returns `None` (no
+///    cookie, unknown id, expired, or
+///    revoked), the middleware tries
+///    the legacy bearer path. A
+///    `tracing::warn!` is emitted on
+///    every hit so the operator can
+///    track the migration.
+/// 3. **Both miss → 401.** The
+///    response shape matches
+///    `require_bearer`'s 401 so the SPA
+///    can treat them uniformly.
+///
+/// The legacy `require_bearer`
+/// middleware is still wired (for
+/// non-migrated callers) and is left
+/// in place for one release. New
+/// routes should use
+/// `require_session_or_bearer`.
+pub async fn require_session_or_bearer(
+    State(state): State<ServerState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let headers = request.headers().clone();
+    let path = request.uri().path().to_string();
+    let method = request.method().to_string();
+    // 1. Try the session cookie.
+    if let Some(sid) = crate::session_cookie::parse_session_cookie(&headers) {
+        match state.sessions.find(&sid).await {
+            Ok(Some(row)) => {
+                // Session is valid. Look up
+                // the user for role /
+                // name. The session only
+                // carries `user_id`; the
+                // role is the user's, not
+                // the session's, so the
+                // `users` table is the
+                // single source of truth.
+                // A disabled user gets
+                // 401 even with a valid
+                // session — disable takes
+                // effect immediately.
+                match state.users.find_by_id(row.user_id).await {
+                    Ok(Some(user)) if user.disabled_at.is_none() => {
+                        let user_id = user.id;
+                        let repo = state.users.clone();
+                        tokio::spawn(async move {
+                            let _ = repo.touch_last_seen(user_id).await;
+                        });
+                        let mut request = request;
+                        request.extensions_mut().insert(AuthenticatedUser {
+                            id: user.id,
+                            name: user.name,
+                            role: user.role,
+                        });
+                        return next.run(request).await;
+                    }
+                    Ok(_) => {
+                        return unauthorized(&state, &method, &path, "session user is disabled")
+                            .await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "require_session_or_bearer: users.find_by_id failed",
+                        );
+                        return (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            axum::Json(json!({"error": "auth subsystem unavailable"})),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            Ok(None) => {
+                // Cookie present but the
+                // session is unknown /
+                // revoked / expired. Fall
+                // through to the bearer
+                // path; the cookie will
+                // still be there on the
+                // next request unless the
+                // SPA also calls
+                // `/logout` to clear it.
+                tracing::debug!(
+                    "require_session_or_bearer: cookie present but session invalid; \
+                     falling back to bearer"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "require_session_or_bearer: sessions.find failed");
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": "auth subsystem unavailable"})),
+                )
+                    .into_response();
+            }
+        }
+    }
+    // 2. Bearer fallback (legacy path).
+    //    Emit a deprecation warning so
+    //    the operator can see the
+    //    migration progress in the
+    //    server log.
+    tracing::warn!(
+        "P1-F-03b: bearer auth used (no valid session cookie); \
+         this path is deprecated and will be removed in 2.12.0"
+    );
+    require_bearer(State(state), request, next).await
+}
+
 /// Per-route role-check inner function. Wired by
 /// `lib::router` via `axum::middleware::from_fn_with_state`.
 pub async fn check_role(state: ServerState, request: Request, next: Next) -> Response {

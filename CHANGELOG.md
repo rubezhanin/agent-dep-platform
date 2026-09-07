@@ -830,6 +830,133 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     attack surface is not closed
     until P1-F-03b lands.
 
+- **P1-F-03b Session cookie middleware
+  + OIDC handlers (TZ #2 WP-3.3,
+  CWE-613, Appendix A.8).** Closes
+  the CWE-613 attack surface that
+  P1-F-03a set up. The bearer-in-JSON
+  path is now legacy; the canonical
+  auth artifact is a server-side
+  session id carried in an
+  HttpOnly+Secure+SameSite=Strict
+  cookie.
+  - **New `session_cookie` module**
+    (`crates/server/src/session_cookie.rs`)
+    with `make_session_cookie_header`,
+    `clear_session_cookie_header`, and
+    `parse_session_cookie`. Cookie
+    attributes: `HttpOnly`, `SameSite=Strict`,
+    `Path=/`, `Max-Age=3600` (matches
+    server-side `IDLE_TTL_SECS`),
+    `Secure` (configurable via
+    `AGENCY_COOKIE_SECURE`, default
+    `true`). 10 unit tests cover
+    cookie construction (Secure
+    on/off), `Max-Age=0` for logout,
+    and `parse_session_cookie`
+    (present, absent, empty value,
+    whitespace, multiple cookies).
+  - **`OidcConfig::cookie_secure`**
+    (env `AGENCY_COOKIE_SECURE`,
+    default `true`). The
+    `Secure` flag is opt-out,
+    matching the `AGENCY_OIDC_MOCK`
+    pattern: an operator who wants
+    the cookie to travel over plain
+    HTTP MUST set the env var
+    explicitly. Default is
+    deliberately safe.
+  - **`callback_handler` (P1-F-03b)**
+    creates a server-side session
+    after provisioning the user
+    and emits `Set-Cookie:
+    agency_session=...` on the
+    response. The JSON `token`
+    field is kept for one release
+    so a frontend migration can land
+    independently.
+  - **`refresh_handler` (P1-F-03b)**
+    accepts a `Cookie: agency_session=...`
+    header, revokes the existing
+    session, creates a fresh one,
+    and emits the new id in
+    `Set-Cookie`. A captured
+    pre-refresh cookie is dead the
+    moment the handler returns
+    (cookie id rotation).
+  - **`logout_handler` (P1-F-03b)**
+    revokes the server-side session
+    identified by the cookie (if
+    present) and emits a
+    `Set-Cookie: agency_session=;
+    Max-Age=0` to instruct the
+    browser to drop the cookie.
+    The bearer revoke path is
+    preserved for callers that
+    still use `Authorization: Bearer`
+    (legacy, one release).
+  - **New `require_session_or_bearer`
+    middleware** in `auth.rs`
+    replaces `require_bearer` on
+    the `authed` router. Cookie
+    path: read `agency_session`,
+    look up in `SessionRepository`,
+    convert to `AuthenticatedUser`
+    via `users.find_by_id` (the
+    `users` table is the single
+    source of truth for role and
+    `disabled_at`; the session
+    only stores `user_id`).
+    Disabled users with a valid
+    session get 401. Bearer path:
+    a `tracing::warn!` is emitted
+    on every hit so the operator
+    can track the migration. The
+    legacy `require_bearer`
+    middleware is left in place
+    for non-migrated callers.
+  - **`ServerState`** gains
+    `sessions: SessionRepository`
+    and `cookie_secure: bool`.
+  - **GC task** in
+    `boot_default_state` runs
+    `SessionRepository::gc_expired`
+    every 60 s, same cadence as
+    the existing `oidc_pending_state`
+    GC. Removes revoked,
+    idle-expired, and
+    absolute-expired sessions.
+  - **`UserRepository::find_by_id`**
+    new helper: looks up a user
+    by primary key. Unlike
+    `find_by_external_id`, returns
+    the row even if disabled (the
+    caller decides what to do with
+    a disabled user — the middleware
+    rejects with 401, an admin
+    endpoint may want to see the
+    row for the audit log).
+  - 2 integration-test `ServerState`
+    constructors updated to wire
+    the new fields (`cookie_secure
+    = false` for plain-HTTP
+    localhost tests).
+  - 1 unit-test OidcConfig
+    constructor updated to set
+    `cookie_secure` explicitly.
+  - **CWE-613 closed.** A stolen
+    cookie is dead the moment
+    `/v1/auth/oidc/logout` returns
+    (`revoke`), and dead on every
+    `/v1/auth/oidc/refresh` (cookie
+    id rotation). Sliding 1h idle
+    timeout (browser side) + 1h
+    server-side `IDLE_TTL_SECS`.
+    Absolute 8h cap (server-side
+    `ABSOLUTE_TTL_SECS`) — a
+    keep-alive script cannot
+    extend the session.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

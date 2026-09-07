@@ -107,6 +107,19 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
         oidc_pending,
         oidc_client,
         legacy_token: Arc::new(legacy.map(|s| s.to_string())),
+        // 2.11.0 (P1-F-03a/b, CWE-613):
+        // session store + cookie
+        // security flag. Plain HTTP
+        // tests use `cookie_secure =
+        // false` so the cookie is
+        // accepted on the
+        // `http://127.0.0.1:...`
+        // listener.
+        sessions:
+            agent_dep_core::infrastructure::repository::sessions_repository::SessionRepository::new(
+                db.pool().clone(),
+            ),
+        cookie_secure: false,
     };
     let app = router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -277,6 +290,17 @@ spec:
     );
     let oidc_client: Arc<dyn agent_dep_server::oidc_client::OidcClient> =
         Arc::new(agent_dep_server::oidc_client::MockOidcClient);
+    // 2.11.0 (P1-F-03b, CWE-613):
+    // server-side session store.
+    // Must be built BEFORE `db` is
+    // moved into `ServerState` (the
+    // `SessionRepository` takes a
+    // `SqlitePool`, and `db` is
+    // moved on the next line).
+    let sessions =
+        agent_dep_core::infrastructure::repository::sessions_repository::SessionRepository::new(
+            db.pool().clone(),
+        );
     let state = ServerState {
         db,
         audit,
@@ -288,6 +312,8 @@ spec:
         oidc_pending,
         oidc_client,
         legacy_token: Arc::new(Some(token.clone())),
+        sessions,
+        cookie_secure: false,
     };
     let app = router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

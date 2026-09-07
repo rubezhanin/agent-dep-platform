@@ -6,6 +6,7 @@ use agent_dep_core::infrastructure::repository::audit_log_repository::AuditLogRe
 use agent_dep_core::infrastructure::repository::oidc_pending_repository::OidcPendingRepository;
 use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
 use agent_dep_core::infrastructure::repository::secrets_repository::SecretRepository;
+use agent_dep_core::infrastructure::repository::sessions_repository::SessionRepository;
 use agent_dep_core::infrastructure::repository::targets_repository::TargetRepository;
 use agent_dep_core::infrastructure::repository::users_repository::UserRepository;
 use agent_dep_core::infrastructure::sqlite::Db;
@@ -59,4 +60,19 @@ pub struct ServerState {
     /// `admin` user with `token_hash = sha256(legacy)`
     /// so existing scripts keep working.
     pub legacy_token: Arc<Option<String>>,
+    /// 2.11.0 (P1-F-03b, CWE-613): server-side
+    /// session store. The `require_session_or_bearer`
+    /// middleware reads the `agency_session` cookie
+    /// and looks it up here; the OIDC handlers
+    /// (`callback`, `refresh`, `logout`) create /
+    /// rotate / revoke sessions through this
+    /// repository.
+    pub sessions: SessionRepository,
+    /// 2.11.0 (P1-F-03b, CWE-613): the `Secure`
+    /// flag for the `Set-Cookie` header. `true`
+    /// in production (HTTPS); `false` only in
+    /// dev / integration tests over plain HTTP
+    /// localhost. Configured via
+    /// `AGENCY_COOKIE_SECURE` (default `true`).
+    pub cookie_secure: bool,
 }
