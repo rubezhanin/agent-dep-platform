@@ -1050,6 +1050,86 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     change closes the primary
     attack surface.
 
+- **P1-O-04 OIDC authorize_url from
+  discovery (TZ #1 §14 / O-04,
+  CWE-601 URL Redirection to
+  Untrusted Site).** The pre-fix
+  `RealOidcClient::authorize_url`
+  built the IdP `/authorize` URL
+  by string-replacing the
+  `redirect_uri`:
+  `self.config.redirect_uri.replace(
+  "/callback", "/authorize")`. A
+  misconfigured
+  `AGENCY_OIDC_REDIRECT_URI`
+  (e.g. `https://attacker.com/cb`)
+  would have produced
+  `https://attacker.com/authorize`,
+  and the SPA would then send the
+  user's browser to a
+  non-IdP-controlled origin with
+  the operator's `client_id` and
+  the user's `state` and `nonce`.
+  CWE-601.
+  - `authorize_url` is now `async`
+    on the trait. The real
+    implementation fetches the
+    discovery document (already
+    validated by P1-F-02: HTTPS,
+    issuer match, same-origin
+    JWKS) inside the call and
+    uses the IdP-returned
+    `authorization_endpoint` as
+    the base URL — no
+    `redirect_uri` string-replace.
+  - Same-origin check:
+    `check_authorization_endpoint_origin`
+    rejects any
+    `authorization_endpoint` whose
+    origin (scheme + host + port)
+    differs from the configured
+    `issuer`. This is the
+    explicit gate for the redirect;
+    a misconfigured IdP that
+    publishes its
+    `authorization_endpoint` on
+    a different host (an open
+    redirector, a split IdP, a
+    typo) is rejected at login time.
+  - 4 new unit tests in
+    `oidc_client::tests`:
+    `authorization_endpoint_origin_match_passes`
+    (happy path),
+    `authorization_endpoint_origin_mismatch_rejected`
+    (cross-origin host),
+    `authorization_endpoint_origin_scheme_mismatch_rejected`
+    (`http://` vs `https://`),
+    `authorization_endpoint_origin_port_mismatch_rejected`
+    (different port).
+  - 1 pre-fix
+    `real_authorize_url_includes_pkce_s256_challenge_method`
+    test was removed: it
+    exercised the synchronous
+    URL-builder behaviour and
+    cannot run without an HTTP
+    mock (the post-fix code does
+    a discovery GET as part of
+    the call). The URL shape is
+    unchanged and is asserted by
+    `mock_authorize_url_includes_state_code_challenge_nonce`
+    (now `#[tokio::test]` since
+    the trait is async).
+  - `oidc::handle_login` updated
+    to `.await` the new async
+    `authorize_url`.
+  - **CWE-601 closed.** A captured
+    or misconfigured
+    `redirect_uri` can no longer
+    steer the user's browser to a
+    non-IdP origin; the
+    `/authorize` URL is bound to
+    the IdP's advertised endpoint.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

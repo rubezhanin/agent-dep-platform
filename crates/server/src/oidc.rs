@@ -236,9 +236,15 @@ pub async fn handle_login(state: &ServerState) -> CoreResult<(String, String)> {
     // 2.7.7 (ADR-0035): delegate URL
     // assembly to the configured
     // `OidcClient` (real or mock).
+    // 2.11.0 (P1-O-04, CWE-601):
+    // `authorize_url` is now `async`
+    // because the real client fetches
+    // the (validated) discovery
+    // document inside the call.
     let authorize_url = state
         .oidc_client
-        .authorize_url(&state_token, &code_challenge, &nonce)?;
+        .authorize_url(&state_token, &code_challenge, &nonce)
+        .await?;
     Ok((authorize_url, state_token))
 }
 
