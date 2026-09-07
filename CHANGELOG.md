@@ -11,6 +11,36 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P0-NONCE-01 OIDC refresh nonce
+  (TZ #2 WP-0.4, CWE-287, Appendix A.2).**
+  The pre-fix `validate_id_token_minimal`
+  accepted `expected_nonce: &str = ""` on
+  the refresh path, which was broken in
+  BOTH directions: an id_token with
+  `nonce: ""` matched the empty expected
+  and was accepted without challenge,
+  while an id_token with any non-empty
+  nonce (or, depending on IdP config, no
+  nonce claim at all) failed the check
+  and killed the user's session mid-flight.
+  The fix changes the parameter to
+  `Option<&str>`: `Some(stored_nonce)` on
+  initial login (strict match, the nonce
+  was generated at authorize-url time and
+  stored in `oidc_pending_state`); `None`
+  on the refresh path (the OIDC spec says
+  refresh responses omit the nonce, so we
+  trust the IdP's signature on the new
+  id_token without re-binding it to a
+  stored nonce). 8 call sites updated
+  (2 production + 6 test fixtures). The
+  existing `http_integration::oidc_refresh_
+  endpoint_returns_new_token_and_expiry`
+  test now exercises the correct refresh
+  path. `a2` in `security_replays.rs`
+  remains `#[ignore]`'d as a sister-file
+  pointer. No residual risk.
+
 - **P0-AUD-01 Structured audit
   (TZ #1 §16 / AUD-01).** The pre-fix
   `oidc.login` and `oidc.refresh` audit

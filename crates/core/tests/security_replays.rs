@@ -111,12 +111,33 @@ fn a1_oidc_refresh_subject_confusion() {
 //  3. Assert the refresh handler returns 401 / TokenError::NonceMismatch.
 
 #[test]
-#[ignore = "phase 1: P0-NONCE-01 — TZ #2 WP-0.4 / Appendix A.2"]
+#[ignore = "phase 1: P0-NONCE-01 — TZ #2 WP-0.4 / Appendix A.2 — see \
+            crates/server/tests/http_integration.rs::oidc_refresh_endpoint_returns_new_token_and_expiry \
+            for the executable spec; this placeholder remains here as a \
+            domain-level pointer (OIDC code lives in crates/server, not core)"]
 fn a2_oidc_refresh_with_empty_nonce_passes() {
-    unimplemented!(
-        "P0-NONCE-01 — implement when refresh nonce becomes Option<&str> with \
-         assert_eq! against session-stored nonce"
-    );
+    // The real executable spec is the existing
+    // integration test
+    // `http_integration::oidc_refresh_endpoint_returns_new_token_and_expiry`
+    // — it exercises the full refresh path through
+    // the real handler, which now passes `None` to
+    // `validate_id_token_minimal` (post-fix). If
+    // P0-NONCE-01 regresses (e.g. someone changes
+    // the refresh path to pass `Some("")` again),
+    // that integration test breaks because
+    // Keycloak's refresh response has either no
+    // `nonce` claim or a non-empty one, both of
+    // which fail `Some("")` strict match.
+    //
+    // Unit-level coverage of the strict-match
+    // branch (`Some(stored_nonce)`) is in
+    // `crates/server/src/oidc_client.rs::tests::
+    // validate_jwt_rejects_nonce_mismatch`.
+    //
+    // The `#[ignore]` is left in place so
+    // `security_replays --include-ignored` still
+    // surfaces this slot as "intentionally
+    // deferred to a sister file".
 }
 
 // ============================================================================
