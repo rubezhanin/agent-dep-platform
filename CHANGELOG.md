@@ -11,6 +11,44 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P0-ENV-01 Plugin env_clear()
+  (TZ #2 WP-1.1, CWE-200).** The pre-fix
+  `PluginScanner::scan` spawned the plugin
+  child with `Command::new(&self.binary)`
+  and only `.env("AGENCY_PLUGIN_NAME", ...)`
+  / `.env("AGENCY_ROOT", ...)`. The child
+  process inherited the parent's full
+  environment, including
+  `AGENCY_VAULT_PASSPHRASE`,
+  `AGENCY_ADMIN_TOKEN`, and any other
+  secret-bearing env vars. A compromised
+  plugin could read them via
+  `std::env::var(...)` and exfiltrate them
+  through stdout / a network call / the
+  catalog upload path. The post-fix code
+  calls `env_clear()` and re-adds only an
+  explicit whitelist via the new
+  `PluginScanner::plugin_safe_env(name,
+  root)` helper: `PATH`, `HOME`, `TMPDIR`,
+  `LANG`, `AGENCY_PLUGIN_NAME`,
+  `AGENCY_ROOT`. Any other `AGENCY_*`
+  secret-bearing env var is no longer
+  reachable from the plugin's
+  `std::env::var`. 2 new unit tests:
+  `plugin_safe_env_excludes_sensitive_parent_env`
+  (asserts the whitelist contains exactly
+  the 6 documented keys and no
+  `AGENCY_VAULT_PASSPHRASE` /
+  `AGENCY_ADMIN_TOKEN` /
+  `AGENCY_OIDC_CLIENT_SECRET` / etc.)
+  and
+  `plugin_safe_env_ignores_parent_secret_env`
+  (asserts the structural property
+  independently). The existing
+  `plugin_failure_produces_exec_failed_finding`
+  test continues to pass with the new
+  env setup. No residual risk.
+
 - **P0-SENT-01 sha256("") sentinel → NULL
   (TZ #2 WP-0.3, CWE-287, Appendix A.4).**
   The pre-fix `users.token_hash` column

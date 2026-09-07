@@ -40,6 +40,7 @@
 | 2026-09-07 | P0-NONCE-01 closed | PASS | self | `expected_nonce: &str = ""` on refresh path replaced with `Option<&str>`. Initial login uses `Some(stored_nonce)`, refresh uses `None` (OIDC spec says refresh omits nonce). 8 call sites updated (2 production + 6 test fixtures). 7 of 10 P0 still open. |
 | 2026-09-07 | P0-HDR-01 closed | PASS | self | Typed `JwsHeader` struct with `#[serde(deny_unknown_fields)]` allowlists `alg`/`kid`/`typ`/`cty`. Rejects `jku`/`x5u`/`x5c`/`jwk`/`crit`/`x5t` etc. 7 new unit tests in `oidc_client::tests`. 6 of 10 P0 still open. |
 | 2026-09-07 | P0-SENT-01 closed | PASS | self | Migration 019 (table-rebuild pattern for SQLite nullable token_hash). Pre-fix sha256("") sentinel backfilled to NULL. `create_with_external_id` + `invalidate_token` now write NULL. `require_bearer` middleware short-circuits on empty bearer. `UserRow::token_hash` is `Option<String>`. 1 new unit test + 4 schema-version sites updated. 5 of 10 P0 still open. |
+| 2026-09-07 | P0-ENV-01 closed | PASS | self | Plugin `Command::new` now uses `env_clear()` + explicit whitelist `PATH`/`HOME`/`TMPDIR`/`LANG`/`AGENCY_PLUGIN_NAME`/`AGENCY_ROOT` (no `AGENCY_VAULT_PASSPHRASE`/`AGENCY_ADMIN_TOKEN`/etc leak). 2 new unit tests in `plugin_tests.rs`. 4 of 10 P0 still open. |
 
 ### 2.2. ADR reviews
 

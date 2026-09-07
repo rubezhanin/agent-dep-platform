@@ -170,12 +170,35 @@ fn a2_oidc_refresh_with_empty_nonce_passes() {
 //  4. Repeat for `x5u`, `x5c`, `jwk`, `crit`.
 
 #[test]
-#[ignore = "phase 1: P0-HDR-01 — TZ #2 WP-0.4 / Appendix A.3"]
+#[ignore = "phase 1: P0-HDR-01 — TZ #2 WP-0.4 / Appendix A.3 — see \
+            crates/server/src/oidc_client.rs::tests::rejects_jku_header \
+            (and rejects_x5u, rejects_x5c, rejects_jwk, rejects_crit \
+            sister tests) for the executable spec; this placeholder \
+            remains here as a domain-level pointer"]
 fn a3_jwt_with_jku_header_uses_attacker_jwks() {
-    unimplemented!(
-        "P0-HDR-01 — implement when header allowlist (alg + kid only) is added to \
-         decode_jwt_header; test must cover crit/jku/x5u/x5c/jwk"
-    );
+    // The real executable spec is in
+    // `crates/server/src/oidc_client.rs::tests`:
+    // the post-fix `JwsHeader` struct with
+    // `#[serde(deny_unknown_fields)]` rejects
+    // `jku` / `x5u` / `x5c` / `jwk` / `crit`
+    // at parse time. The tests there
+    // (rejects_jku_header, rejects_x5u_header,
+    // rejects_x5c_header, rejects_jwk_header,
+    // rejects_crit_header) cover each
+    // disallowed field. The positive cases
+    // `accepts_minimal_header` and
+    // `accepts_typ_and_cty_headers` confirm
+    // the allowlist (`alg` / `kid` / `typ` /
+    // `cty`) is not over-restrictive.
+    //
+    // If P0-HDR-01 regresses (e.g. someone
+    // removes `deny_unknown_fields` and the
+    // `jku` field flows through to a
+    // validator that follows attacker JWKS
+    // URLs), the existing signature tests
+    // (`es256_*`, `ps256_*`) continue to pass
+    // but `rejects_jku_header` starts
+    // failing.
 }
 
 // ============================================================================

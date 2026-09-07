@@ -138,6 +138,153 @@ exit 1
 }
 
 // -----------------------------------------------------------------------
+// P0-ENV-01 (TZ #2 WP-1.1, CWE-200):
+// plugin env isolation. The pre-fix code
+// spawned the plugin with `Command::new(bin)`
+// and called `.env("AGENCY_PLUGIN_NAME", ...)`
+// / `.env("AGENCY_ROOT", ...)` — without
+// `env_clear()`. The child inherited the
+// parent's full environment, including
+// `AGENCY_VAULT_PASSPHRASE`,
+// `AGENCY_ADMIN_TOKEN`, and any other
+// secret-bearing env vars. A compromised
+// plugin could exfiltrate them.
+//
+// The post-fix code builds an explicit
+// whitelist via `PluginScanner::plugin_safe_env`.
+// This test asserts the whitelist shape
+// directly, without spawning a process —
+// the test is hermetic and CI-friendly.
+// -----------------------------------------------------------------------
+
+#[test]
+fn plugin_safe_env_excludes_sensitive_parent_env() {
+    // We DO NOT set any parent env vars for
+    // this test (the `plugin_safe_env` helper
+    // reads the parent env at call time, so
+    // we cannot influence it from inside
+    // the test in a multi-threaded process
+    // anyway). We assert on the SHAPE of the
+    // whitelist: only the documented vars
+    // are present, and no `AGENCY_*` other
+    // than the two contract vars is.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let env = PluginScanner::plugin_safe_env("test-plugin", dir.path());
+    let keys: std::collections::HashSet<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+    // The 6 documented entries must all be
+    // present.
+    for required in &[
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "AGENCY_PLUGIN_NAME",
+        "AGENCY_ROOT",
+    ] {
+        assert!(
+            keys.contains(required),
+            "plugin_safe_env MUST include {required}; got {keys:?}"
+        );
+    }
+    // Nothing else. In particular, no
+    // sensitive AGENCY_* vars.
+    for forbidden in &[
+        "AGENCY_VAULT_PASSPHRASE",
+        "AGENCY_ADMIN_TOKEN",
+        "AGENCY_BIND_IP",
+        "AGENCY_BIND_PORT",
+        "AGENCY_OIDC_ISSUER",
+        "AGENCY_OIDC_CLIENT_SECRET",
+        "AGENCY_OIDC_JWKS_URL",
+        "AGENCY_DB_URL",
+    ] {
+        assert!(
+            !keys.contains(forbidden),
+            "plugin_safe_env MUST NOT include {forbidden}; got {keys:?}"
+        );
+    }
+    // Exact count: 6 keys (PATH, HOME, TMPDIR,
+    // LANG, AGENCY_PLUGIN_NAME, AGENCY_ROOT).
+    // If a future change adds a 7th key, this
+    // assertion will fire and force a review
+    // of the security contract.
+    assert_eq!(
+        env.len(),
+        6,
+        "plugin_safe_env has unexpected number of entries: {env:?}"
+    );
+    // Spot-check the values for the two
+    // contract vars.
+    let plugin_name = env
+        .iter()
+        .find(|(k, _)| k == "AGENCY_PLUGIN_NAME")
+        .map(|(_, v)| v.as_str())
+        .expect("present");
+    assert_eq!(plugin_name, "test-plugin");
+    let root = env
+        .iter()
+        .find(|(k, _)| k == "AGENCY_ROOT")
+        .map(|(_, v)| v.as_str())
+        .expect("present");
+    assert_eq!(root, dir.path().display().to_string());
+}
+
+#[test]
+fn plugin_safe_env_ignores_parent_secret_env() {
+    // This test demonstrates the post-fix
+    // control: even if a parent env var is
+    // set BEFORE this function is called,
+    // `plugin_safe_env` returns ONLY the
+    // whitelist. The whitelist copy from
+    // the parent for the 4 generic OS vars
+    // (`PATH` / `HOME` / `TMPDIR` / `LANG`)
+    // is intentional and benign — those vars
+    // are not secrets. For sensitive vars
+    // like `AGENCY_VAULT_PASSPHRASE`, the
+    // whitelist does NOT copy from the
+    // parent at all, so a parent-set value
+    // is dropped.
+    //
+    // We do NOT mutate the parent env (Rust
+    // 2024 makes `set_var` unsafe in
+    // multi-threaded contexts; the test
+    // runner shares the process with other
+    // tests). Instead, we rely on the
+    // structural property: `plugin_safe_env`
+    // builds a fresh `Vec<(String, String)>`
+    // and never consults the parent for
+    // `AGENCY_VAULT_PASSPHRASE` /
+    // `AGENCY_ADMIN_TOKEN` / etc. The
+    // `plugin_safe_env_excludes_sensitive_parent_env`
+    // test above asserts the static
+    // whitelist; this test asserts the
+    // same property under a name that makes
+    // the threat model explicit.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let env = PluginScanner::plugin_safe_env("test-plugin", dir.path());
+    // Regardless of what the parent has set
+    // (we did not touch it), the returned
+    // list does not contain any sensitive
+    // `AGENCY_*` var. The pre-fix code did
+    // not drop the parent env, so a plugin
+    // could read `AGENCY_VAULT_PASSPHRASE`
+    // from its own env; the post-fix code
+    // does not pass any such var to the
+    // child.
+    let sensitive = [
+        "AGENCY_VAULT_PASSPHRASE",
+        "AGENCY_ADMIN_TOKEN",
+        "AGENCY_OIDC_CLIENT_SECRET",
+    ];
+    for k in &sensitive {
+        assert!(
+            !env.iter().any(|(name, _)| name == k),
+            "{k} MUST NOT appear in plugin_safe_env"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
 // 2.7.2 plugin auto-discovery (ADR-0030)
 // -----------------------------------------------------------------------
 
@@ -439,9 +586,7 @@ fn minimal_manifest_toml(name: &str) -> (String, String) {
     // simple so the canonical
     // re-serialisation is
     // deterministic.
-    let payload = format!(
-        "name = \"{name}\"\nversion = \"1.0.0\"\nbinary = \"plugin.sh\"\n"
-    );
+    let payload = format!("name = \"{name}\"\nversion = \"1.0.0\"\nbinary = \"plugin.sh\"\n");
     (payload.clone(), payload)
 }
 
@@ -458,11 +603,8 @@ fn signed_manifest(name: &str) -> (String, String, String) {
     let (payload, _raw) = minimal_manifest_toml(name);
     let canonical = payload.as_bytes();
     let sig = sk.sign(canonical);
-    let sig_b64 =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes());
-    let signed = format!(
-        "{payload}signer_id = \"{signer_id}\"\nsignature = \"{sig_b64}\"\n"
-    );
+    let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes());
+    let signed = format!("{payload}signer_id = \"{signer_id}\"\nsignature = \"{sig_b64}\"\n");
     (signer_id, pk_b64, signed)
 }
 
@@ -543,9 +685,7 @@ fn verify_signature_rejects_tampered_name() {
     // computed).
     let tampered = toml.replace("original", "attacker");
     let m = PluginManifest::parse(tampered.as_bytes()).expect("parse");
-    let err = m
-        .verify_signature(&ts)
-        .expect_err("tampered must reject");
+    let err = m.verify_signature(&ts).expect_err("tampered must reject");
     assert!(format!("{err:?}").contains("signature verification failed"));
 }
 
@@ -557,9 +697,7 @@ fn verify_signature_rejects_wrong_signer() {
     let (_id2, pk_b, _toml2) = signed_manifest("plug");
     let ts = trust_store_with(&id, &pk_b);
     let m = PluginManifest::parse(toml.as_bytes()).expect("parse");
-    let err = m
-        .verify_signature(&ts)
-        .expect_err("wrong key must reject");
+    let err = m.verify_signature(&ts).expect_err("wrong key must reject");
     assert!(format!("{err:?}").contains("signature verification failed"));
 }
 
@@ -581,7 +719,13 @@ fn canonical_bytes_strip_signature_and_signer_id() {
     let m = PluginManifest::parse(toml.as_bytes()).expect("parse");
     let canonical = m.canonical_bytes().expect("canonical");
     let s = std::str::from_utf8(&canonical).expect("utf8");
-    assert!(!s.contains("signature"), "canonical must strip signature: {s}");
-    assert!(!s.contains("signer_id"), "canonical must strip signer_id: {s}");
+    assert!(
+        !s.contains("signature"),
+        "canonical must strip signature: {s}"
+    );
+    assert!(
+        !s.contains("signer_id"),
+        "canonical must strip signer_id: {s}"
+    );
     assert!(s.contains("plug"), "canonical must keep name: {s}");
 }

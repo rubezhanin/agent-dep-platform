@@ -92,6 +92,78 @@ impl PluginScanner {
             binary: binary.into(),
         }
     }
+
+    /// P0-ENV-01 (TZ #2 WP-1.1, CWE-200):
+    /// the explicit whitelist of environment
+    /// variables the plugin child process is
+    /// allowed to see. Anything not in this
+    /// list is `env_clear()`'d before the spawn.
+    ///
+    /// The list is intentionally tiny:
+    /// - `PATH` — every binary the plugin
+    ///   shells out to (rare, but plugins
+    ///   do call `which` / `command -v`).
+    /// - `HOME` — plugins that read
+    ///   `~/.config/<plugin>/...` (rare,
+    ///   but the env-var is universally
+    ///   available and benign).
+    /// - `TMPDIR` — plugins that use
+    ///   `tempfile` / `mkstemp` (default
+    ///   location is the OS-specific
+    ///   `std::env::temp_dir()`).
+    /// - `LANG` / `LC_ALL` — ICU and
+    ///   locale-aware string handling.
+    /// - `AGENCY_PLUGIN_NAME` — the
+    ///   plugin's own name (the documented
+    ///   contract).
+    /// - `AGENCY_ROOT` — the catalog root
+    ///   the plugin is scanning.
+    ///
+    /// **Notably absent** (the security
+    /// control):
+    /// - `AGENCY_VAULT_PASSPHRASE` — the
+    ///   vault master key (see
+    ///   `crates/server/src/vault_init.rs`).
+    /// - `AGENCY_ADMIN_TOKEN` — the
+    ///   operator's first-boot admin
+    ///   token.
+    /// - `AGENCY_BIND_IP` / `AGENCY_BIND_PORT`
+    ///   — server bind config (not a
+    ///   secret, but the plugin doesn't
+    ///   need to know).
+    /// - `AGENCY_OIDC_*` — OIDC client
+    ///   secrets (client_secret, jwks_url,
+    ///   etc.).
+    /// - `AGENCY_DB_*` — DB connection
+    ///   strings.
+    /// - `*_TOKEN`, `*_KEY`, `*_SECRET` —
+    ///   any other secret-bearing env vars.
+    ///
+    /// The pre-fix code's failure to call
+    /// `env_clear()` made all of the above
+    /// readable from the plugin's
+    /// `std::env::var`. The post-fix code
+    /// drops the inherited env entirely
+    /// and re-adds only this whitelist.
+    ///
+    /// This helper is `pub` so the test
+    /// suite in `plugin_tests.rs` can
+    /// assert the whitelist shape directly
+    /// (no process spawn required).
+    pub fn plugin_safe_env(name: &str, root: &Path) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::with_capacity(6);
+        // Generic OS-level vars that plugins
+        // may rely on. These are copied from
+        // the parent env; if the parent has
+        // not set them, we set them to "".
+        for k in &["PATH", "HOME", "TMPDIR", "LANG"] {
+            out.push(((*k).to_string(), std::env::var(k).unwrap_or_default()));
+        }
+        // Documented plugin contract.
+        out.push(("AGENCY_PLUGIN_NAME".to_string(), name.to_string()));
+        out.push(("AGENCY_ROOT".to_string(), root.display().to_string()));
+        out
+    }
 }
 
 impl Scanner for PluginScanner {
@@ -133,25 +205,60 @@ impl Scanner for PluginScanner {
                 path: "plugin.request".to_string(),
                 reason: format!("serialise: {e}"),
             })?;
-        let mut child = Command::new(&self.binary)
-            .stdin(Stdio::piped())
+        // P0-ENV-01 (TZ #2 WP-1.1, CWE-200):
+        // the pre-fix code spawned the plugin
+        // with `Command::new(&self.binary)` and
+        // called `.env("AGENCY_PLUGIN_NAME", ...)`
+        // / `.env("AGENCY_ROOT", ...)`. The
+        // resulting child process inherited
+        // the parent's full environment, which
+        // includes `AGENCY_VAULT_PASSPHRASE`,
+        // `AGENCY_ADMIN_TOKEN`, and any other
+        // server-side secrets. A malicious or
+        // compromised plugin could read those
+        // values via `std::env::var("...")` and
+        // exfiltrate them through its stdout /
+        // a network call / the catalog upload
+        // path. CWE-200 (Exposure of Sensitive
+        // Information to an Unauthorized Actor).
+        //
+        // Post-fix: `env_clear()` drops the
+        // inherited env, then we re-add the
+        // minimum set a plugin needs to function
+        // (`PATH` for binary lookup, `HOME` for
+        // plugins that read `~/.config/...`,
+        // `TMPDIR` for `tempfile`-using plugins,
+        // `LANG` for ICU / locale-aware plugins),
+        // and the two `AGENCY_*` vars that are
+        // part of the plugin's documented
+        // contract (`AGENCY_PLUGIN_NAME` and
+        // `AGENCY_ROOT`). Any other `AGENCY_*`
+        // secret-bearing env var is no longer
+        // reachable from the plugin's `getenv`.
+        //
+        // The whitelist is built by the
+        // `plugin_safe_env` helper below, which
+        // is also the unit-test entry point
+        // (tests assert the whitelist shape
+        // directly, without spawning a process).
+        let mut cmd = Command::new(&self.binary);
+        cmd.env_clear();
+        for (k, v) in Self::plugin_safe_env(&self.name, root) {
+            cmd.env(k, v);
+        }
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env("AGENCY_PLUGIN_NAME", &self.name)
-            .env("AGENCY_ROOT", root)
-            .spawn()
-            .map_err(|e| {
-                CoreError::ErrIo(std::io::Error::other(format!(
-                    "spawn plugin {}: {e}",
-                    self.binary.display()
-                )))
-            })?;
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| {
+            CoreError::ErrIo(std::io::Error::other(format!(
+                "spawn plugin {}: {e}",
+                self.binary.display()
+            )))
+        })?;
         // Write the envelope to stdin.
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(&request_json).map_err(|e| {
-                CoreError::ErrIo(std::io::Error::other(format!(
-                    "write plugin stdin: {e}"
-                )))
+                CoreError::ErrIo(std::io::Error::other(format!("write plugin stdin: {e}")))
             })?;
             // Drop stdin to signal EOF.
         }
@@ -165,9 +272,9 @@ impl Scanner for PluginScanner {
         // parent enforces. 2.7.x adds
         // `wait-timeout` once `Child::wait` is
         // stable.
-        let output = child.wait_with_output().map_err(|e| {
-            CoreError::ErrIo(std::io::Error::other(format!("wait plugin: {e}")))
-        })?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| CoreError::ErrIo(std::io::Error::other(format!("wait plugin: {e}"))))?;
         if !output.status.success() {
             // Plugin failed; return an empty list
             // with a synthetic finding so the
@@ -394,22 +501,21 @@ impl PluginManifest {
     /// (production policy: a
     /// manifest MUST be signed) or
     /// if verification fails.
-    pub fn verify_signature(
-        &self,
-        trust: &super::trust_store::TrustStore,
-    ) -> CoreResult<()> {
-        let signature = self.signature.as_deref().ok_or_else(|| {
-            CoreError::ErrSchemaInvalid {
+    pub fn verify_signature(&self, trust: &super::trust_store::TrustStore) -> CoreResult<()> {
+        let signature = self
+            .signature
+            .as_deref()
+            .ok_or_else(|| CoreError::ErrSchemaInvalid {
                 path: "plugin.manifest.signature".to_string(),
                 reason: "manifest is unsigned; 2.7.4 requires a signature".to_string(),
-            }
-        })?;
-        let signer_id = self.signer_id.as_deref().ok_or_else(|| {
-            CoreError::ErrSchemaInvalid {
+            })?;
+        let signer_id = self
+            .signer_id
+            .as_deref()
+            .ok_or_else(|| CoreError::ErrSchemaInvalid {
                 path: "plugin.manifest.signer_id".to_string(),
                 reason: "manifest has a signature but no signer_id".to_string(),
-            }
-        })?;
+            })?;
         let canonical = self.canonical_bytes()?;
         trust.verify(signer_id, &canonical, signature)
     }
