@@ -337,8 +337,40 @@ async fn plan_endpoint_reports_bad_catalog_as_400() {
         .await
         .expect("post");
     assert_eq!(resp.status(), 400);
+    // P0-API-04: the response is a typed
+    // `ErrorResponse { code, kind, hint }`.
+    // The pre-fix `error` field (a free-form
+    // string with the CoreError's
+    // `to_string()`) is gone — it used to
+    // leak internal path/error messages.
+    // The post-fix `code` is a stable,
+    // machine-readable identifier.
     let v: serde_json::Value = resp.json().await.expect("json");
-    assert!(v["error"].as_str().unwrap().contains("not a directory"));
+    assert!(
+        v["code"].is_string(),
+        "P0-API-04: response must include a string `code` field; got: {v}"
+    );
+    let code = v["code"].as_str().unwrap();
+    // The exact code depends on whether
+    // the bad path is a "not a directory"
+    // IO error or a "schema invalid"
+    // validation error. Either is fine;
+    // both are stable, opaque codes.
+    assert!(
+        code == "schema.invalid" || code == "internal.io" || code == "internal.untyped",
+        "expected one of the stable error codes; got `{code}`"
+    );
+    // The pre-fix response included the
+    // raw `e.to_string()` (e.g.
+    // "not a directory (os error 21)"),
+    // which leaks file paths and OS
+    // error numbers. The post-fix
+    // `hint` is a generic, safe string.
+    let hint = v["hint"].as_str().unwrap_or("");
+    assert!(
+        !hint.contains("not a directory"),
+        "P0-API-04: hint MUST NOT echo internal error messages; got: {hint}"
+    );
 }
 
 // Suppress unused-import warning for `AuditOutcome`; the

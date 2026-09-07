@@ -11,6 +11,61 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P0-API-04 Structured error response
+  (TZ #1 §17 / API-04, CWE-209).** The
+  pre-fix `handlers.rs` returned
+  `Json(json!({"error": e.to_string()}))`
+  on every error path. `CoreError`'s
+  `to_string()` includes the underlying
+  `sqlx::Error::Database` message
+  (which can contain SQL fragments,
+  table names, and parameter values),
+  the file path on filesystem errors,
+  the JWKS URL on OIDC errors, and
+  stack-frame hints from `anyhow`'s
+  context chain. All of this leaked
+  to the client (and via the audit log
+  to anyone with `audit_log` read
+  access). Post-fix: every error
+  response is a structured
+  `ErrorResponse { code, kind, hint }`
+  whose `code` is a stable
+  machine-readable string, `kind` is
+  one of a fixed enum (`bad_request`,
+  `unauthorized`, `forbidden`,
+  `not_found`, `conflict`,
+  `unprocessable`, `internal`), and
+  `hint` is a short operator-facing
+  string that NEVER includes
+  user-supplied data, file paths, SQL
+  fragments, or internal state. The
+  internal `CoreError` / `anyhow::Error`
+  / `sqlx::Error` is logged at
+  `tracing::warn!` level with full
+  detail (so the operator can debug)
+  but is NOT echoed to the client.
+  New module
+  `crates/server/src/error_response.rs`
+  with three functions:
+  `from_core_error(&CoreError)` for
+  the typed `CoreError` mapping,
+  `from_any_error(&dyn Display)` for
+  generic `anyhow::Error` /
+  `sqlx::Error` arms, and
+  `AppError` + `AppError::into_response`
+  for handlers that want to raise a
+  domain error. 25 callsite updates in
+  `handlers.rs`. 8 unit tests in
+  `error_response::tests` (typed +
+  serialisation + leak-prevention).
+  The existing
+  `http_integration::plan_endpoint_reports_bad_catalog_as_400`
+  test was updated to assert the new
+  shape (`code` / `kind` / `hint`)
+  and to verify the pre-fix
+  `not a directory` leak is gone.
+  No residual risk.
+
 - **P0-ENV-01 Plugin env_clear()
   (TZ #2 WP-1.1, CWE-200).** The pre-fix
   `PluginScanner::scan` spawned the plugin

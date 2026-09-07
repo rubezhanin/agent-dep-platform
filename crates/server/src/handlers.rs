@@ -81,7 +81,7 @@ pub async fn list_audit(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -131,7 +131,7 @@ pub async fn list_systems(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -209,7 +209,7 @@ pub async fn plan_system(
                 .await;
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -259,7 +259,7 @@ pub async fn rollback_operation(
                 .await;
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -331,7 +331,7 @@ pub async fn list_users(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -384,7 +384,7 @@ pub async fn create_user(
                 .await;
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -436,7 +436,7 @@ pub async fn disable_user(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -488,7 +488,7 @@ pub async fn rotate_user_token(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -593,11 +593,7 @@ pub async fn request_deploy(
         }
         Some(n) => n,
     };
-    let target_id: Option<i64> = match state
-        .targets
-        .find_by_env_name(env, target_name)
-        .await
-    {
+    let target_id: Option<i64> = match state.targets.find_by_env_name(env, target_name).await {
         Ok(Some(row)) => Some(row.id),
         Ok(None) => {
             let _ = state
@@ -637,7 +633,7 @@ pub async fn request_deploy(
                 .await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response();
         }
@@ -659,7 +655,7 @@ pub async fn request_deploy(
                         .await;
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": e.to_string()})),
+                        crate::error_response::from_any_error(&e),
                     )
                         .into_response();
                 }
@@ -712,7 +708,7 @@ pub async fn request_deploy(
                         .await;
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": e.to_string()})),
+                        crate::error_response::from_any_error(&e),
                     )
                         .into_response()
                 }
@@ -731,7 +727,7 @@ pub async fn request_deploy(
                 .await;
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -789,7 +785,7 @@ pub async fn list_deploys(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -841,7 +837,7 @@ pub async fn get_deploy(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -900,7 +896,7 @@ pub async fn approve_deploy(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -975,7 +971,7 @@ pub async fn reject_deploy(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -1027,7 +1023,7 @@ pub async fn mark_applied(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -1100,7 +1096,7 @@ pub async fn list_secrets(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -1179,7 +1175,7 @@ pub async fn create_secret(
                 .await;
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -1234,7 +1230,7 @@ pub async fn update_secret(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -1282,7 +1278,7 @@ pub async fn delete_secret(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -1372,7 +1368,7 @@ pub async fn list_targets(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -1424,7 +1420,7 @@ pub async fn get_target(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -1476,7 +1472,7 @@ pub async fn create_target(
                 .await;
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }
@@ -1528,7 +1524,7 @@ pub async fn delete_target(
                 .await;
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                crate::error_response::from_any_error(&e),
             )
                 .into_response()
         }

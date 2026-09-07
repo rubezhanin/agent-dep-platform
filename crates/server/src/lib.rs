@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod catalog;
+pub mod error_response;
 pub mod handlers;
 pub mod oidc;
 pub mod oidc_client;
