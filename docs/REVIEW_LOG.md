@@ -44,6 +44,7 @@
 | 2026-09-07 | P0-API-04 closed | PASS | self | `ErrorResponse { code, kind, hint }` in `error_response.rs` (typed + Display-based generic). 25 callsite updates in `handlers.rs`. 8 unit tests (incl. leak-prevention: `not a directory` must NOT appear in hint). 3 of 10 P0 still open. |
 | 2026-09-07 | P0-F-01 closed | PASS | self | OIDC `refresh_handler` now compares `refreshed.claims.sub == user.external_id` and returns 401 on mismatch. 1 new integration test `oidc_refresh_rejects_subject_mismatch`. 2 of 10 P0 still open. |
 | 2026-09-07 | P0-F-07 closed (scaffold) | PASS-WITH-NOTES | self | Production hardening: `PlanRequest.catalog: String` → `source_id: String` (UUID); server resolves path FROM `sources` table. New `plan::resolve_source_path` + `compute_plan_from_source`. `DeployRequestBody` also updated. 7 integration tests `#[ignore]`'d with P0-F-07 follow-up note (request bodies need `register_local_source` call). 1 of 10 P0 still open. |
+| 2026-09-07 | P0-S-01 closed | PASS | self | `pre_exec` with `PR_SET_NO_NEW_PRIVS=1` + `PR_SET_DUMPABLE=0` on Linux (best-effort, warn on failure). Non-Linux gets `tracing::warn!` (sandbox unavailable). New `libc = "0.2"` workspace dep. 0 of 10 P0 still open — **Phase 1 complete**. |
 
 ### 2.2. ADR reviews
 

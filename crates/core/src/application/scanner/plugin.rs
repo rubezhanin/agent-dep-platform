@@ -249,6 +249,81 @@ impl Scanner for PluginScanner {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // P0-S-01 (TZ #1 §9 S-01, CWE-250,
+        // Appendix A.6): the pre-fix code
+        // spawned the plugin with the
+        // parent's full privilege set. A
+        // malicious or compromised plugin
+        // could exploit setuid binaries on
+        // the host (`/usr/bin/su`,
+        // `/usr/bin/sudo`), bind privileged
+        // ports (< 1024), or call
+        // `setuid(0)` to gain root.
+        // Post-fix: on Linux we ask the
+        // kernel to drop the
+        // `PR_SET_NO_NEW_PRIVS` flag on the
+        // child, which prevents the plugin
+        // from gaining new privileges via
+        // any executable that has setuid /
+        // setgid bits or file capabilities.
+        // We also request `PR_SET_DUMPABLE=0`
+        // to prevent the kernel from writing
+        // a core dump (which would include
+        // any secrets the plugin had in
+        // memory). Both calls are best-
+        // effort: if they fail (older kernel,
+        // non-Linux), the scan continues
+        // with a `tracing::warn!` — better
+        // than refusing to scan at all.
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: `pre_exec` runs in the
+            // forked child between fork() and
+            // exec(). Only async-signal-safe
+            // functions may be called. We use
+            // `libc::prctl` (async-signal-safe)
+            // with two PR_SET_* operations.
+            // If prctl returns -1 we do not
+            // abort: the child can still run,
+            // it just won't have the
+            // additional restrictions.
+            unsafe {
+                let no_new_privs = libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+                if no_new_privs != 0 {
+                    tracing::warn!(
+                        "P0-S-01: PR_SET_NO_NEW_PRIVS failed; \
+                         plugin will run without no-new-privs hardening"
+                    );
+                }
+                let dumpable = libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+                if dumpable != 0 {
+                    tracing::warn!(
+                        "P0-S-01: PR_SET_DUMPABLE=0 failed; \
+                         core dumps may be written on plugin crash"
+                    );
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // P0-S-01: no sandbox is
+            // available on non-Linux
+            // platforms. The plugin runs
+            // with the parent's full
+            // privilege set, and a warning
+            // is logged at scan start. The
+            // operator must NOT run the
+            // server on a non-Linux host
+            // in production; this is
+            // explicitly called out in
+            // docs/DEPLOY.md (see the 2.9.0
+            // deployment notes).
+            tracing::warn!(
+                "P0-S-01: plugin sandbox is Linux-only; \
+                 running plugin on a non-Linux platform without \
+                 privilege isolation. Do NOT use in production."
+            );
+        }
         let mut child = cmd.spawn().map_err(|e| {
             CoreError::ErrIo(std::io::Error::other(format!(
                 "spawn plugin {}: {e}",

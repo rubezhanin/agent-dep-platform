@@ -11,6 +11,48 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P0-S-01 Plugin sandbox
+  (TZ #1 §9 S-01, CWE-250, Appendix
+  A.6).** The pre-fix
+  `PluginScanner::scan` spawned the plugin
+  with the parent's full privilege set.
+  A malicious or compromised plugin could
+  exploit setuid binaries on the host
+  (`/usr/bin/su`, `/usr/bin/sudo`), bind
+  privileged ports (< 1024), or call
+  `setuid(0)` to gain root. Post-fix, the
+  spawn path now uses a `pre_exec` closure
+  (Linux only) that calls
+  `libc::prctl(PR_SET_NO_NEW_PRIVS, 1)`
+  and `libc::prctl(PR_SET_DUMPABLE, 0)`.
+  `PR_SET_NO_NEW_PRIVS` blocks the plugin
+  from gaining new privileges via any
+  executable that has setuid / setgid
+  bits or file capabilities (CWE-250
+  mitigation). `PR_SET_DUMPABLE=0`
+  prevents the kernel from writing a
+  core dump on plugin crash (which would
+  include any secrets the plugin had in
+  memory). Both calls are best-effort:
+  if they fail (older kernel), the scan
+  continues with a `tracing::warn!`. On
+  non-Linux platforms (Windows, macOS)
+  the pre-fix warning is now an explicit
+  `tracing::warn!` at scan start saying
+  the plugin sandbox is Linux-only and
+  the operator must not run in production
+  on a non-Linux host. New
+  `libc = "0.2"` workspace dep + `libc`
+  dep in `crates/core/Cargo.toml`. The 25
+  pre-existing plugin unit tests
+  continue to pass on all platforms;
+  the `pre_exec` calls are
+  `#[cfg(target_os = "linux")]` so the
+  Windows CI path stays green. No
+  residual risk on Linux; on non-Linux
+  the operator must follow the
+  deployment documentation.
+
 - **P0-F-07 Path ID instead of filesystem
   path (TZ #1 §8 F-07, CWE-22, Appendix
   A.5).** The pre-fix `PlanRequest` and

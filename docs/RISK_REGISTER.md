@@ -48,6 +48,7 @@ RR-NNN | <status> | <finding ref> | <category> | <description> | <owner> | <miti
 | RR-NNN | Status | Finding ref | Category | Description | Owner | Mitigation / acceptance | Date |
 |---|---|---|---|---|---|---|---|
 | RR-001 | OPEN | P0-F-05 | CWE-798 | Windows file ACL для `vault.salt` не enforced агентом — `set_salt_file_mode` is no-op на Windows. Если Windows host с shared user'ами, другие user'ы могут прочитать salt. | operator | Документировать в `docs/DEPLOY.md` Windows deployment; mitigation = `icacls` post-install или dedicated agency user. ACCEPTED до Phase 5. | 2026-09-07 |
+| RR-002 | OPEN | P0-S-01 | CWE-250 | Plugin sandbox `PR_SET_NO_NEW_PRIVS` is Linux-only. На Windows / macOS the plugin runs with the parent's full privilege set; a malicious plugin could exploit setuid binaries or call `setuid(0)` directly. | operator | Документировать в `docs/DEPLOY.md` что production deploy — Linux only. ACCEPTED для dev / test. Production deployment на non-Linux — Phase 5 follow-up (requires bwrap / nsjail / containerd). | 2026-09-07 |
 
 ---
 
