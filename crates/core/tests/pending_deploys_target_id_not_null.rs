@@ -37,7 +37,10 @@ async fn read_schema_version(pool: &sqlx::SqlitePool) -> i64 {
 async fn migration_018_applies_to_a_fresh_db() {
     let (_dir, pool) = fresh_db().await;
     let v = read_schema_version(&pool).await;
-    assert_eq!(v, 18, "schema_version must be 18 after fresh migrate");
+    assert_eq!(
+        v, 19,
+        "schema_version must be 19 after fresh migrate (018 + 019)"
+    );
 }
 
 #[tokio::test]
@@ -130,6 +133,13 @@ async fn migration_018_orphan_row_is_dropped() {
     // `target_id` already, so the
     // orphan insert fails. We
     // verify the schema is at 18.
+    // P0-SENT-01 (migration 019): fresh DB
+    // is at 19 after 018 + 019. The
+    // orphan-insert test still exercises
+    // the 2.5.3 NOT NULL constraint (the
+    // fresh_db() helper applies every
+    // migration in order), so this
+    // assertion is just the post-019 value.
     let v = read_schema_version(&pool).await;
-    assert_eq!(v, 18);
+    assert_eq!(v, 19);
 }

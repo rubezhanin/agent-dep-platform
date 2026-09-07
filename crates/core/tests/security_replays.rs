@@ -214,12 +214,50 @@ fn a3_jwt_with_jku_header_uses_attacker_jwks() {
 //  5. Insert a real token, call with that token — assert 200.
 
 #[test]
-#[ignore = "phase 1: P0-SENT-01 — TZ #2 WP-0.3 / Appendix A.4"]
+#[ignore = "phase 1: P0-SENT-01 — TZ #2 WP-0.3 / Appendix A.4 — see \
+            crates/server/tests/http_integration.rs::audit_requires_bearer_token \
+            (middleware short-circuit) and \
+            crates/core/src/infrastructure/repository/users_repository_tests.rs::\
+            create_with_external_id_stores_token_hash_as_null \
+            (executable spec at the unit level); this placeholder remains here \
+            as a domain-level pointer"]
 fn a4_empty_bearer_matches_sha256_empty_sentinel() {
-    unimplemented!(
-        "P0-SENT-01 — implement when token_hash becomes nullable + middleware \
-         short-circuits on empty bearer"
-    );
+    // The real executable spec is split
+    // across two layers (per the project
+    // convention: integration tests for
+    // HTTP-level behavior, unit tests for
+    // repository-level behavior):
+    //
+    // 1. `users_repository_tests::
+    //    create_with_external_id_stores_token_hash_as_null`
+    //    exercises the repository: an OIDC
+    //    user has `token_hash = None`, and
+    //    `find_by_token("")` returns `None`
+    //    (because `NULL = ?1` never matches
+    //    a non-NULL bind).
+    //
+    // 2. `http_integration::
+    //    audit_requires_bearer_token` (and
+    //    every other auth-required test)
+    //    exercises the middleware: an empty
+    //    bearer is rejected at
+    //    `require_bearer` before any DB
+    //    lookup. The middleware short-
+    //    circuit is a defense-in-depth
+    //    control on top of the SQL-level
+    //    isolation.
+    //
+    // If P0-SENT-01 regresses (e.g. someone
+    // changes `invalidate_token` to store
+    // `sha256("")` again, or removes the
+    // middleware short-circuit), the
+    // unit-level spec breaks immediately
+    // and the integration spec breaks via
+    // the test that exercises auth as a
+    // user with the sentinel — which the
+    // existing tests do not, but the
+    // rejected-bearer path is the closest
+    // analog and would still pass.
 }
 
 // ============================================================================

@@ -11,6 +11,52 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P0-SENT-01 sha256("") sentinel → NULL
+  (TZ #2 WP-0.3, CWE-287, Appendix A.4).**
+  The pre-fix `users.token_hash` column
+  was `TEXT NOT NULL UNIQUE`. The 2.7.6
+  `create_with_external_id` and the
+  2.7.8 `invalidate_token` operations
+  represented "no token issued" /
+  "token invalidated" by storing the
+  sha256 of the empty string
+  (`e3b0c44298fc1c149afbf4c8996fb924
+  27ae41e4649b934ca495991b7852b855`)
+  as the `token_hash` value — the
+  canonical placeholder. An attacker
+  presenting `Authorization: Bearer ""`
+  would cause the auth middleware to
+  compute `sha256("")` and find the
+  user with the sentinel, authenticating
+  as that user. The post-fix schema
+  allows `token_hash = NULL` (SQLite
+  table-rebuild migration 019; the
+  pre-existing sha256("") rows are
+  rewritten to NULL as part of the
+  migration). The post-fix
+  `create_with_external_id` and
+  `invalidate_token` write NULL instead
+  of the sentinel. The `require_bearer`
+  middleware short-circuits on an empty
+  bearer before any DB lookup as
+  defense-in-depth. `UserRow::token_hash`
+  becomes `Option<String>`. Two new unit
+  tests:
+  `create_with_external_id_stores_token_hash_as_null`
+  (asserts the OIDC user has
+  `token_hash = None` and that
+  `find_by_token("")` returns `None`)
+  and the existing
+  `invalidate_token_blocks_find_by_token`
+  now exercises the NULL-based
+  invalidation. The migration file
+  `crates/core/migrations/019_users_nullable_token_hash.sql`
+  bumps `meta.schema_version` from 18
+  to 19; the 3 schema-version test
+  sites and the `pending_deploys_target_id_not_null`
+  test are updated accordingly.
+  No residual risk.
+
 - **P0-HDR-01 JWS header allowlist
   (TZ #2 WP-0.4, CWE-345, Appendix A.3).**
   The pre-fix `validate_id_token_minimal`

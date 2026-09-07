@@ -47,6 +47,32 @@ pub async fn require_bearer(
             return unauthorized(&state, &method, &path, "missing Authorization header").await;
         }
     };
+    // P0-SENT-01 (TZ #2 WP-0.3, CWE-287,
+    // Appendix A.4): short-circuit on an
+    // empty bearer BEFORE the DB lookup.
+    //
+    // The pre-fix code accepted any
+    // non-empty `Authorization: Bearer <X>`
+    // header, including `Bearer ""` (the
+    // `extract_bearer` above does not reject
+    // the empty token). The DB lookup would
+    // then compute `sha256("")` and find a
+    // user with the `token_hash` sentinel,
+    // authenticating the request as that
+    // user.
+    //
+    // Post-fix: an empty bearer is rejected
+    // here, before any DB query. The DB
+    // sentinel is now `NULL` (not
+    // `sha256("")`), and a `WHERE token_hash = ?1`
+    // lookup with a non-NULL bind parameter
+    // can never match a NULL row, but the
+    // short-circuit is defense-in-depth and
+    // also avoids the SHA-256 computation on
+    // the hot path.
+    if token.is_empty() {
+        return unauthorized(&state, &method, &path, "empty bearer token").await;
+    }
     match state.users.find_by_token(&token).await {
         Ok(Some(user)) => {
             // 2.7.8 (ADR-0036): enforce

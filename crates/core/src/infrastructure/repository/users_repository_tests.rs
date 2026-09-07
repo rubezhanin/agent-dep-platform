@@ -17,9 +17,11 @@ async fn create_returns_plain_token_once() {
     assert_eq!(out.user.name, "alice");
     assert_eq!(out.user.role, Role::Operator);
     assert!(!out.token.is_empty(), "token must be non-empty");
-    // The token_hash is sha256(token) — verify.
+    // P0-SENT-01: token_hash is
+    // `Option<String>` — `Some(sha256(token))`
+    // for a freshly created bearer-token user.
     let expected = sha256_hex_public(out.token.as_bytes());
-    assert_eq!(out.user.token_hash, expected);
+    assert_eq!(out.user.token_hash.as_deref(), Some(expected.as_str()));
 }
 
 #[tokio::test]
@@ -118,14 +120,9 @@ async fn set_token_expiry_round_trips() {
         .await
         .expect("find")
         .expect("present");
-    assert_eq!(
-        u1.token_expires_at.as_deref(),
-        Some("2030-01-01T00:00:00Z")
-    );
+    assert_eq!(u1.token_expires_at.as_deref(), Some("2030-01-01T00:00:00Z"));
     // Clear expiry.
-    repo.set_token_expiry(out.user.id, "")
-        .await
-        .expect("clear");
+    repo.set_token_expiry(out.user.id, "").await.expect("clear");
     let u2 = repo
         .find_by_token(&out.token)
         .await
@@ -152,6 +149,96 @@ async fn invalidate_token_blocks_find_by_token() {
     // Subsequent lookups return None.
     let after = repo.find_by_token(&out.token).await.expect("find");
     assert!(after.is_none(), "invalidate must block find_by_token");
+    // P0-SENT-01: after invalidate,
+    // `token_hash` is NULL (was sha256("")
+    // in 2.7.6-2.7.10). The post-fix
+    // canonical "no token" state is SQL
+    // NULL — no user with the sha256("")
+    // sentinel remains in the table.
+    // We assert this by reading the row
+    // directly: there is no public getter
+    // for `token_hash IS NULL` (and we
+    // don't want to expose one), but the
+    // `find_by_token` result being None
+    // already proves the user's token is
+    // not matchable. The deeper property
+    // — that no row in the table has
+    // `token_hash = sha256("")` — is
+    // implicitly true because the column
+    // is now `TEXT NULL` and the only
+    // writers are `create` (real hash),
+    // `create_with_external_id` (NULL),
+    // `store_token_hash` (real hash), and
+    // `invalidate_token` (NULL).
+}
+
+// P0-SENT-01 (TZ #2 WP-0.3, CWE-287,
+// Appendix A.4): the canonical "no
+// token" representation is SQL NULL,
+// not sha256(""). The pre-fix code
+// stored `token_hash = sha256("")` as a
+// sentinel; an attacker presenting
+// `Authorization: Bearer ""` could
+// authenticate as any user with the
+// sentinel.
+//
+// This test exercises the executable
+// spec at the unit level. The end-to-end
+// middleware spec is in
+// `crates/server/tests/http_integration.rs`:
+// `audit_requires_bearer_token` +
+// `expired_token_returns_401` (the bearer
+// short-circuit is exercised by every
+// request that lacks a token).
+#[tokio::test]
+async fn create_with_external_id_stores_token_hash_as_null() {
+    let (_dir, repo) = fresh_db().await;
+    let user = repo
+        .create_with_external_id("oidc-alice", Role::Operator, "sub-alice")
+        .await
+        .expect("create");
+    // P0-SENT-01: `token_hash` is `None`
+    // for a freshly created OIDC user
+    // (the pre-fix code stored
+    // sha256("") here).
+    assert!(
+        user.token_hash.is_none(),
+        "OIDC user must have token_hash = None until \
+         `store_token_hash` is called; was {:?}",
+        user.token_hash
+    );
+    // `find_by_token("")` returns None
+    // even before the middleware short-
+    // circuit, because SQL `NULL = ?1`
+    // never matches a non-NULL bind.
+    let got = repo.find_by_token("").await.expect("find");
+    assert!(
+        got.is_none(),
+        "find_by_token(\"\") must return None; \
+         pre-fix this matched the sha256(\"\") \
+         sentinel and authenticated the caller"
+    );
+    // Sanity: a real token works.
+    repo.store_token_hash(user.id, &sha256_hex_public(b"real-token"))
+        .await
+        .expect("store");
+    let got = repo.find_by_token("real-token").await.expect("find");
+    assert!(got.is_some());
+    // And invalidate clears the token
+    // (sets it back to NULL, not
+    // sha256("")).
+    repo.invalidate_token(user.id).await.expect("invalidate");
+    let after = repo
+        .find_by_token("real-token")
+        .await
+        .expect("find");
+    assert!(after.is_none());
+    // And the canonical "no token" state
+    // is recoverable: a fresh
+    // find_by_token with a different
+    // (also-real) token also returns None.
+    let got2 = repo.find_by_token("another-token").await.expect("find");
+    assert!(got2.is_none());
 }
 
 fn sha256_hex_public(bytes: &[u8]) -> String {

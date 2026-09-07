@@ -48,7 +48,18 @@ pub struct UserRow {
     pub id: i64,
     pub name: String,
     pub role: Role,
-    pub token_hash: String,
+    /// P0-SENT-01 (TZ #2 WP-0.3, CWE-287,
+    /// Appendix A.4): the user's bearer-token
+    /// hash (64-char lowercase hex of
+    /// SHA-256), or `None` if no token has
+    /// been issued yet (newly created OIDC
+    /// user) or the token has been invalidated.
+    /// `None` is the canonical "no token"
+    /// sentinel — the pre-fix code used
+    /// `sha256("")` here, which was
+    /// indistinguishable from a bearer of
+    /// `""` and broke the auth middleware.
+    pub token_hash: Option<String>,
     pub created_at: String,
     pub last_seen_at: Option<String>,
     pub disabled_at: Option<String>,
@@ -69,11 +80,17 @@ pub struct UserRow {
 /// last_seen_at, disabled_at, external_id,
 /// token_expires_at FROM users`. The nine
 /// fields map 1:1 to [`UserRow`].
+///
+/// P0-SENT-01: `token_hash` is now
+/// `Option<String>` (was `String`). The
+/// 4th tuple position holds the column
+/// value as returned by sqlite3 — a TEXT
+/// column that may be NULL.
 pub type UserRowTuple = (
     i64,
     String,
     String,
-    String,
+    Option<String>,
     String,
     Option<String>,
     Option<String>,
@@ -113,6 +130,13 @@ impl UserRepository {
             });
         }
         let token = generate_token();
+        // P0-SENT-01: a real, freshly
+        // generated token is stored as
+        // `Some(sha256(token))`. The pre-fix
+        // code stored the same value as a
+        // `String`; the `Option` wrapper
+        // makes the "no token" case
+        // explicit.
         let token_hash = sha256_hex(token.as_bytes());
         let now: DateTime<Utc> = Utc::now();
         let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -139,7 +163,7 @@ impl UserRepository {
             id: row.0,
             name: name.to_string(),
             role,
-            token_hash,
+            token_hash: Some(token_hash),
             created_at: now_str,
             last_seen_at: None,
             disabled_at: None,
@@ -253,8 +277,17 @@ impl UserRepository {
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
-        for (id, name, role_str, token_hash, created_at, last_seen_at, disabled_at, external_id, token_expires_at) in
-            rows
+        for (
+            id,
+            name,
+            role_str,
+            token_hash,
+            created_at,
+            last_seen_at,
+            disabled_at,
+            external_id,
+            token_expires_at,
+        ) in rows
         {
             out.push(UserRow {
                 id,
@@ -373,18 +406,28 @@ impl UserRepository {
         }
         let now: DateTime<Utc> = Utc::now();
         let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        // Initial token_hash is the SHA-256 of
-        // an empty string; it gets overwritten
-        // by `store_token_hash` on first
-        // bearer-token issuance.
-        let initial_hash = sha256_hex(b"");
+        // P0-SENT-01 (TZ #2 WP-0.3, CWE-287):
+        // the pre-fix code stored
+        // `token_hash = sha256("")` as a
+        // sentinel for "no token issued".
+        // That sentinel was indistinguishable
+        // from a bearer of `""` and broke the
+        // auth middleware (an attacker
+        // presenting `Authorization: Bearer ""`
+        // could authenticate as any user with
+        // the sentinel). The post-fix
+        // canonical "no token" representation
+        // is SQL NULL — which is what we
+        // store here. The bearer token is
+        // written later via `store_token_hash`
+        // once the OIDC login flow issues one.
         let row: (i64,) = sqlx::query_as(
             "INSERT INTO users (name, role, token_hash, created_at, external_id) \
              VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
         )
         .bind(name)
         .bind(role.as_str())
-        .bind(&initial_hash)
+        .bind(Option::<String>::None)
         .bind(&now_str)
         .bind(external_id)
         .fetch_one(&self.pool)
@@ -402,7 +445,7 @@ impl UserRepository {
             id: row.0,
             name: name.to_string(),
             role,
-            token_hash: initial_hash,
+            token_hash: None,
             created_at: now_str,
             last_seen_at: None,
             disabled_at: None,
@@ -433,11 +476,7 @@ impl UserRepository {
     /// string to clear the expiry (the
     /// user reverts to non-expiring,
     /// matching the 2.7.7 behaviour).
-    pub async fn set_token_expiry(
-        &self,
-        user_id: i64,
-        expires_at: &str,
-    ) -> CoreResult<()> {
+    pub async fn set_token_expiry(&self, user_id: i64, expires_at: &str) -> CoreResult<()> {
         let value: Option<&str> = if expires_at.is_empty() {
             None
         } else {
@@ -453,16 +492,28 @@ impl UserRepository {
 
     /// 2.7.8 (ADR-0036): invalidate the
     /// local bearer token by setting
+    /// `token_hash = NULL`. Subsequent
+    /// `find_by_token` calls return
+    /// `None` for this user (the middleware
+    /// short-circuits on `WHERE token_hash = ?1`
+    /// because NULL never equals a non-NULL
+    /// value in SQL).
+    ///
+    /// P0-SENT-01 (TZ #2 WP-0.3, CWE-287):
+    /// the pre-fix code used
     /// `token_hash = sha256("")` (the
     /// "empty hash" sentinel from
-    /// `create_with_external_id` in
-    /// 2.7.6). Subsequent
-    /// `find_by_token` calls return
-    /// `None` for this user.
+    /// `create_with_external_id` in 2.7.6).
+    /// That sentinel was indistinguishable
+    /// from `Authorization: Bearer ""` at
+    /// the middleware, so an attacker could
+    /// authenticate as any user with the
+    /// sentinel. The post-fix code uses SQL
+    /// NULL, which is structurally distinct
+    /// from any 64-char hex string.
     pub async fn invalidate_token(&self, user_id: i64) -> CoreResult<()> {
-        let empty_hash = sha256_hex(b"");
         sqlx::query("UPDATE users SET token_hash = ?1 WHERE id = ?2")
-            .bind(&empty_hash)
+            .bind(Option::<String>::None)
             .bind(user_id)
             .execute(&self.pool)
             .await?;
