@@ -721,6 +721,115 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     rows are strictly stronger
     (per-secret salt + AAD).
 
+- **P1-F-03a Server-side session store
+  (TZ #2 WP-3.3, CWE-613, Appendix A.8,
+  data layer only).** The pre-fix 2.10.0
+  OIDC flow issues a local bearer in the
+  JSON body of `/v1/auth/oidc/callback`;
+  the SPA holds it in JS memory and uses
+  it as `Authorization: Bearer`. The
+  bearer has a 1-hour `token_expires_at`
+  but is otherwise immutable — there is
+  no server-side revoke, no idle
+  timeout, and no absolute timeout. A
+  captured bearer cannot be remotely
+  killed, and an active session is
+  killed exactly at expiry regardless
+  of how recently the user actually
+  stopped working. CWE-613.
+  - New `sessions` table (migration
+    021): `id` (32-byte random
+    base64url = the cookie value),
+    `user_id` (FK to `users`),
+    `csrf_token` (32-byte random for
+    `X-CSRF-Token` header),
+    `created_at`, `last_used_at` (advanced
+    on every successful `find`),
+    `idle_expires_at` (sliding window,
+    `now + IDLE_TTL_SECS = 3600`),
+    `absolute_expires_at` (fixed cap,
+    `now + ABSOLUTE_TTL_SECS = 8 * 3600`),
+    `revoked_at`, `ip`, `user_agent`.
+    Two indexes: `user_id` (for
+    `list_active_for_user`) and
+    `revoked_at + idle_expires_at`
+    (for GC). No CHECK on `version` /
+    state — app-level `find` is the
+    single source of truth.
+  - New `SessionRepository`
+    (`crates/core/src/infrastructure/repository/sessions_repository.rs`):
+    - `create(user_id, ip, user_agent) ->
+      (id, SessionRow)` — random
+      base64url id + CSRF token;
+      `idle_expires_at = now + 1h`,
+      `absolute_expires_at = now + 8h`.
+    - `find(id) -> Option<SessionRow>` —
+      SQL predicate filters on
+      `revoked_at IS NULL AND
+      idle_expires_at > now AND
+      absolute_expires_at > now`; on a
+      valid hit, the row is touched
+      (`last_used_at = now`,
+      `idle_expires_at = now + 1h`).
+      `absolute_expires_at` is
+      deliberately NOT advanced on
+      touch (the cap is the cap).
+    - `revoke(id) -> bool` — sets
+      `revoked_at = now`. Idempotent
+      (revoking an already-revoked
+      session is a no-op and returns
+      `false`).
+    - `revoke_all_for_user(user_id) ->
+      usize` — kill switch for the
+      future `/v1/auth/sessions`
+      admin "log out everywhere"
+      button.
+    - `list_active_for_user(user_id)`
+      — admin-facing summary; the
+      `csrf_token` is deliberately
+      NOT included (defense in depth:
+      an admin who can list sessions
+      should not be able to forge
+      state-changing requests on
+      the user's behalf).
+    - `gc_expired() -> usize` —
+      best-effort cleanup of
+      `revoked_at IS NOT NULL OR
+      idle_expires_at < now OR
+      absolute_expires_at < now`,
+      designed to be called by the
+      server's background GC task
+      every 60 s (the P1-F-03b
+      follow-up wires this into
+      `boot_default_state`).
+  - 10 new unit tests in
+    `sessions_repository_tests.rs`:
+    round-trip, sliding `find`,
+    revoke, idempotent revoke,
+    `revoke_all_for_user`,
+    list-active-skips-revoked,
+    `gc_expired`, two-sessions-
+    per-user get independent ids
+    and CSRF tokens, unknown id,
+    revoked row.
+  - Migration 021 bumps
+    `meta.schema_version` 20 → 21.
+    Four test sites updated
+    (`sqlite_tests`, `journal_tests`,
+    `cli_tests`,
+    `pending_deploys_target_id_not_null`).
+  - **No API change yet.** The
+    P1-F-03b follow-up wires the
+    repository into the OIDC handlers
+    (callback, refresh, logout) and
+    adds a `require_session_or_bearer`
+    middleware that prefers the
+    session cookie and falls back to
+    the legacy bearer. P1-F-03a
+    is the data layer only; the CWE-613
+    attack surface is not closed
+    until P1-F-03b lands.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added
