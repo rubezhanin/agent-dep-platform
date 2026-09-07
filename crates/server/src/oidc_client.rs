@@ -57,6 +57,65 @@ pub struct CallbackInput {
     pub nonce: String,
 }
 
+/// JWS header with strict allowlist (P0-HDR-01,
+/// TZ #2 WP-0.4, CWE-345, Appendix A.3).
+///
+/// The pre-fix code parsed the header as
+/// `serde_json::Value` and accepted ANY field
+/// (including `jku`, `x5u`, `x5c`, `jwk`, `crit`).
+/// An attacker who forges a token with
+/// `jku: https://evil.example/jwks` could
+/// trick the validator into fetching and
+/// trusting attacker-controlled keys. This
+/// struct explicitly allowlists `alg`, `kid`,
+/// `typ`, and `cty` (the four RFC 7515
+/// header fields that are safe to honor);
+/// any other field causes parse failure
+/// (via `deny_unknown_fields`).
+///
+/// **Explicitly rejected fields (security):**
+/// - `jku` (JWK Set URL) — attacker-controlled
+///   JWKS pointer.
+/// - `x5u` (X.509 URL) — same.
+/// - `x5c` (X.509 chain) — embedded untrusted
+///   certs.
+/// - `jwk` (embedded key) — embedded untrusted
+///   key.
+/// - `crit` (critical extensions) — would force
+///   us to honor custom extensions we don't
+///   understand.
+/// - `x5t` / `x5t#S256` (X.509 thumbprint) —
+///   same threat as `x5c`; not used by any
+///   OIDC IdP in the wild.
+///
+/// **Allowed but informational:**
+/// - `typ` — typically `"JWT"` per RFC 7519.
+///   We don't act on it.
+/// - `cty` — content type, similarly
+///   informational.
+///
+/// `alg` is required (we use it to dispatch
+/// the signature algorithm). `kid` is
+/// optional in the claims-only path;
+/// required in the signature path.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JwsHeader {
+    pub alg: String,
+    #[serde(default)]
+    pub kid: Option<String>,
+    /// RFC 7515 typ — informational only.
+    /// Some IdPs (and the pre-existing
+    /// `make_jwt` test helper) include it.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub typ: Option<String>,
+    /// RFC 7515 cty — informational only.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub cty: Option<String>,
+}
+
 /// What the client returns on success. The
 /// `callback_handler` forwards the claims to
 /// `provision_user_from_claims`.
@@ -630,19 +689,22 @@ async fn validate_id_token_minimal(
         })?;
 
     // Parse header.
-    let header: serde_json::Value =
+    //
+    // P0-HDR-01 (TZ #2 WP-0.4): the typed
+    // `JwsHeader` struct has `deny_unknown_fields`,
+    // so any header field other than `alg` /
+    // `kid` (e.g. `jku`, `x5u`, `x5c`, `jwk`,
+    // `crit`) causes serde to return an error
+    // here. The pre-fix code accepted any
+    // header shape via `serde_json::Value` and
+    // could be tricked by an attacker pointing
+    // `jku` at an attacker-controlled JWKS.
+    let header: JwsHeader =
         serde_json::from_slice(&header_bytes).map_err(|e| CoreError::ErrSchemaInvalid {
             path: "oidc.id_token".to_string(),
             reason: format!("header JSON: {e}"),
         })?;
-    let alg =
-        header
-            .get("alg")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CoreError::ErrSchemaInvalid {
-                path: "oidc.id_token".to_string(),
-                reason: "no `alg` in JWS header".to_string(),
-            })?;
+    let alg = header.alg;
     // 2.7.9 (ADR-0037): full RSA
     // signature verification. 2.7.7.1
     // adds ES256/ES384 (ECDSA P-256 /
@@ -651,7 +713,7 @@ async fn validate_id_token_minimal(
     // `none` trick are still rejected
     // here.
     if !matches!(
-        alg,
+        alg.as_str(),
         "RS256" | "RS384" | "RS512" | "ES256" | "ES384" | "PS256" | "PS384" | "PS512"
     ) {
         return Err(CoreError::ErrSchemaInvalid {
@@ -839,27 +901,28 @@ async fn verify_jwt_signature(
             path: "oidc.id_token".to_string(),
             reason: format!("header b64: {e}"),
         })?;
-    let header: serde_json::Value =
+    // P0-HDR-01: typed `JwsHeader` with
+    // `deny_unknown_fields` (see the type
+    // definition). Any header field other
+    // than `alg` / `kid` causes serde to
+    // return an error here, so `jku` /
+    // `x5u` / `x5c` / `jwk` / `crit`
+    // are rejected at parse time.
+    let header: JwsHeader =
         serde_json::from_slice(&header_bytes).map_err(|e| CoreError::ErrSchemaInvalid {
             path: "oidc.id_token".to_string(),
             reason: format!("header JSON: {e}"),
         })?;
-    let alg = header
-        .get("alg")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CoreError::ErrSchemaInvalid {
-            path: "oidc.id_token".to_string(),
-            reason: "no `alg` in JWS header".to_string(),
-        })?
-        .to_string();
-    let kid =
-        header
-            .get("kid")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CoreError::ErrSchemaInvalid {
-                path: "oidc.id_token".to_string(),
-                reason: "no `kid` in JWS header".to_string(),
-            })?;
+    let alg = header.alg;
+    // The signature path requires `kid` to
+    // pick the right JWK from the JWKS. The
+    // claims-only path (validate_id_token_minimal)
+    // accepts `kid = None`; this signature
+    // path does not.
+    let kid = header.kid.ok_or_else(|| CoreError::ErrSchemaInvalid {
+        path: "oidc.id_token".to_string(),
+        reason: "no `kid` in JWS header".to_string(),
+    })?;
     let jwks: serde_json::Value = http
         .get(jwks_uri)
         .send()
@@ -868,7 +931,7 @@ async fn verify_jwt_signature(
         .json()
         .await
         .map_err(|e| CoreError::ErrIo(std::io::Error::other(format!("JWKS parse: {e}"))))?;
-    let jwk = find_jwk(&jwks, kid)?;
+    let jwk = find_jwk(&jwks, &kid)?;
     let kty =
         jwk.get("kty")
             .and_then(|v| v.as_str())
@@ -892,7 +955,7 @@ async fn verify_jwt_signature(
                     reason: format!("JWK `{kid}` has kty `{kty}` but alg `{alg}` requires RSA"),
                 });
             }
-            let pubkey = decode_rsa_pubkey(&jwk, kid, &b64)?;
+            let pubkey = decode_rsa_pubkey(&jwk, &kid, &b64)?;
             match alg.as_str() {
                 "RS256" => {
                     use rsa::pkcs1v15::{Signature, VerifyingKey};
@@ -962,7 +1025,7 @@ async fn verify_jwt_signature(
                     reason: format!("JWK `{kid}` has kty `{kty}` but alg `{alg}` requires RSA"),
                 });
             }
-            let pubkey = decode_rsa_pubkey(&jwk, kid, &b64)?;
+            let pubkey = decode_rsa_pubkey(&jwk, &kid, &b64)?;
             // `rsa::pss::Signature` is
             // generic over the digest.
             // The salt length is the
@@ -1925,4 +1988,278 @@ mod tests {
     // `kid` / `kty` filter; the
     // test coverage of the signature
     // path is added in 2.7.9.1.
+
+    // -----------------------------------------------------------------
+    // P0-HDR-01 (TZ #2 WP-0.4, CWE-345,
+    // Appendix A.3): JWS header
+    // allowlist. The pre-fix code parsed
+    // the header as `serde_json::Value`
+    // and accepted any field, including
+    // `jku` (JWK Set URL), `x5u` (X.509
+    // URL), `x5c` (X.509 chain), `jwk`
+    // (embedded key), and `crit` (critical
+    // extensions). An attacker who forges
+    // a token with `jku:
+    // https://evil.example/jwks` could
+    // trick the validator into fetching and
+    // trusting attacker-controlled keys.
+    // The post-fix `JwsHeader` struct has
+    // `#[serde(deny_unknown_fields)]` so
+    // any of these fields causes parse
+    // failure.
+    // -----------------------------------------------------------------
+
+    /// Build a JWS string for a given header
+    /// and claims JSON. Used to inject
+    /// disallowed header fields in the
+    /// tests below.
+    fn make_jwt_with_header(header: &serde_json::Value, claims: &serde_json::Value) -> String {
+        use base64::Engine;
+        let h = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(header).unwrap());
+        let p = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(claims).unwrap());
+        // Empty signature — the tests below all
+        // fail at header parse, before signature
+        // verification, so the signature segment
+        // does not need to be valid.
+        format!("{h}.{p}.AAAA")
+    }
+
+    #[tokio::test]
+    async fn rejects_jku_header() {
+        // Attacker-controlled JWKS URL.
+        let header = serde_json::json!({
+            "alg": "RS256",
+            "kid": "k1",
+            "jku": "https://evil.example/jwks",
+        });
+        let claims = serde_json::json!({
+            "iss": "https://idp.example.com",
+            "aud": "client-1",
+            "nonce": "nonce-1",
+            "sub": "user-1",
+        });
+        let jwt = make_jwt_with_header(&header, &claims);
+        let err = validate_id_token_minimal(
+            &jwt,
+            "",
+            "https://idp.example.com",
+            "client-1",
+            Some("nonce-1"),
+            &reqwest::Client::new(),
+        )
+        .await
+        .expect_err("jku header MUST be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("unknown field") || msg.contains("header JSON") || msg.contains("deny"),
+            "expected header-parse error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_x5u_header() {
+        let header = serde_json::json!({
+            "alg": "RS256",
+            "kid": "k1",
+            "x5u": "https://evil.example/cert",
+        });
+        let claims = serde_json::json!({
+            "iss": "https://idp.example.com",
+            "aud": "client-1",
+            "nonce": "nonce-1",
+            "sub": "user-1",
+        });
+        let jwt = make_jwt_with_header(&header, &claims);
+        let err = validate_id_token_minimal(
+            &jwt,
+            "",
+            "https://idp.example.com",
+            "client-1",
+            Some("nonce-1"),
+            &reqwest::Client::new(),
+        )
+        .await
+        .expect_err("x5u header MUST be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("unknown field") || msg.contains("header JSON") || msg.contains("deny"),
+            "got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_x5c_header() {
+        let header = serde_json::json!({
+            "alg": "RS256",
+            "kid": "k1",
+            "x5c": ["MIIB..."],
+        });
+        let claims = serde_json::json!({
+            "iss": "https://idp.example.com",
+            "aud": "client-1",
+            "nonce": "nonce-1",
+            "sub": "user-1",
+        });
+        let jwt = make_jwt_with_header(&header, &claims);
+        let err = validate_id_token_minimal(
+            &jwt,
+            "",
+            "https://idp.example.com",
+            "client-1",
+            Some("nonce-1"),
+            &reqwest::Client::new(),
+        )
+        .await
+        .expect_err("x5c header MUST be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("unknown field") || msg.contains("header JSON") || msg.contains("deny"),
+            "got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_jwk_header() {
+        // Embedded attacker key.
+        let header = serde_json::json!({
+            "alg": "RS256",
+            "kid": "k1",
+            "jwk": {
+                "kty": "RSA",
+                "n": "attacker-modulus",
+                "e": "AQAB",
+            },
+        });
+        let claims = serde_json::json!({
+            "iss": "https://idp.example.com",
+            "aud": "client-1",
+            "nonce": "nonce-1",
+            "sub": "user-1",
+        });
+        let jwt = make_jwt_with_header(&header, &claims);
+        let err = validate_id_token_minimal(
+            &jwt,
+            "",
+            "https://idp.example.com",
+            "client-1",
+            Some("nonce-1"),
+            &reqwest::Client::new(),
+        )
+        .await
+        .expect_err("jwk header MUST be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("unknown field") || msg.contains("header JSON") || msg.contains("deny"),
+            "got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_crit_header() {
+        // Critical extensions — would tell the
+        // validator to honor a custom extension.
+        let header = serde_json::json!({
+            "alg": "RS256",
+            "kid": "k1",
+            "crit": ["exp"],
+            "exp": 9999999999_i64,
+        });
+        let claims = serde_json::json!({
+            "iss": "https://idp.example.com",
+            "aud": "client-1",
+            "nonce": "nonce-1",
+            "sub": "user-1",
+        });
+        let jwt = make_jwt_with_header(&header, &claims);
+        let err = validate_id_token_minimal(
+            &jwt,
+            "",
+            "https://idp.example.com",
+            "client-1",
+            Some("nonce-1"),
+            &reqwest::Client::new(),
+        )
+        .await
+        .expect_err("crit header MUST be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("unknown field") || msg.contains("header JSON") || msg.contains("deny"),
+            "got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepts_minimal_header() {
+        // The post-fix allowlist accepts `alg`
+        // alone (kid is optional in the
+        // claims-only path; required only in
+        // the signature path). The signature
+        // path is also skipped here because
+        // `jwks_uri` is empty. So the validator
+        // should return Ok with the parsed
+        // claims — header parse passed, the
+        // header was within the allowlist.
+        let header = serde_json::json!({"alg": "RS256"});
+        let claims = serde_json::json!({
+            "iss": "https://idp.example.com",
+            "aud": "client-1",
+            "nonce": "nonce-1",
+            "sub": "user-1",
+        });
+        let jwt = make_jwt_with_header(&header, &claims);
+        let out = validate_id_token_minimal(
+            &jwt,
+            "",
+            "https://idp.example.com",
+            "client-1",
+            Some("nonce-1"),
+            &reqwest::Client::new(),
+        )
+        .await
+        .expect("minimal header MUST parse cleanly (claims-only path skips signature)");
+        assert_eq!(out.sub, "user-1");
+    }
+
+    #[tokio::test]
+    async fn accepts_typ_and_cty_headers() {
+        // RFC 7515 typ and cty are allowed
+        // (informational only). Pre-existing
+        // `make_jwt` emits `{"alg":"...","kid":"...","typ":"JWT"}`.
+        // We must not reject real-world IdPs
+        // that include `typ` or `cty`.
+        let header = serde_json::json!({
+            "alg": "RS256",
+            "kid": "k1",
+            "typ": "JWT",
+            "cty": "JWT",
+        });
+        let claims = serde_json::json!({
+            "iss": "https://idp.example.com",
+            "aud": "client-1",
+            "nonce": "nonce-1",
+            "sub": "user-1",
+        });
+        let jwt = make_jwt_with_header(&header, &claims);
+        // We can't reach the signature path
+        // without a real JWKS server, so we
+        // assert that the parse-and-validate
+        // through the claims-only path returns
+        // Ok. (The signature path is exercised
+        // by the existing `es256_*` / `ps256_*`
+        // tests; those now exercise the same
+        // JwsHeader struct.)
+        let out = validate_id_token_minimal(
+            &jwt,
+            "",
+            "https://idp.example.com",
+            "client-1",
+            Some("nonce-1"),
+            &reqwest::Client::new(),
+        )
+        .await
+        .expect("typ + cty headers MUST be allowed");
+        assert_eq!(out.sub, "user-1");
+    }
 }

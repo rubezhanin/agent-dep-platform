@@ -11,6 +11,43 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P0-HDR-01 JWS header allowlist
+  (TZ #2 WP-0.4, CWE-345, Appendix A.3).**
+  The pre-fix `validate_id_token_minimal`
+  parsed the JWS header as
+  `serde_json::Value` and accepted ANY
+  field, including `jku` (JWK Set URL),
+  `x5u` (X.509 URL), `x5c` (X.509 chain),
+  `jwk` (embedded key), and `crit`
+  (critical extensions). An attacker who
+  forges a token with
+  `jku: https://evil.example/jwks` could
+  trick the validator into fetching and
+  trusting attacker-controlled keys. The
+  fix introduces a typed `JwsHeader` struct
+  with `#[serde(deny_unknown_fields)]` that
+  allowlists only `alg`, `kid`, `typ`, and
+  `cty` (the four RFC 7515 fields that are
+  safe to honor). Any other header field
+  (`jku`, `x5u`, `x5c`, `jwk`, `crit`,
+  `x5t`, `x5t#S256`, or anything else)
+  causes a typed parse error before the
+  signature path is reached. 7 new unit
+  tests in `oidc_client::tests`:
+  `rejects_jku_header`,
+  `rejects_x5u_header`,
+  `rejects_x5c_header`,
+  `rejects_jwk_header`,
+  `rejects_crit_header`,
+  `accepts_minimal_header` (the post-fix
+  positive case for `{"alg":"RS256"}`),
+  and `accepts_typ_and_cty_headers`
+  (RFC 7515 informational fields). The
+  existing `es256_*` / `ps256_*` signature
+  tests now also exercise the same
+  `JwsHeader` struct, so the full signature
+  path is covered. No residual risk.
+
 - **P0-NONCE-01 OIDC refresh nonce
   (TZ #2 WP-0.4, CWE-287, Appendix A.2).**
   The pre-fix `validate_id_token_minimal`

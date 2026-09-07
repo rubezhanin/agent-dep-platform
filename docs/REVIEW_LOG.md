@@ -38,6 +38,7 @@
 | 2026-09-07 | Phase 0 → Phase 1 (partial: P0-F-05 only) | PASS-WITH-NOTES | self | Phase 0 Foundation complete (ADR-0043 ratified, 9 foundation files, 114+11+10=135 active tests). P0-F-05 closed (RR-001). 9 of 10 P0 still open. Continue Phase 1. |
 | 2026-09-07 | P0-AUD-01 closed | PASS | self | 2 manual JSON concat call sites in `oidc.rs` (login + refresh) replaced with `serde_json::json!`. 2 new unit tests in `audit_log_repository_tests.rs` (round-trip + malformed-tripwire). 8 of 10 P0 still open. |
 | 2026-09-07 | P0-NONCE-01 closed | PASS | self | `expected_nonce: &str = ""` on refresh path replaced with `Option<&str>`. Initial login uses `Some(stored_nonce)`, refresh uses `None` (OIDC spec says refresh omits nonce). 8 call sites updated (2 production + 6 test fixtures). 7 of 10 P0 still open. |
+| 2026-09-07 | P0-HDR-01 closed | PASS | self | Typed `JwsHeader` struct with `#[serde(deny_unknown_fields)]` allowlists `alg`/`kid`/`typ`/`cty`. Rejects `jku`/`x5u`/`x5c`/`jwk`/`crit`/`x5t` etc. 7 new unit tests in `oidc_client::tests`. 6 of 10 P0 still open. |
 
 ### 2.2. ADR reviews
 
