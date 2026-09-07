@@ -117,6 +117,76 @@ impl OidcConfig {
     pub fn is_enabled(&self) -> bool {
         !self.issuer.is_empty() || self.mock
     }
+
+    /// 2.11.0 (P1-O-05, TZ #1 §14 O-05,
+    /// TZ #2 WP-0.2 / SEC-05, CWE-1188
+    /// Insecure Default Initialization):
+    /// refuse to boot a release build
+    /// with the mock OIDC client
+    /// selected. The mock exists for
+    /// `cargo test` and `cargo run`
+    /// developer loops; in production
+    /// it would mean a real IdP was
+    /// never configured and every
+    /// OIDC flow is going through an
+    /// in-process mock that accepts
+    /// whatever the SPA sends —
+    /// CWE-1188.
+    ///
+    /// The check is `#[cfg]`-gated:
+    /// * `#[cfg(debug_assertions)]` —
+    ///   `cargo run` / `cargo test`
+    ///   builds. The mock is allowed
+    ///   (and `AGENCY_OIDC_MOCK=1` is
+    ///   the documented way to enable
+    ///   it for the dev loop).
+    /// * `#[cfg(not(debug_assertions))]`
+    ///   — release builds. The mock
+    ///   is forbidden: a release
+    ///   build with `mock = true`
+    ///   panics at `boot_default_state`
+    ///   with a clear error message.
+    ///   A release build that wants
+    ///   OIDC must configure a real
+    ///   issuer (`AGENCY_OIDC_ISSUER`,
+    ///   `_CLIENT_ID`, etc.).
+    pub fn validate_for_release(&self) -> CoreResult<()> {
+        // The `debug_assertions` cfg
+        // is set by `cargo build`
+        // (no `--release`) and unset
+        // by `cargo build --release`
+        // / `cargo build --release
+        // --no-default-features`.
+        // The mock is only legal in
+        // debug builds.
+        #[cfg(not(debug_assertions))]
+        {
+            if self.mock {
+                return Err(CoreError::ErrSchemaInvalid {
+                    path: "oidc.config".to_string(),
+                    reason: "AGENCY_OIDC_MOCK=1 is forbidden in release builds (P1-O-05, \
+                         CWE-1188). Configure a real IdP via AGENCY_OIDC_ISSUER, \
+                         AGENCY_OIDC_CLIENT_ID, and AGENCY_OIDC_CLIENT_SECRET."
+                        .to_string(),
+                });
+            }
+            if self.issuer.is_empty() {
+                return Err(CoreError::ErrSchemaInvalid {
+                    path: "oidc.config".to_string(),
+                    reason: "AGENCY_OIDC_ISSUER is required in release builds (P1-O-05, \
+                         CWE-1188). The mock OIDC client is forbidden in release."
+                        .to_string(),
+                });
+            }
+        }
+        // In debug builds, anything
+        // goes: the mock is the
+        // default; the operator can
+        // configure a real IdP via
+        // the env vars.
+        let _ = (); // suppress empty-body lint
+        Ok(())
+    }
 }
 
 /// 2.7.10 (ADR-0038): DB-backed

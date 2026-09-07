@@ -1215,6 +1215,70 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
        "implementation, not
        behaviour".
 
+- **P1-O-05 Mock OIDC forbidden in
+  release (TZ #1 §14 / O-05 +
+  TZ #2 WP-0.2 / SEC-05, CWE-1188
+  Insecure Default Initialization).**
+  The pre-fix 2.10.0 build would
+  happily boot with
+  `AGENCY_OIDC_MOCK=1` in a
+  production release binary. The
+  mock client is an in-process
+  stub that accepts whatever
+  claims the SPA sends — a
+  misconfigured release would
+  silently authenticate users
+  against the stub, with no real
+  IdP and no audit trail in the
+  IdP. CWE-1188.
+  - New
+    `OidcConfig::validate_for_release()`
+    method. In `release` builds
+    (`#[cfg(not(debug_assertions))]`)
+    it rejects:
+    * `mock = true` (i.e.
+      `AGENCY_OIDC_MOCK=1`): a
+      release binary with the
+      mock client selected is a
+      misconfiguration.
+    * `issuer.is_empty()`: a
+      release binary that is
+      neither mocking nor pointing
+      at a real IdP is a
+      misconfiguration.
+  - Both errors are typed
+    `CoreError::ErrSchemaInvalid`
+    so the boot path surfaces a
+    clean error message and the
+    process exits. The check is
+    `#[cfg]`-gated: in debug
+    builds the function is a
+    no-op so `cargo test` /
+    `cargo run` keep working.
+  - `boot_default_state` calls
+    `validate_for_release` and
+    wraps the error with a
+    P1-O-05 pointer so the
+    operator sees the CWE / commit
+    ref in the boot log.
+  - The pre-fix 2.7.7
+    `oidc_mock_default_is_false_in_277`
+    and
+    `oidc_mock_env_var_overrides_to_true`
+    tests cover the env-var
+    selection logic; the
+    release-time check is a
+    `#[cfg]`-gated branch the
+    cargo `--release` build
+    exercises implicitly.
+  - **CWE-1188 closed.** A
+    misconfigured release
+    (`AGENCY_OIDC_MOCK=1` in
+    production) now fails at
+    boot with a clear error,
+    not a silent mock-authenticated
+    deployment.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

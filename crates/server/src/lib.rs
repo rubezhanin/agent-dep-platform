@@ -417,6 +417,25 @@ pub async fn boot_default_state() -> Result<ServerState> {
     };
     let targets = TargetRepository::new(db.pool().clone());
     let oidc = oidc::OidcConfig::from_env();
+    // 2.11.0 (P1-O-05, TZ #1 §14 O-05,
+    // CWE-1188 Insecure Default
+    // Initialization): refuse to
+    // boot a release build with the
+    // mock OIDC client selected.
+    // The mock is for dev / tests
+    // only; a release build that
+    // goes to production with
+    // `AGENCY_OIDC_MOCK=1` would
+    // mean every OIDC flow runs
+    // against an in-process mock
+    // that accepts whatever the SPA
+    // sends. The check is a hard
+    // error (the boot fails; the
+    // process exits) so a
+    // misconfigured release cannot
+    // silently run with the mock.
+    oidc.validate_for_release()
+        .map_err(|e| anyhow::anyhow!("OIDC config rejected at boot (P1-O-05): {e}"))?;
     // 2.11.0 (P1-F-03a/b, CWE-613):
     // server-side session store. The
     // callback/refresh handlers
