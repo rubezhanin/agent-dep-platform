@@ -11,6 +11,52 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P0-F-01 OIDC refresh subject binding
+  (TZ #1 §6 / F-01, CWE-287, Appendix A.1).**
+  The pre-fix `oidc::refresh_handler`
+  looked up the local user by the
+  caller-supplied `sub` in the request
+  body, then refreshed at the IdP using
+  the caller-supplied `refresh_token`,
+  and rotated the local user's bearer
+  token. It never compared the IdP's
+  response `claims.sub` against the
+  local user's `external_id` — meaning
+  an attacker (Alice, holding refresh
+  token RT_A) could call
+  `POST /v1/auth/oidc/refresh` with
+  `{ sub: bob, refresh_token: RT_A }`,
+  the handler would find Bob's row,
+  refresh at the IdP using RT_A (the
+  IdP would validate it as Alice's),
+  get back claims with `sub = "alice"`,
+  and rotate Bob's local token to a
+  freshly generated value. The attacker
+  then holds a fresh local bearer that
+  authenticates as Bob. CWE-287.
+  Post-fix: after the IdP returns the
+  refreshed claims, the handler compares
+  `refreshed.claims.sub` to
+  `user.external_id`; on mismatch, the
+  handler returns 401 with
+  `code = "oidc.refresh.subject_mismatch"`.
+  The local token is NOT rotated in
+  that case. The audit row (with the
+  IdP-returned sub) is also not written,
+  so the failed attempt is invisible to
+  `audit_log` readers but the operator
+  sees a `tracing::warn!` line with
+  both values. 1 new integration test
+  `oidc_refresh_rejects_subject_mismatch`
+  exercises the attack scenario. The
+  pre-existing
+  `oidc_refresh_endpoint_returns_new_token_and_expiry`
+  test was updated to seed the local
+  user's `external_id` to the mock IdP's
+  canned sub (otherwise it would now
+  fail with the new check, which is the
+  correct behaviour). No residual risk.
+
 - **P0-API-04 Structured error response
   (TZ #1 §17 / API-04, CWE-209).** The
   pre-fix `handlers.rs` returned

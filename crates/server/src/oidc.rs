@@ -537,18 +537,16 @@ pub async fn refresh_handler(
     let user = match users.find_by_external_id(&req.sub).await {
         Ok(Some(u)) => u,
         Ok(None) => {
-            return (
+            return crate::error_response::static_error(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "unknown sub"})),
+                "user.not_found",
+                crate::error_response::ErrorKind::NotFound,
+                "user not found",
             )
-                .into_response();
+            .into_response();
         }
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("{e}")})),
-            )
-                .into_response();
+            return crate::error_response::from_any_error(&e).into_response();
         }
     };
     // 2. Call the OidcClient to refresh.
@@ -556,14 +554,66 @@ pub async fn refresh_handler(
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("OIDC refresh: {e}");
-            return (
+            return crate::error_response::static_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{e}")})),
+                "oidc.refresh.failed",
+                crate::error_response::ErrorKind::BadRequest,
+                "OIDC refresh failed",
             )
-                .into_response();
+            .into_response();
         }
     };
-    // 3. Re-provision the local user
+    // 3. P0-F-01 (TZ #1 §6 F-01, CWE-287,
+    //    Appendix A.1): verify that the
+    //    IdP-returned `sub` claim matches
+    //    the local user's `external_id`.
+    //
+    //    Threat: without this check, an
+    //    attacker (alice, holding refresh
+    //    token RT_A) could call this
+    //    endpoint with `{ sub: "bob",
+    //    refresh_token: RT_A }`. The
+    //    handler would:
+    //      1. find bob by external_id
+    //         (L537),
+    //      2. refresh at the IdP using
+    //         RT_A — IdP verifies RT_A
+    //         and returns claims with
+    //         sub = "alice" (the real
+    //         owner of RT_A),
+    //      3. rotate bob's local token
+    //         (L577) and audit-log alice's
+    //         sub against bob's id (L609).
+    //    Result: alice now holds a fresh
+    //    local bearer token whose hash
+    //    matches bob's row — alice is
+    //    authenticated as bob.
+    //
+    //    Post-fix: refuse the refresh if
+    //    `refreshed.claims.sub` does not
+    //    equal the local user's
+    //    `external_id`. The match must be
+    //    exact (OIDC `sub` is a
+    //    case-sensitive string).
+    if refreshed.claims.sub != user.external_id.as_deref().unwrap_or("") {
+        tracing::warn!(
+            user_external_id = %user.external_id.as_deref().unwrap_or(""),
+            refreshed_sub = %refreshed.claims.sub,
+            "P0-F-01: refresh returned sub != user.external_id; \
+             refusing (possible subject confusion attack)"
+        );
+        return (
+            StatusCode::UNAUTHORIZED,
+            crate::error_response::static_error(
+                StatusCode::UNAUTHORIZED,
+                "oidc.refresh.subject_mismatch",
+                crate::error_response::ErrorKind::Unauthorized,
+                "refresh returned a different subject than the local user",
+            ),
+        )
+            .into_response();
+    }
+    // 4. Re-provision the local user
     //    (the sub may have changed
     //    if the IdP rotated
     //    identities — for OIDC, sub
@@ -575,22 +625,14 @@ pub async fn refresh_handler(
     let new_local_token = generate_token();
     let new_hash = sha256_hex(new_local_token.as_bytes());
     if let Err(e) = state.users.store_token_hash(user.id, &new_hash).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("store token: {e}")})),
-        )
-            .into_response();
+        return crate::error_response::from_any_error(&e).into_response();
     }
     if let Err(e) = state
         .users
         .set_token_expiry(user.id, &refreshed.expires_at)
         .await
     {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("set expiry: {e}")})),
-        )
-            .into_response();
+        return crate::error_response::from_any_error(&e).into_response();
     }
     // 4. Audit.
     let _ = state

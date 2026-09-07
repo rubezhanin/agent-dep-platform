@@ -1200,8 +1200,20 @@ async fn oidc_refresh_endpoint_returns_new_token_and_expiry() {
     // surface does not need a separate
     // `create_oidc_user` helper.)
     let users = UserRepository::new(connect_helper(&srv).await);
+    // P0-F-01: the test user MUST have
+    // `external_id` equal to the sub
+    // the mock OIDC client returns
+    // from `refresh()`. Otherwise the
+    // post-fix subject-binding check
+    // (refreshed.claims.sub ==
+    // user.external_id) would correctly
+    // reject the refresh as a subject
+    // confusion attack. The mock
+    // returns `sub = "oidc:test:user-1"`,
+    // so we seed the user with that
+    // external_id.
     let user = users
-        .create_with_external_id("alice", Role::Operator, "sub-abc")
+        .create_with_external_id("alice", Role::Operator, "oidc:test:user-1")
         .await
         .expect("create");
     users
@@ -1213,7 +1225,7 @@ async fn oidc_refresh_endpoint_returns_new_token_and_expiry() {
         .post(format!("{}/v1/auth/oidc/refresh", srv.base))
         .json(&json!({
             "refresh_token": "the-mock-refresh-token",
-            "sub": "sub-abc",
+            "sub": "oidc:test:user-1",
         }))
         .send()
         .await
@@ -1241,6 +1253,72 @@ async fn oidc_refresh_endpoint_returns_new_token_and_expiry() {
     let now = chrono::Utc::now();
     assert!(parsed > now);
     assert!(parsed < now + chrono::Duration::hours(2));
+}
+
+// P0-F-01 (TZ #1 §6 F-01, CWE-287,
+// Appendix A.1): the refresh endpoint
+// MUST refuse a refresh whose IdP-returned
+// `sub` does not match the local user's
+// `external_id`. The pre-fix code did not
+// perform this check, allowing a
+// subject-confusion attack:
+//
+//   1. Alice (sub=alice) has refresh
+//      token RT_A.
+//   2. Attacker (who is Alice) calls
+//      POST /v1/auth/oidc/refresh
+//      with `{ sub: bob, refresh_token: RT_A }`.
+//   3. Pre-fix: the handler finds bob's
+//      local user by `sub=bob`,
+//      refreshes at the IdP using RT_A
+//      (which the IdP validates as
+//      belonging to Alice), gets back
+//      claims with sub=alice, and rotates
+//      bob's local token hash to a
+//      freshly generated value. Alice now
+//      holds a fresh local bearer that
+//      authenticates as bob.
+//   4. Post-fix: the handler compares
+//      `refreshed.claims.sub` to
+//      `user.external_id` and rejects
+//      with 401 oidc.refresh.subject_mismatch.
+//
+// The mock OIDC client always returns
+// sub="oidc:test:user-1", so the
+// attack scenario is: local user with
+// external_id="bob" + refresh with
+// sub="bob" → 401 (mock will return
+// alice, mismatch).
+#[tokio::test]
+async fn oidc_refresh_rejects_subject_mismatch() {
+    let srv = boot().await;
+    let users = UserRepository::new(connect_helper(&srv).await);
+    // Seed bob's local user. bob's
+    // external_id is "bob"; the mock OIDC
+    // client will return sub="oidc:test:user-1"
+    // (Alice's sub), which does not match
+    // → 401.
+    let _bob = users
+        .create_with_external_id("bob", Role::Operator, "bob")
+        .await
+        .expect("create");
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/auth/oidc/refresh", srv.base))
+        .json(&json!({
+            "refresh_token": "the-mock-refresh-token",
+            "sub": "bob",
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(
+        resp.status(),
+        401,
+        "P0-F-01: refresh with mismatched sub must return 401, \
+         not 200 (subject confusion attack)"
+    );
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["code"], "oidc.refresh.subject_mismatch");
 }
 
 #[tokio::test]

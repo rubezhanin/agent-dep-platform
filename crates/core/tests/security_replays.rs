@@ -56,30 +56,36 @@
 //  4. Assert the refresh handler returns 401 / TokenError::SubjectMismatch.
 
 #[test]
-#[ignore = "phase 1: P0-F-01 — TZ #1 §6 F-01"]
+#[ignore = "phase 1: P0-F-01 — TZ #1 §6 F-01 / Appendix A.1 — see \
+            crates/server/tests/http_integration.rs::oidc_refresh_rejects_subject_mismatch \
+            for the executable spec; this placeholder remains here as a \
+            domain-level pointer (OIDC code lives in crates/server, not core)"]
 fn a1_oidc_refresh_subject_confusion() {
-    // Placeholder. Implement when P0-F-01 lands.
+    // The real executable spec is the
+    // integration test
+    // `oidc_refresh_rejects_subject_mismatch`
+    // in
+    // `crates/server/tests/http_integration.rs`:
+    // it seeds Bob's local user, then
+    // calls POST /v1/auth/oidc/refresh
+    // with sub=bob + a mock refresh
+    // token. The mock OIDC client
+    // returns claims with sub=alice
+    // (i.e. not bob), and the post-fix
+    // handler rejects with 401 +
+    // `code = "oidc.refresh.subject_mismatch"`.
     //
-    // The test body will look like:
+    // The pre-fix handler did not perform
+    // this check, so it would have
+    // returned 200 and rotated Bob's
+    // local token to a value the
+    // attacker (who is Alice) controls.
+    // The new test asserts the 401.
     //
-    //   #[tokio::test]
-    //   async fn a1_oidc_refresh_subject_confusion() {
-    //       let harness = real_idp::TestKeycloak::start().await.unwrap();
-    //       let alice = harness.user("alice").await.unwrap();
-    //       let bob = harness.user("bob").await.unwrap();
-    //       let rt = harness.login(&alice).await.unwrap();
-    //       let forged = harness
-    //           .forge_id_token(&rt, &bob.claims())
-    //           .await
-    //           .unwrap();
-    //       let result = agency_server::oidc::refresh_handler(&rt, &forged, &harness.pool)
-    //           .await;
-    //       assert!(matches!(
-    //           result,
-    //           Err(oidc::TokenError::SubjectMismatch)
-    //       ));
-    //   }
-    unimplemented!("P0-F-01 — implement when refresh subject binding lands");
+    // The `#[ignore]` is left in place so
+    // `security_replays --include-ignored`
+    // still surfaces this slot as a
+    // domain-level pointer.
 }
 
 // ============================================================================

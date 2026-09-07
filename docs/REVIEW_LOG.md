@@ -42,6 +42,7 @@
 | 2026-09-07 | P0-SENT-01 closed | PASS | self | Migration 019 (table-rebuild pattern for SQLite nullable token_hash). Pre-fix sha256("") sentinel backfilled to NULL. `create_with_external_id` + `invalidate_token` now write NULL. `require_bearer` middleware short-circuits on empty bearer. `UserRow::token_hash` is `Option<String>`. 1 new unit test + 4 schema-version sites updated. 5 of 10 P0 still open. |
 | 2026-09-07 | P0-ENV-01 closed | PASS | self | Plugin `Command::new` now uses `env_clear()` + explicit whitelist `PATH`/`HOME`/`TMPDIR`/`LANG`/`AGENCY_PLUGIN_NAME`/`AGENCY_ROOT` (no `AGENCY_VAULT_PASSPHRASE`/`AGENCY_ADMIN_TOKEN`/etc leak). 2 new unit tests in `plugin_tests.rs`. 4 of 10 P0 still open. |
 | 2026-09-07 | P0-API-04 closed | PASS | self | `ErrorResponse { code, kind, hint }` in `error_response.rs` (typed + Display-based generic). 25 callsite updates in `handlers.rs`. 8 unit tests (incl. leak-prevention: `not a directory` must NOT appear in hint). 3 of 10 P0 still open. |
+| 2026-09-07 | P0-F-01 closed | PASS | self | OIDC `refresh_handler` now compares `refreshed.claims.sub == user.external_id` and returns 401 on mismatch. 1 new integration test `oidc_refresh_rejects_subject_mismatch`. 2 of 10 P0 still open. |
 
 ### 2.2. ADR reviews
 
