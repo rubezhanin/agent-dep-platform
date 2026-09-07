@@ -149,6 +149,52 @@ services:
     depends_on:
       - agency-server
 
+  # Phase 0 (ADR-0041, Q2=real-IdP): Keycloak is the
+  # test-IdP for the real-IdP integration tests in
+  # `crates/server/tests/oidc_real_idp.rs`. The realm
+  # is defined in `tools/keycloak/realm.json` and is
+  # auto-imported on first boot via `--import-realm`.
+  #
+  # In production, this service is NOT used — point
+  # `AGENCY_OIDC_ISSUER` at the operator's real IdP
+  # (Keycloak / Auth0 / Okta). This service exists
+  # for `docker compose up keycloak` in the dev
+  # loop and for the `audit` + `test-linux` CI jobs.
+  #
+  # Skip the service in CI windows-latest via the
+  # `--profile linux` flag (or by not running
+  # `up keycloak` from the test script).
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: agency-keycloak
+    command: ["start-dev", "--import-realm"]
+    profiles: ["dev", "idp"]
+    environment:
+      # Keycloak dev mode requires these.
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      # The realm.json is mounted at the well-known
+      # import path; Keycloak picks it up at first
+      # boot when `--import-realm` is set.
+    volumes:
+      - ./tools/keycloak/realm.json:/opt/keycloak/data/import/realm.json:ro
+    networks:
+      - agency
+    healthcheck:
+      # The /health/ready endpoint returns 200 only
+      # after the realm import has finished and the
+      # auth server is accepting connections.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    # Port 8081 on the host (Keycloak's internal 8080)
+    # so the dev loop and tests can reach it without
+    # conflicting with agency-server's 8080.
+    ports:
+      - "8081:8080"
+
 volumes:
   agency-data:
     # SQLite state + admin token.

@@ -8,7 +8,69 @@ on:
   pull_request:
 
 jobs:
-  ci:
+  # Phase 0 (ADR-0041, Q11): ubuntu-latest is the
+  # required gate. Plugin sandbox (P0-S-01), real
+  # Keycloak tests (oidc_real_idp), and the
+  # security_replays (when un-ignored) only work on
+  # Linux. Windows is a build check only.
+  ci-linux:
+    name: Linux build + test + audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Rust audit / deny / auditable
+        run: |
+          cargo install --locked cargo-audit
+          cargo install --locked cargo-deny
+          cargo install --locked cargo-auditable
+      - run: npm install
+      - name: Build workspace
+        run: cargo build --workspace
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test (workspace)
+        run: cargo test --workspace
+      - name: security_replays (all un-ignored)
+        # Phase 0: all 5 seed tests are #[ignore]'d,
+        # so this is a no-op until Phase 1 closes the
+        # first P0. Once un-ignored, this is the
+        # executable spec of the fix.
+        run: cargo test -p agent_dep_core --test security_replays -- --include-ignored
+      - name: svelte-check
+        run: npm run check
+      - name: vite build
+        run: npm run build
+      - name: cargo audit
+        # TZ #2 WP-5.1: any RUSTSEC hit blocks CI
+        # except for ADR-documented false positives.
+        run: cargo audit --deny warnings
+      - name: cargo deny
+        run: cargo deny check
+      - name: cargo auditable (SBOM)
+        # Produces target/release/*.audit.json — the
+        # SBOM artifact that P2-SBOM-01 will publish
+        # to the release.
+        run: |
+          cargo auditable build --release -p agent_dep_server -p agent_dep_cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: target/release/*.audit.json
+
+  # Windows remains a build check. The plugin
+  # sandbox, real-IdP, and security_replays are
+  # gated on Linux only.
+  ci-windows:
+    name: Windows build + test (build check)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,3 +88,7 @@ jobs:
       - run: npm run check
       - run: npm run build
       - run: ./scripts/check-ts-drift.sh  # bash version of check-ts-drift.ps1
+        # SKIP_REAL_IDP_TESTS=1 makes the OIDC test
+        # harness skip-dummy-mode (no docker needed).
+        env:
+          SKIP_REAL_IDP_TESTS: "1"

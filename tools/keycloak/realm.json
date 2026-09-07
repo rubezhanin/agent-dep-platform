@@ -1,0 +1,171 @@
+{
+  "realm": "agency",
+  "enabled": true,
+  "displayName": "Agency Test Realm",
+  "displayNameHtml": "<div class=\"kc-logo-text\"><span>Agency Test</span></div>",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 30,
+  "accessTokenLifespan": 1800,
+  "accessTokenLifespanForImplicitFlow": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "sslRequired": "none",
+  "verifyEmail": false,
+  "loginTheme": "keycloak",
+  "accountTheme": "keycloak",
+  "adminTheme": "keycloak",
+  "emailTheme": "keycloak",
+  "eventsEnabled": true,
+  "eventsExpiration": 2592000,
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true,
+  "internationalizationEnabled": false,
+  "defaultLocale": "en",
+  "roles": {
+    "realm": [
+      {
+        "name": "agency:viewer",
+        "description": "Read-only access to agency-server resources"
+      },
+      {
+        "name": "agency:developer",
+        "description": "Deploy + read access"
+      },
+      {
+        "name": "agency:admin",
+        "description": "Full access including user management"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "agency-server",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "test-client-secret-do-not-use-in-prod",
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "authorizationServicesEnabled": false,
+      "redirectUris": [
+        "http://localhost:9999/v1/auth/oidc/callback",
+        "http://localhost:8080/v1/auth/oidc/callback",
+        "http://127.0.0.1:9999/v1/auth/oidc/callback",
+        "http://127.0.0.1:8080/v1/auth/oidc/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:9999",
+        "http://localhost:8080",
+        "http://127.0.0.1:9999",
+        "http://127.0.0.1:8080"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:9999/v1/auth/oidc/logout##http://localhost:8080/v1/auth/oidc/logout"
+      },
+      "protocolMappers": [
+        {
+          "name": "tenant-claim-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "tenant",
+            "claim.name": "tenant",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles-claim-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@agency.example",
+      "firstName": "Alice",
+      "lastName": "Test",
+      "attributes": {
+        "tenant": ["tenant-a"]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test-alice-password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["agency:viewer", "agency:developer"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "bob@agency.example",
+      "firstName": "Bob",
+      "lastName": "Test",
+      "attributes": {
+        "tenant": ["tenant-b"]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test-bob-password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["agency:admin"]
+    },
+    {
+      "username": "ops",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "ops@agency.example",
+      "firstName": "Ops",
+      "lastName": "Bootstrap",
+      "attributes": {
+        "tenant": ["default"]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test-ops-password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["agency:admin"]
+    }
+  ]
+}

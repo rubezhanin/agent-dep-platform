@@ -11,6 +11,63 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Phase 0 Foundation (ADR-0043 Remediation
+  Charter, ADR-0044 Multi-tenant schema)**.
+  The post-2.9.0 hardening cycle is now
+  scaffolded. Nine new files in the repo:
+  - `docs/AGENT_DOD.md` — 12-point
+    Definition of Done + report format
+    with `CWE: CWE-NNN` + `Exploit
+    scenario: <ref>` + `RR-NNN` links
+    to `RISK_REGISTER.md`.
+  - `docs/RISK_REGISTER.md` — residual
+    risk ledger, RR-NNN IDs.
+  - `docs/REVIEW_LOG.md` — self-review
+    record for phase gates.
+  - `crates/core/tests/security_replays.rs`
+    — 5 seed scenarios from TZ #2
+    Appendix A (A.1..A.5), all
+    `#[ignore]` until the corresponding
+    P0 closes in Phase 1.
+  - `crates/core/tests/tenancy.rs` —
+    multi-tenant test harness (Q1).
+  - `crates/server/tests/oidc_real_idp.rs`
+    — real Keycloak harness (Q2) with
+    a `SKIP_REAL_IDP_TESTS=1` escape
+    hatch.
+  - `tools/keycloak/realm.json` —
+    agency realm with three test users
+    (alice / bob / ops) and a `tenant`
+    claim mapper.
+  Two `docs/adr/` files (gitignored):
+  - `0043-remediation-charter.md` —
+    ratifies the phase-ordered plan,
+    Q1..Q11 locked decisions, hard
+    rules from §0.3 of the plan.
+  - `0044-multi-tenant-schema.md` —
+    `tenant_id` on every server-side
+    table, RLS strategy for Phase 5,
+    cache-key convention.
+  Two modified files:
+  - `docker-compose.yml` — adds a
+    `keycloak` service (profile
+    `dev`/`idp`, port 8081,
+    `--import-realm`).
+  - `.github/workflows/ci.yml` —
+    adds the `ci-linux` job
+    (ubuntu-latest required, plugin
+    sandbox + real IdP + security
+    replays) with `cargo audit`,
+    `cargo deny`, and
+    `cargo auditable` SBOM. The
+    `ci-windows` job remains for
+    build checks.
+  Regression baseline: `cargo test
+  --workspace` green, 114 active
+  tests pass. This is the gate to
+  Phase 1 (10 P0 security blockers,
+  ~7-10 days, ~10 commits).
+
 - **VPS deploy surface (ADR-0041)**.
   `agency-server` is now VPS-ready
   out of the box. The `127.0.0.1`
