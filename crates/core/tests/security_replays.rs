@@ -238,12 +238,25 @@ fn a4_empty_bearer_matches_sha256_empty_sentinel() {
 //  5. Set high-entropy passphrase via file, assert success.
 
 #[test]
-#[ignore = "phase 1: P0-F-05 — TZ #2 WP-2.1 / Appendix A.5"]
+#[ignore = "phase 1: P0-F-05 — TZ #2 WP-2.1 / Appendix A.5 — see \
+            crates/server/tests/vault_replay.rs for the executable spec; \
+            this placeholder remains here as a domain-level pointer \
+            (vault init lives in crates/server, not crates/core)"]
 fn a5_vault_placeholder_secret_accepted_in_production() {
-    unimplemented!(
-        "P0-F-05 — implement when vault init rejects placeholder, enforces entropy \
-         ≥ 80 bits, accepts *_FILE env path, persists per-install salt"
-    );
+    // The real executable spec is in
+    // `crates/server/tests/vault_replay.rs` (10 tests
+    // covering placeholder rejection, low-entropy
+    // rejection, *_FILE preference, per-install salt
+    // generation/stability/wrong-length, and end-to-end
+    // AES-GCM isolation between two installs with the
+    // same passphrase but different salts).
+    //
+    // We do NOT move the spec into `crates/core` because
+    // `vault_init` is a `crates/server` module (the
+    // boot path is server-specific). The `#[ignore]` is
+    // left in place so `security_replays --include-ignored`
+    // still surfaces this slot as "intentionally deferred
+    // to a sister file".
 }
 
 // ============================================================================

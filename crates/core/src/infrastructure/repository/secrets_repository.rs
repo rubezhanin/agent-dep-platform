@@ -8,6 +8,16 @@
 //! defaults). The passphrase itself is held in
 //! memory for the process lifetime and is not
 //! persisted.
+//!
+//! 3.0.0 (P0-F-05, TZ #1 §6 F-05 + TZ #2 WP-2.1):
+//! KDF input is now `passphrase || install_salt`,
+//! not a project-wide constant. The install salt
+//! is generated on first boot and persisted to
+//! `<data_dir>/vault.salt` (mode 0600) by
+//! `agency_server::vault_init::load_or_generate_install_salt`.
+//! Two installs with the same passphrase now
+//! derive different keys, breaking the cross-install
+//! link that the fixed `APP_SALT` allowed.
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
@@ -19,18 +29,20 @@ use sqlx::SqlitePool;
 
 use crate::error::{CoreError, CoreResult};
 
-/// KDF version recorded in every row. Lets 2.3.1
-/// introduce a new KDF without a migration; the
-/// reader falls back to a clear error if it sees
-/// a future version.
+/// KDF version recorded in every row. Lets a
+/// future release bump the KDF without a migration;
+/// the reader falls back to a clear error if it
+/// sees a future version. KDF_VERSION stays `1`
+/// for the per-install-salt change (the KDF
+/// primitive is unchanged; only the salt input
+/// is now per-install). The KDF v2 migration
+/// (per-secret salt + AAD) is P1-F-06.
 const KDF_VERSION: i64 = 1;
 
-/// Application-level salt. Per-secret nonces are
-/// in the row; this is the second input to the KDF
-/// and is **not** secret (it is a fixed project-
-/// wide value). The passphrase is the secret
-/// input.
-const APP_SALT: &[u8] = b"agent-dep-platform/vault/v1";
+/// Length of the per-install salt in bytes. 32
+/// bytes = 256 bits, matches the KDF output length
+/// so there's no truncation / padding mismatch.
+pub const INSTALL_SALT_LEN: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretRow {
@@ -71,20 +83,34 @@ impl std::fmt::Debug for SecretRepository {
 }
 
 impl SecretRepository {
-    /// Build a `SecretRepository` from a passphrase.
+    /// Build a `SecretRepository` from a passphrase
+    /// and the per-install salt.
+    ///
     /// The passphrase is run through Argon2id once
-    /// (with the fixed `APP_SALT`) to derive a
+    /// (with the per-install salt) to derive a
     /// 32-byte key. The cipher is reused for every
     /// encrypt/decrypt; only the per-secret nonce
     /// changes.
-    pub fn new(pool: SqlitePool, passphrase: &str) -> CoreResult<Self> {
+    ///
+    /// **P0-F-05 (TZ #1 §6 F-05 + TZ #2 WP-2.1):**
+    /// the install salt is now a required argument.
+    /// Two installs with the same passphrase now
+    /// derive different keys. The salt is generated
+    /// and persisted by
+    /// `agency_server::vault_init::load_or_generate_install_salt`
+    /// on first boot.
+    pub fn new(
+        pool: SqlitePool,
+        passphrase: &str,
+        install_salt: &[u8; INSTALL_SALT_LEN],
+    ) -> CoreResult<Self> {
         if passphrase.is_empty() {
             return Err(CoreError::ErrSchemaInvalid {
                 path: "vault.passphrase".to_string(),
                 reason: "passphrase must not be empty".to_string(),
             });
         }
-        let key_bytes = derive_key(passphrase)?;
+        let key_bytes = derive_key(passphrase, install_salt)?;
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
         let cipher = Aes256Gcm::new(key);
         Ok(Self { pool, cipher })
@@ -297,7 +323,7 @@ impl SecretRepository {
     }
 }
 
-fn derive_key(passphrase: &str) -> CoreResult<[u8; 32]> {
+fn derive_key(passphrase: &str, install_salt: &[u8]) -> CoreResult<[u8; 32]> {
     let params =
         Params::new(19 * 1024, 2, 1, Some(32)).map_err(|e| CoreError::ErrSchemaInvalid {
             path: "vault.kdf".to_string(),
@@ -306,7 +332,7 @@ fn derive_key(passphrase: &str) -> CoreResult<[u8; 32]> {
     let argon = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     let mut out = [0u8; 32];
     argon
-        .hash_password_into(passphrase.as_bytes(), APP_SALT, &mut out)
+        .hash_password_into(passphrase.as_bytes(), install_salt, &mut out)
         .map_err(|e| CoreError::ErrSchemaInvalid {
             path: "vault.kdf".to_string(),
             reason: format!("argon2 derive: {e}"),

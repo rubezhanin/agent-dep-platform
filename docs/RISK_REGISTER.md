@@ -47,7 +47,7 @@ RR-NNN | <status> | <finding ref> | <category> | <description> | <owner> | <miti
 
 | RR-NNN | Status | Finding ref | Category | Description | Owner | Mitigation / acceptance | Date |
 |---|---|---|---|---|---|---|---|
-| — | — | — | — | (пока нет residual risks) | — | — | — |
+| RR-001 | OPEN | P0-F-05 | CWE-798 | Windows file ACL для `vault.salt` не enforced агентом — `set_salt_file_mode` is no-op на Windows. Если Windows host с shared user'ами, другие user'ы могут прочитать salt. | operator | Документировать в `docs/DEPLOY.md` Windows deployment; mitigation = `icacls` post-install или dedicated agency user. ACCEPTED до Phase 5. | 2026-09-07 |
 
 ---
 

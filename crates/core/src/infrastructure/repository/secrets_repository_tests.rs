@@ -7,7 +7,10 @@ async fn fresh_db() -> (tempfile::TempDir, SecretRepository, UserRepository) {
     let path = dir.path().join("secrets.db");
     let db = connect(&path).await.expect("connect");
     db.migrate().await.expect("migrate");
-    let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase").expect("vault");
+    let test_install_salt =
+        [1u8; crate::infrastructure::repository::secrets_repository::INSTALL_SALT_LEN];
+    let secrets = SecretRepository::new(db.pool().clone(), "test-passphrase", &test_install_salt)
+        .expect("vault");
     let users = UserRepository::new(db.pool().clone());
     (dir, secrets, users)
 }
@@ -53,14 +56,18 @@ async fn get_value_with_wrong_passphrase_fails() {
     db.migrate().await.expect("migrate");
     let users = UserRepository::new(db.pool().clone());
     let op = users.create("op", Role::Operator).await.expect("op");
-    let a = SecretRepository::new(db.pool().clone(), "passphrase-A").expect("vault A");
+    let test_install_salt =
+        [1u8; crate::infrastructure::repository::secrets_repository::INSTALL_SALT_LEN];
+    let a = SecretRepository::new(db.pool().clone(), "passphrase-A", &test_install_salt)
+        .expect("vault A");
     let _ = a
         .create("k", "the-value", op.user.id)
         .await
         .expect("create");
     // Open with a different passphrase — decrypt
     // must fail with a typed error.
-    let b = SecretRepository::new(db.pool().clone(), "passphrase-B").expect("vault B");
+    let b = SecretRepository::new(db.pool().clone(), "passphrase-B", &test_install_salt)
+        .expect("vault B");
     let err = b.get_value("k").await.expect_err("must fail");
     let msg = format!("{err:?}");
     assert!(
@@ -119,7 +126,10 @@ async fn empty_passphrase_is_rejected_at_construction() {
     let path = dir.path().join("secrets.db");
     let db = connect(&path).await.expect("connect");
     db.migrate().await.expect("migrate");
-    let err = SecretRepository::new(db.pool().clone(), "").expect_err("must reject");
+    let test_install_salt =
+        [1u8; crate::infrastructure::repository::secrets_repository::INSTALL_SALT_LEN];
+    let err =
+        SecretRepository::new(db.pool().clone(), "", &test_install_salt).expect_err("must reject");
     let msg = format!("{err:?}");
     assert!(
         msg.contains("passphrase must not be empty"),

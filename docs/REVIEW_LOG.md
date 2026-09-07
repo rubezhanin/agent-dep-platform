@@ -35,7 +35,7 @@
 
 | Date | Gate | Verdict | Reviewer | Notes |
 |---|---|---|---|---|
-| — | — | — | — | (лог пуст; первая запись появится при переходе Phase 0 → Phase 1) |
+| 2026-09-07 | Phase 0 → Phase 1 (partial: P0-F-05 only) | PASS-WITH-NOTES | self | Phase 0 Foundation complete (ADR-0043 ratified, 9 foundation files, 114+11+10=135 active tests). P0-F-05 closed (RR-001). 9 of 10 P0 still open. Continue Phase 1. |
 
 ### 2.2. ADR reviews
 

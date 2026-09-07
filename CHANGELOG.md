@@ -9,6 +9,53 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security
+
+- **P0-F-05 Vault fail-closed
+  (TZ #1 §6 F-05 + TZ #2 WP-2.1,
+  CWE-798, Appendix A.5).** The pre-fix
+  `boot_default_state` silently accepted
+  the placeholder passphrase
+  `"unset-rotate-before-first-use"`
+  (committed in the public repo's env
+  examples), deriving a vault key from a
+  string any attacker who read the repo
+  could guess. Post-fix, the server refuses
+  to start without a high-entropy
+  passphrase and refuses to log the
+  plaintext admin token at first boot. New
+  module `crates/server/src/vault_init.rs`
+  with `load_passphrase` (prefers
+  `AGENCY_VAULT_PASSPHRASE_FILE`,
+  falls back to `AGENCY_VAULT_PASSPHRASE`),
+  `validate_passphrase` (rejects placeholders
+  + enforces ≥ 80 bits Shannon entropy), and
+  `load_or_generate_install_salt` (per-install
+  32-byte salt persisted to
+  `<data_dir>/vault.salt` mode 0600).
+  `SecretRepository::new` now takes the
+  per-install salt as a required argument
+  (3rd parameter); the fixed project-wide
+  `APP_SALT` is gone — two installs with
+  the same passphrase now derive
+  different keys. The admin-token print at
+  first boot is replaced with a path-only
+  message (`token saved to /var/lib/agency/
+  server.token`); the token itself is no
+  longer written to stderr. 11 unit tests
+  in `vault_init::tests` and 10 integration
+  tests in `crates/server/tests/vault_replay.rs`
+  cover placeholder / low-entropy / empty
+  rejection, `*_FILE` preference, install-salt
+  generation / stability / wrong-length,
+  and end-to-end AES-GCM isolation between
+  two installs with the same passphrase
+  but different salts. Residual risk
+  recorded as RR-001 in
+  `docs/RISK_REGISTER.md`. `cargo test
+  --workspace` + `cargo clippy -D warnings`
+  + `cargo fmt --check` are green.
+
 ### Added
 
 - **Phase 0 Foundation (ADR-0043 Remediation

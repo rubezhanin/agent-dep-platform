@@ -12,6 +12,7 @@ pub mod oidc;
 pub mod oidc_client;
 pub mod plan;
 pub mod state;
+pub mod vault_init;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -331,8 +332,11 @@ pub async fn boot_default_state() -> Result<ServerState> {
         }
     } else {
         // Fresh install: bootstrap an admin user with
-        // a fresh token. Print the token to stderr
-        // exactly once so the operator can copy it.
+        // a fresh token. Print the token path to stderr
+        // (NEVER the token itself — Q9, see ADR-0043).
+        // The operator reads the token from the file
+        // directly (e.g. `cat /var/lib/agency/server.token`
+        // or the equivalent in their secret manager).
         let created = users
             .create(
                 "admin",
@@ -345,52 +349,68 @@ pub async fn boot_default_state() -> Result<ServerState> {
             .with_context(|| format!("write {}", token_path.display()))?;
         set_token_file_mode(&token_path);
         eprintln!(
-            "agency-server: created initial admin user, token in {}",
+            "agency-server: created initial admin user, token saved to {} \
+             (mode 0600; read with `cat` or your secret manager — \
+             the plain token is NOT logged by this process)",
             token_path.display()
-        );
-        eprintln!(
-            "agency-server: token={} (save this; the plain token is not stored)",
-            token
         );
         token
     };
     let audit = AuditLogRepository::new(db.pool().clone());
     let deploys = PendingDeployRepository::new(db.pool().clone());
-    // 2.3.0: vault passphrase comes from
-    // `AGENCY_VAULT_PASSPHRASE`. If the `secrets`
-    // table is non-empty and the env var is unset,
-    // we refuse to start.
-    let passphrase = std::env::var("AGENCY_VAULT_PASSPHRASE").unwrap_or_default();
+    // P0-F-05 (TZ #1 §6 F-05 + TZ #2 WP-2.1):
+    // vault passphrase is fail-closed.
+    // 1. Loaded via vault_init::load_passphrase()
+    //    (prefers AGENCY_VAULT_PASSPHRASE_FILE,
+    //     falls back to AGENCY_VAULT_PASSPHRASE).
+    // 2. Validated against the security policy
+    //    (no placeholder, entropy >= 80 bits).
+    // 3. Per-install salt is loaded from
+    //    <data_dir>/vault.salt (or generated on
+    //    first boot).
+    // 4. The pre-fix placeholder vault
+    //    ("unset-rotate-before-first-use") is gone
+    //    — the server refuses to start without a
+    //    valid passphrase, even on a fresh install
+    //    with no secrets in the table.
+    let passphrase =
+        vault_init::load_passphrase().map_err(|e| anyhow::anyhow!("load vault passphrase: {e}"))?;
+    let install_salt = vault_init::load_or_generate_install_salt(&data_dir)
+        .map_err(|e| anyhow::anyhow!("load/generate install salt: {e}"))?;
     let secrets = if passphrase.is_empty() {
-        let count_placeholder = PendingDeployRepository::new(db.pool().clone());
-        // We use a temporary repo to count — but
-        // actually we need to check the count
-        // before constructing the vault, because
-        // the vault constructor requires a
-        // non-empty passphrase. Drop the
-        // placeholder and check directly.
-        drop(count_placeholder);
+        // No passphrase set. Pre-fix silently created
+        // a placeholder vault; post-fix refuses.
+        // The error message guides the operator to
+        // AGENCY_VAULT_PASSPHRASE_FILE.
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM secrets")
             .fetch_one(db.pool())
             .await
             .map_err(|e| anyhow::anyhow!("count secrets: {e}"))?;
         if row.0 > 0 {
             anyhow::bail!(
-                "AGENCY_VAULT_PASSPHRASE is unset but the `secrets` table has {} row(s). \
-                 Set the env var to the passphrase used to encrypt the existing rows, \
-                 or move the table aside to start fresh.",
+                "AGENCY_VAULT_PASSPHRASE (or _FILE) is unset but the `secrets` \
+                 table has {} row(s). Set the env var to the passphrase used \
+                 to encrypt the existing rows, or move the table aside to \
+                 start fresh.",
                 row.0
             );
         }
-        // No secrets yet — build a placeholder
-        // vault with a temporary passphrase. The
-        // operator can rotate later by re-creating
-        // rows. The placeholder is NOT secure
-        // against a leaked memory dump.
-        SecretRepository::new(db.pool().clone(), "unset-rotate-before-first-use")
-            .map_err(|e| anyhow::anyhow!("init placeholder vault: {e}"))?
+        anyhow::bail!(
+            "AGENCY_VAULT_PASSPHRASE (or _FILE) is unset. The server refuses \
+             to start without a valid passphrase, even on a fresh install \
+             with an empty `secrets` table (CVE-class: CWE-798, see \
+             REMEDIATION-PLAN.md §3.1 P0-F-05). Generate one with \
+             `openssl rand -base64 32` and pass it via \
+             AGENCY_VAULT_PASSPHRASE_FILE (preferred) or \
+             AGENCY_VAULT_PASSPHRASE."
+        );
     } else {
-        SecretRepository::new(db.pool().clone(), &passphrase)
+        // Validate before constructing the cipher.
+        // This is the fail-closed point: a bad
+        // passphrase never produces a working vault.
+        vault_init::validate_passphrase(&passphrase)
+            .map_err(|e| anyhow::anyhow!("validate vault passphrase: {e}"))?;
+        SecretRepository::new(db.pool().clone(), &passphrase, &install_salt)
             .map_err(|e| anyhow::anyhow!("init vault: {e}"))?
     };
     let targets = TargetRepository::new(db.pool().clone());
@@ -407,12 +427,11 @@ pub async fn boot_default_state() -> Result<ServerState> {
     // 2.7.7 (ADR-0035): pick the OIDC
     // client based on AGENCY_OIDC_MOCK. The
     // 2.7.7 default is `0` (real client).
-    let oidc_client: std::sync::Arc<dyn oidc_client::OidcClient> =
-        if oidc.mock {
-            std::sync::Arc::new(oidc_client::MockOidcClient)
-        } else {
-            std::sync::Arc::new(oidc_client::RealOidcClient::new(oidc.clone()))
-        };
+    let oidc_client: std::sync::Arc<dyn oidc_client::OidcClient> = if oidc.mock {
+        std::sync::Arc::new(oidc_client::MockOidcClient)
+    } else {
+        std::sync::Arc::new(oidc_client::RealOidcClient::new(oidc.clone()))
+    };
     let state = ServerState {
         db: db.clone(),
         audit,
