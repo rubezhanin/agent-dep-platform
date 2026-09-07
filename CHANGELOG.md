@@ -1130,6 +1130,91 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     `/authorize` URL is bound to
     the IdP's advertised endpoint.
 
+- **P1-O-01 openidconnect library:
+  analysis only (TZ #1 §14 O-01,
+  CWE-1357, **deferred**).** The
+  pre-fix `RealOidcClient` uses a
+  hand-rolled JWT / JWS validator
+  (RSA / ECDSA via the `rsa`,
+  `p256`, `p384` crates), a
+  hand-rolled discovery fetcher,
+  and a hand-rolled PKCE / state
+  / nonce generator. The plan
+  requires switching to the
+  community-vetted `openidconnect`
+  crate (v4.x). This commit does
+  **not** land the switch — the
+  `openidconnect` 4.x API is
+  generic-heavy (`DiscoveredClient<AC, GC, JE, JS>`),
+  the `verify_id_token` path is
+  tightly coupled to the
+  authorization-flow's typed
+  claims struct, and a clean
+  integration needs a dedicated
+  sprint (estimated at L per the
+  remediation plan, ~1-2 days of
+  careful refactoring). What this
+  commit DOES do:
+  - **Document the gap explicitly.**
+    The `P1-O-01` row in the
+    remediation plan now carries
+    a `TODO (deferred)` marker
+    pointing at this commit. The
+    security properties the plan
+    requires (community-vetted
+    library, regular CVE audits,
+    larger reviewer base) are
+    NOT met by the current
+    hand-rolled code; they are
+    partially met by the
+    individual P0 / P1 commits
+    that hardened each step in
+    isolation (P0-F-01, P0-HDR-01,
+    P1-F-01, P1-F-02, P1-O-04).
+  - **No new code lands.** The
+    earlier `oidc_openidconnect.rs`
+    experiment was removed before
+    commit because the API
+    surface was incompatible with
+    the existing `RealOidcClient`
+    type signatures; a follow-up
+    commit will introduce it
+    properly.
+  - **Follow-up scope (P1-O-01b).**
+    1. Add `openidconnect = "4"` to
+       the workspace and
+       `agent_dep_server` deps.
+    2. Replace the
+       `JwsHeader` /
+       signature-verification path
+       in
+       `RealOidcClient::validate_id_token_jwt`
+       with
+       `DiscoveredClient::verify_id_token`.
+       The crate handles the JWS
+       header allowlist, the
+       `kid` lookup, the signature
+       algorithm dispatch, and the
+       `iss` / `aud` / `exp` checks
+       in one call.
+    3. Replace
+       `ensure_discovery` with
+       `Client::discover(...)` and
+       the cached
+       `DiscoveredClient::jwks()`.
+    4. Keep our `handle_login`'s
+       PKCE / state / nonce
+       generation; that code is
+       small and well-tested.
+    5. Tests: re-run
+       `oidc_real_idp.rs` against a
+       Keycloak instance. The
+       existing test infrastructure
+       is sufficient; the swap
+       is
+       "implementation, not
+       behaviour".
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added
