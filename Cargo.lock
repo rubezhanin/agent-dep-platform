@@ -99,6 +99,7 @@ dependencies = [
  "ed25519-dalek",
  "git2",
  "hex",
+ "libc",
  "once_cell",
  "proptest",
  "rand 0.8.8",

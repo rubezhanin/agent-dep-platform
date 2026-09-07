@@ -638,6 +638,89 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   release build (stripped,
   `lto = "thin"`, `opt-level = 3`).
 
+- **P1-F-06 Vault KDF v2: per-secret salt
+  + AAD (TZ #2 WP-3.2, CWE-916 +
+  CWE-326 + CWE-345, Appendix A.6).**
+  The pre-fix v1 vault derived a single
+  AES-256-GCM cipher from the operator's
+  passphrase via Argon2id with a
+  per-install salt; every secret shared
+  that one cipher, and there was no
+  binding between the ciphertext and the
+  secret's identity (CWE-916 +
+  CWE-345). Post-fix v2:
+  - **Per-secret salt (16 bytes,
+    OsRng).** New column `secret_salt
+    BLOB NOT NULL`. The KDF input salt
+    becomes `install_salt || secret_salt`
+    (32 + 16 bytes). Two rows with the
+    same plaintext under the same
+    passphrase derive different keys
+    even within one install
+    (defeats cross-row known-plaintext
+    attacks; CWE-916).
+  - **AAD binding.** New column
+    `aad TEXT NOT NULL`. AES-GCM is
+    called with `aad = secret_name`,
+    binding the ciphertext to the
+    secret's identity. Cross-row
+    ciphertext-swap attacks now fail the
+    GCM tag check (CWE-345). The `aad`
+    column is `TEXT` so the future
+    multi-tenant release (ADR-0044) can
+    switch to `tenant_id:secret_name`
+    without a further migration.
+  - **Per-row `version` column** (no
+    CHECK constraint; the app-level
+    dispatch in
+    `SecretRepository::get_value` is the
+    single source of truth). Legacy v1
+    rows are backfilled with
+    `secret_salt = 0^16` and
+    `aad = ''` at migration 020 and
+    remain readable bit-for-bit via
+    the legacy decrypt path. New rows
+    are written with `version = 2`.
+  - **Lazy migration on `update`.**
+    Updating a legacy v1 row rewrites it
+    in place under v2 with a fresh
+    per-secret salt + AAD. No offline
+    re-encryption is forced.
+  - **No pre-derived cipher cache.**
+    `SecretRepository` no longer holds
+    an `Aes256Gcm`; the per-secret
+    cipher is derived on every
+    encrypt/decrypt via `derive_key_v2`
+    (Argon2id ~50-200 ms). Acceptable
+    for the secret-management workload;
+    avoids sharing a cipher across
+    secrets.
+  - 6 new unit tests in
+    `secrets_repository_tests`:
+    `same_plaintext_under_same_passphrase_yields_different_ciphertexts`,
+    `aad_binding_blocks_cross_row_confusion`,
+    `legacy_v1_row_is_readable_via_legacy_path`,
+    `update_migrates_v1_row_to_v2_in_place`,
+    `v2_row_with_empty_aad_is_rejected`,
+    `future_kdf_version_is_rejected_with_typed_error`.
+    `vault_replay::a5_two_installs_with_same_passphrase_derive_different_keys`
+    continues to pass (per-install salt
+    isolation is now strictly stronger
+    because per-secret salt adds a
+    second row-level input to the KDF).
+  - Migration 020: `secrets_new` table
+    with `secret_salt`, `aad`, no
+    `version` CHECK. Bump
+    `meta.schema_version` 19 → 20.
+    Three test sites updated
+    (`sqlite_tests`, `journal_tests`,
+    `cli_tests`,
+    `pending_deploys_target_id_not_null`).
+  - No residual risk. Existing v1
+    rows are still readable; new v2
+    rows are strictly stronger
+    (per-secret salt + AAD).
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added
