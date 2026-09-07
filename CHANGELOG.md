@@ -11,6 +11,49 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P1-F-02 OIDC discovery strict
+  validation (TZ #1 §6 F-02, CWE-295 +
+  CWE-300, Appendix A.7).** The pre-fix
+  `RealOidcClient::ensure_discovery`
+  built a discovery URL from the
+  operator-configured
+  `AGENCY_OIDC_ISSUER` and trusted
+  whatever the IdP returned. There
+  were four post-fix checks added:
+  (1) the configured `issuer` must
+  start with `https://` (rejects
+  `http://` to prevent plaintext
+  discovery / redirect_uri leak,
+  CWE-300); (2) the IdP-returned
+  `issuer` claim must equal the
+  configured `issuer` (catches
+  misconfiguration where the operator
+  pointed at a staging IdP by
+  accident); (3) the IdP-returned
+  `jwks_uri` must use `https://` AND
+  have the same origin as the
+  configured `issuer` (prevents an
+  attacker who can influence the
+  discovery document from pointing
+  `jwks_uri` at an attacker-controlled
+  JWKS, CWE-295); (4) the
+  `end_session_endpoint` (if
+  present) must also be same-origin.
+  New helper `url_origin(url)` extracts
+  the `scheme://host[:port]` portion
+  for the same-origin comparison. 5
+  new unit tests in
+  `oidc_client::url_origin_tests`
+  cover path / no-path / port /
+  different-host / different-scheme
+  cases. No residual risk on Linux
+  (the only environment where the
+  real OIDC client is reachable —
+  dev / test use the `MockOidcClient`).
+  The existing 30+
+  `oidc_client` and `http_integration`
+  OIDC tests continue to pass.
+
 - **P0-S-01 Plugin sandbox
   (TZ #1 §9 S-01, CWE-250, Appendix
   A.6).** The pre-fix

@@ -318,15 +318,69 @@ impl RealOidcClient {
     }
 
     /// Fetch + cache the discovery document.
+    ///
+    /// P1-F-02 (TZ #1 §6 F-02, CWE-295 +
+    /// CWE-300, Appendix A.7): the pre-fix
+    /// `ensure_discovery` built a discovery
+    /// URL from the operator-configured
+    /// `issuer` and trusted whatever the
+    /// IdP returned. Post-fix: we enforce
+    /// four properties before caching the
+    /// document:
+    ///
+    /// 1. **HTTPS only.** The configured
+    ///    `issuer` must start with `https://`.
+    ///    `http://` (or any other scheme)
+    ///    is rejected. This prevents the
+    ///    discovery document (and the
+    ///    redirect_uri built from it) from
+    ///    being sent over plaintext.
+    ///    CWE-300 (Channel Attack).
+    ///
+    /// 2. **Issuer claim match.** The IdP's
+    ///    returned `issuer` field must equal
+    ///    (case-sensitive, after trimming
+    ///    trailing `/`) the configured
+    ///    `issuer`. A mismatched `issuer`
+    ///    would mean the operator
+    ///    misconfigured the `AGENCY_OIDC_ISSUER`
+    ///    env var (e.g. pointing at a
+    ///    staging IdP by accident).
+    ///
+    /// 3. **JWKS URI same-origin.** The IdP's
+    ///    returned `jwks_uri` must be on the
+    ///    same host (and scheme) as the
+    ///    `issuer`. An attacker who can
+    ///    influence the IdP's discovery
+    ///    document (or who can MITM a
+    ///    non-HTTPS discovery fetch) could
+    ///    point `jwks_uri` at an
+    ///    attacker-controlled JWKS, and
+    ///    the validator would happily
+    ///    trust the attacker-signed keys.
+    ///    Same-origin + HTTPS closes this
+    ///    attack surface. CWE-295.
+    ///
+    /// 4. **Reject non-empty `end_session_endpoint`
+    ///    pointing at a different host.** Same
+    ///    logic, applied to logout. (Best-
+    ///    effort — IdPs without
+    ///    `end_session_endpoint` still
+    ///    work.)
     async fn ensure_discovery(&self) -> CoreResult<OidcDiscovery> {
+        // (1) HTTPS only.
+        if !self.config.issuer.starts_with("https://") {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "oidc.issuer".to_string(),
+                reason: "AGENCY_OIDC_ISSUER must start with https://".to_string(),
+            });
+        }
         let mut guard = self.discovery.lock().await;
         if let Some(d) = guard.as_ref() {
             return Ok(d.clone());
         }
-        let url = format!(
-            "{}/.well-known/openid-configuration",
-            self.config.issuer.trim_end_matches('/')
-        );
+        let issuer_trimmed = self.config.issuer.trim_end_matches('/');
+        let url = format!("{}/.well-known/openid-configuration", issuer_trimmed);
         let resp = self.http.get(&url).send().await.map_err(|e| {
             CoreError::ErrIo(std::io::Error::other(format!("OIDC discovery GET: {e}")))
         })?;
@@ -339,8 +393,113 @@ impl RealOidcClient {
         let doc: OidcDiscovery = resp.json().await.map_err(|e| {
             CoreError::ErrIo(std::io::Error::other(format!("OIDC discovery parse: {e}")))
         })?;
+        // (2) Issuer claim match.
+        let doc_issuer_trimmed = doc.issuer.trim_end_matches('/');
+        if doc_issuer_trimmed != issuer_trimmed {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "oidc.discovery.issuer".to_string(),
+                reason: format!(
+                    "discovery issuer `{doc_issuer_trimmed}` does not match \
+                     configured issuer `{issuer_trimmed}`"
+                ),
+            });
+        }
+        // (3) JWKS URI same-origin + HTTPS.
+        let jwks_uri = &doc.jwks_uri;
+        if !jwks_uri.starts_with("https://") {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "oidc.discovery.jwks_uri".to_string(),
+                reason: "JWKS URI must use https://".to_string(),
+            });
+        }
+        let jwks_origin = url_origin(jwks_uri);
+        let issuer_origin = url_origin(&self.config.issuer);
+        if jwks_origin != issuer_origin {
+            return Err(CoreError::ErrSchemaInvalid {
+                path: "oidc.discovery.jwks_uri".to_string(),
+                reason: format!(
+                    "JWKS origin `{jwks_origin}` does not match issuer origin \
+                     `{issuer_origin}` (same-origin enforcement)"
+                ),
+            });
+        }
+        // (4) end_session_endpoint same-origin, if present. Best-effort —
+        // some IdPs omit the field.
+        if let Some(end_session) = &doc.end_session_endpoint {
+            let end_origin = url_origin(end_session);
+            if end_origin != issuer_origin {
+                return Err(CoreError::ErrSchemaInvalid {
+                    path: "oidc.discovery.end_session_endpoint".to_string(),
+                    reason: format!(
+                        "end_session_endpoint origin `{end_origin}` does not match \
+                         issuer origin `{issuer_origin}`"
+                    ),
+                });
+            }
+        }
         *guard = Some(doc.clone());
         Ok(doc)
+    }
+}
+
+/// Extract the origin (`scheme://host[:port]`) from
+/// a URL. Used by `ensure_discovery` for the
+/// same-origin checks.
+#[cfg(test)]
+mod url_origin_tests {
+    use super::url_origin;
+
+    #[test]
+    fn extracts_origin_with_path() {
+        assert_eq!(
+            url_origin("https://idp.example.com/jwks"),
+            "https://idp.example.com"
+        );
+    }
+
+    #[test]
+    fn extracts_origin_without_path() {
+        assert_eq!(
+            url_origin("https://idp.example.com"),
+            "https://idp.example.com"
+        );
+    }
+
+    #[test]
+    fn extracts_origin_with_port() {
+        assert_eq!(
+            url_origin("https://idp.example.com:8443/jwks"),
+            "https://idp.example.com:8443"
+        );
+    }
+
+    #[test]
+    fn rejects_different_hosts() {
+        assert_ne!(
+            url_origin("https://idp.example.com/jwks"),
+            url_origin("https://attacker.example.com/jwks")
+        );
+    }
+
+    #[test]
+    fn rejects_different_schemes() {
+        assert_ne!(
+            url_origin("https://idp.example.com/jwks"),
+            url_origin("http://idp.example.com/jwks")
+        );
+    }
+}
+
+fn url_origin(url: &str) -> String {
+    // Split on `://` once; the first path
+    // segment separator is the next `/`.
+    let after_scheme = match url.split_once("://") {
+        Some((_scheme, rest)) => rest,
+        None => return url.to_string(),
+    };
+    match after_scheme.find('/') {
+        Some(i) => url[..url.len() - after_scheme.len() + i].to_string(),
+        None => url.to_string(),
     }
 }
 
