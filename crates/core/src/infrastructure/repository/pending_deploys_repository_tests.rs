@@ -27,11 +27,7 @@ async fn fresh_db() -> (
 /// now NOT NULL). This helper
 /// returns a unique target id per
 /// call.
-async fn make_target(
-    targets: &TargetRepository,
-    name: &str,
-    env: Environment,
-) -> i64 {
+async fn make_target(targets: &TargetRepository, name: &str, env: Environment) -> i64 {
     let row = targets
         .create(name, env, "/srv/hermes", PathKind::Posix, None)
         .await
@@ -149,23 +145,112 @@ async fn mark_applied_only_works_on_approved_rows() {
         .await
         .expect("request");
     // mark_applied on a pending row is a no-op.
-    let none = pd
-        .mark_applied(row.id)
-        .await
-        .expect("mark on pending");
+    let none = pd.mark_applied(row.id).await.expect("mark on pending");
     assert!(none.is_none(), "mark_applied on pending must return None");
     // Approve, then mark applied.
     pd.approve(row.id, admin.user.id)
         .await
         .expect("approve")
         .expect("ok");
-    let out = pd
-        .mark_applied(row.id)
-        .await
-        .expect("mark")
-        .expect("ok");
+    let out = pd.mark_applied(row.id).await.expect("mark").expect("ok");
     assert_eq!(out.status, Status::Applied);
     assert!(out.applied_at.is_some());
+}
+
+// 2.11.0 (P1-D-01b, CWE-494): a
+// deploy that captured
+// `target_config_version = 1` is
+// stale once the target's `version`
+// advances to 2. `mark_applied`
+// must reject with a typed
+// `ErrStaleDeployment` and the row
+// must stay in `approved` (not
+// silently flipped to `applied`).
+#[tokio::test]
+async fn mark_applied_rejects_stale_target_version() {
+    let (dir, pd, users, targets) = fresh_db().await;
+    let op = users.create("op", Role::Operator).await.expect("op");
+    let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let t = make_target(&targets, "x", Environment::Dev).await;
+    let row = pd
+        .request("x", "{}", op.user.id, Environment::Dev, Some(t))
+        .await
+        .expect("request");
+    // Manually set the row's
+    // `target_config_version` to
+    // 1 (the floor) and the target's
+    // `version` to 2. Without the
+    // freshness check this would
+    // be a silent deploy of an
+    // artifact the operator did not
+    // approve.
+    let pool_path = dir.path().join("approvals.db");
+    let pool = crate::infrastructure::sqlite::connect(&pool_path)
+        .await
+        .expect("reconnect")
+        .pool()
+        .clone();
+    sqlx::query("UPDATE targets SET version = 2 WHERE id = ?1")
+        .bind(t)
+        .execute(&pool)
+        .await
+        .expect("bump target version");
+    sqlx::query("UPDATE pending_deploys SET target_config_version = 1 WHERE id = ?1")
+        .bind(row.id)
+        .execute(&pool)
+        .await
+        .expect("set captured version");
+    pd.approve(row.id, admin.user.id)
+        .await
+        .expect("approve")
+        .expect("ok");
+    // The deploy is stale: target
+    // version is 2, captured
+    // version is 1.
+    let err = pd
+        .mark_applied(row.id)
+        .await
+        .expect_err("mark_applied must reject stale deploy");
+    let msg = format!("{err:?}");
+    assert!(msg.contains("ErrStaleDeployment"), "got: {msg}");
+    assert!(msg.contains("captured_version: 1"), "got: {msg}");
+    assert!(msg.contains("current_version: 2"), "got: {msg}");
+    // The row must stay in
+    // `approved`, not flip to
+    // `applied`.
+    let after = pd.get(row.id).await.expect("get").expect("present");
+    assert_eq!(after.status, Status::Approved);
+    assert!(after.applied_at.is_none());
+}
+
+// 2.11.0 (P1-D-01b): the happy
+// path — the captured
+// `target_config_version` matches
+// the current `targets.version`
+// and `mark_applied` succeeds.
+#[tokio::test]
+async fn mark_applied_succeeds_when_target_version_matches() {
+    let (_dir, pd, users, targets) = fresh_db().await;
+    let op = users.create("op", Role::Operator).await.expect("op");
+    let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let t = make_target(&targets, "x", Environment::Dev).await;
+    let row = pd
+        .request("x", "{}", op.user.id, Environment::Dev, Some(t))
+        .await
+        .expect("request");
+    pd.approve(row.id, admin.user.id)
+        .await
+        .expect("approve")
+        .expect("ok");
+    // Pre-P1-D-01c rows have
+    // `target_config_version IS NULL`;
+    // the freshness check is a
+    // no-op for them, and
+    // `mark_applied` succeeds. This
+    // covers the migration
+    // backfill case.
+    let out = pd.mark_applied(row.id).await.expect("mark").expect("ok");
+    assert_eq!(out.status, Status::Applied);
 }
 
 #[tokio::test]
@@ -229,9 +314,6 @@ async fn set_target_id_returns_none_for_missing_id() {
     // `None` for missing rows (no
     // change from 2.5.1).
     let (_dir, pd, _users, _targets) = fresh_db().await;
-    let out = pd
-        .set_target_id(99999, 42)
-        .await
-        .expect("set nonexistent");
+    let out = pd.set_target_id(99999, 42).await.expect("set nonexistent");
     assert!(out.is_none(), "missing id must return None");
 }

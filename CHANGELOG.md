@@ -1341,6 +1341,103 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     yet populate the new columns
     (P1-D-01b does that).
 
+- **P1-D-01b mark_applied freshness
+  check (TZ #1 §10 / D-01,
+  CWE-494, closes the CWE-494
+  attack surface).** The pre-fix
+  `mark_applied` flipped
+  `approved` → `applied` as long
+  as the status was `approved`.
+  No check on whether the
+  underlying target had been
+  reconfigured between approval
+  and apply. CWE-494: a
+  different artifact than the
+  one the operator approved
+  could land.
+  - Migration 023: `targets`
+    gains a `version` column
+    (`INTEGER NOT NULL DEFAULT
+    1`). Existing rows backfill
+    to `1`; new `targets` start
+    at `1`; the P1-D-01c follow-up
+    will wire the
+    `targets_repository::update`
+    to do `version = version + 1`.
+    Bump schema_version 22 → 23.
+    Four test sites updated.
+  - New typed error variant
+    `CoreError::ErrStaleDeployment
+    { deploy_id, target_id,
+    kind, captured_version,
+    current_version }`. The
+    `kind` field is
+    `"target_config_version"`
+    in this commit; the follow-up
+    P1-D-01c adds
+    `"commit_sha"`,
+    `"source_snapshot_id"`,
+    `"plan_hash"`, and
+    `"artifact_manifest_hash"`.
+  - `PendingDeployRow` gains
+    `target_config_version:
+    Option<i64>`. Pre-P1-D-01a
+    rows have `None`; the
+    freshness check is a no-op
+    for them (the migration
+    backfill case). P1-D-01c
+    populates the field at
+    `request_deploy` time.
+  - `mark_applied` now reads the
+    row's `target_config_version`
+    and the current
+    `targets.version` for the
+    same `target_id`. A mismatch
+    returns
+    `ErrStaleDeployment` and
+    the row stays in `approved`
+    (NOT flipped to `applied`).
+    The `ErrStaleDeployment`
+    payload carries both
+    captured and current
+    versions for the audit log.
+    A target row that was
+    deleted between request and
+    apply is also rejected (the
+    "where would we deploy?"
+    question becomes
+    unanswerable).
+  - 2 new unit tests:
+    `mark_applied_rejects_stale_target_version`
+    (captured=1, current=2;
+    row stays in `approved`),
+    `mark_applied_succeeds_when_target_version_matches`
+    (happy path, also covers
+    the pre-P1-D-01c
+    `target_config_version = NULL`
+    backfill case).
+  - **CWE-494 closed for the
+    `target_config_version`
+    field.** A
+    `PUT /v1/targets/:id` between
+    approval and apply now
+    fails the apply with a typed
+    error instead of silently
+    shipping a different
+    artifact. The remaining
+    fields (`commit_sha`,
+    `source_snapshot_id`,
+    `plan_hash`,
+    `artifact_manifest_hash`,
+    `policy_set_version`) are
+    closed by P1-D-01c (the
+    `targets.version` increment
+    on update + plan-hash
+    computation in `request` +
+    the same `mark_applied`
+    pattern extended to the
+    other fields).
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

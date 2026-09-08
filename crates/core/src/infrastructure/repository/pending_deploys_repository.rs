@@ -98,6 +98,20 @@ pub struct PendingDeployRow {
     pub status: Status,
     pub environment: Environment,
     pub target_id: Option<i64>,
+    /// 2.11.0 (P1-D-01b, CWE-494): the
+    /// `targets.version` value at
+    /// `request_deploy` time. The
+    /// `mark_applied` freshness
+    /// check re-verifies the current
+    /// `targets.version` against
+    /// this value and refuses to
+    /// apply the deploy on a
+    /// mismatch. `None` for
+    /// pre-P1-D-01a rows
+    /// (backfilled to `NULL` at
+    /// migration 022); the check
+    /// is a no-op for those rows.
+    pub target_config_version: Option<i64>,
     pub approved_by: Option<i64>,
     pub approved_at: Option<String>,
     pub rejection_reason: Option<String>,
@@ -151,11 +165,20 @@ impl PendingDeployRepository {
             id: row.0,
             system_id: system_id.to_string(),
             plan_summary: plan_summary.to_string(),
+            // P1-D-01c follow-up: copy
+            // `targets.version` into this
+            // field. For now the
+            // freshness check on
+            // `mark_applied` is a
+            // no-op for rows where this
+            // is `None` (the pre-P1-D-01c
+            // backfill case).
             requested_by,
             requested_at: now_str,
             status: Status::Pending,
             environment,
             target_id,
+            target_config_version: None,
             approved_by: None,
             approved_at: None,
             rejection_reason: None,
@@ -167,7 +190,8 @@ impl PendingDeployRepository {
     pub async fn get(&self, id: i64) -> CoreResult<Option<PendingDeployRow>> {
         let row: Option<PendingDeployRowTuple> = sqlx::query_as(
             "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                    status, environment, target_id, approved_by, approved_at, \
+                    status, environment, target_id, target_config_version, \
+                    approved_by, approved_at, \
                     rejection_reason, applied_at \
              FROM pending_deploys WHERE id = ?1",
         )
@@ -190,7 +214,8 @@ impl PendingDeployRepository {
             (None, None) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, environment, target_id, approved_by, approved_at, \
+                        status, environment, target_id, target_config_version, \
+                        approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys ORDER BY id ASC LIMIT ?1",
                 )
@@ -201,7 +226,8 @@ impl PendingDeployRepository {
             (Some(s), None) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, environment, target_id, approved_by, approved_at, \
+                        status, environment, target_id, target_config_version, \
+                        approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE status = ?1 \
                  ORDER BY id ASC LIMIT ?2",
@@ -214,7 +240,8 @@ impl PendingDeployRepository {
             (None, Some(e)) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, environment, target_id, approved_by, approved_at, \
+                        status, environment, target_id, target_config_version, \
+                        approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE environment = ?1 \
                  ORDER BY id ASC LIMIT ?2",
@@ -227,7 +254,8 @@ impl PendingDeployRepository {
             (Some(s), Some(e)) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, environment, target_id, approved_by, approved_at, \
+                        status, environment, target_id, target_config_version, \
+                        approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE status = ?1 AND environment = ?2 \
                  ORDER BY id ASC LIMIT ?3",
@@ -298,9 +326,120 @@ impl PendingDeployRepository {
 
     /// Flip `approved` → `applied`. The operator
     /// reports back after running the deploy locally.
+    ///
+    /// 2.11.0 (P1-D-01b, TZ #1 §10 / D-01,
+    /// CWE-494): if the row carries a
+    /// `target_config_version` (the
+    /// `targets.version` value at
+    /// `request_deploy` time), the
+    /// current `targets.version` for
+    /// the same `target_id` MUST
+    /// match. A mismatch means the
+    /// target was reconfigured
+    /// between approval and apply
+    /// (a `PUT /v1/targets/:id`,
+    /// e.g. an operator hand-edited
+    /// the path or the environment).
+    /// Applying the deploy anyway
+    /// would be a CWE-494: a
+    /// different artifact than the
+    /// one the operator approved
+    /// would land. The post-fix
+    /// `mark_applied` rejects the
+    /// call with a typed
+    /// `ErrStaleDeployment` and the
+    /// row stays in `approved` —
+    /// the operator can re-issue
+    /// the deploy (which captures
+    /// the new `target_config_version`)
+    /// or roll back the target
+    /// config.
+    ///
+    /// Pre-P1-D-01 rows (those with
+    /// `target_config_version IS NULL`)
+    /// are accepted as before — the
+    /// P1-D-01a migration backfilled
+    /// `NULL`, and the freshness
+    /// check is a no-op for them. A
+    /// follow-up P1-D-01d commit
+    /// will mark those rows
+    /// `rejected` and require a
+    /// re-issue.
     pub async fn mark_applied(&self, id: i64) -> CoreResult<Option<PendingDeployRow>> {
         let now: DateTime<Utc> = Utc::now();
         let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        // 2.11.0 (P1-D-01b): freshness
+        // check. If the row carries a
+        // `target_config_version`, the
+        // current `targets.version`
+        // for the same `target_id`
+        // must match. The check is a
+        // SELECT (not a CHECK
+        // constraint) because the
+        // failure mode is a typed
+        // `ErrStaleDeployment` that
+        // carries both the captured
+        // version and the current one
+        // for the audit log.
+        let row = self.get(id).await?;
+        if let Some(r) = row.as_ref() {
+            if let Some(captured) = r.target_config_version {
+                if r.status == Status::Approved {
+                    let current: Option<i64> =
+                        sqlx::query_as("SELECT version FROM targets WHERE id = ?1")
+                            .bind(r.target_id)
+                            .fetch_optional(&self.pool)
+                            .await?
+                            .map(|(v,): (i64,)| v);
+                    match current {
+                        Some(now_version) if now_version == captured => {
+                            // OK: the
+                            // target has
+                            // not been
+                            // reconfigured
+                            // since the
+                            // deploy was
+                            // requested.
+                        }
+                        Some(now_version) => {
+                            return Err(CoreError::ErrStaleDeployment {
+                                deploy_id: id,
+                                target_id: r
+                                    .target_id
+                                    .expect("target_id NOT NULL after migration 018"),
+                                captured_version: captured,
+                                current_version: now_version,
+                                kind: "target_config_version".to_string(),
+                            });
+                        }
+                        None => {
+                            // The target
+                            // row is gone
+                            // (deleted
+                            // between
+                            // request and
+                            // apply). This
+                            // is also a
+                            // CWE-494 — the
+                            // row we
+                            // recorded the
+                            // intent for
+                            // no longer
+                            // exists.
+                            return Err(CoreError::ErrStaleDeployment {
+                                deploy_id: id,
+                                target_id: r
+                                    .target_id
+                                    .expect("target_id NOT NULL after migration 018"),
+                                captured_version: captured,
+                                current_version: -1,
+                                kind: "target_config_version (target row missing)".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
         let affected = sqlx::query(
             "UPDATE pending_deploys \
              SET status = 'applied', applied_at = ?1 \
@@ -339,7 +478,8 @@ impl PendingDeployRepository {
             Some(e) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, environment, target_id, approved_by, approved_at, \
+                        status, environment, target_id, target_config_version, \
+                        approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE target_id IS NULL AND environment = ?1 \
                  ORDER BY requested_at ASC",
@@ -351,7 +491,8 @@ impl PendingDeployRepository {
             None => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
-                        status, environment, target_id, approved_by, approved_at, \
+                        status, environment, target_id, target_config_version, \
+                        approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE target_id IS NULL \
                  ORDER BY requested_at ASC",
@@ -398,6 +539,7 @@ type PendingDeployRowTuple = (
     String,
     Option<i64>,
     Option<i64>,
+    Option<i64>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -413,6 +555,7 @@ fn decode_row(row: PendingDeployRowTuple) -> CoreResult<PendingDeployRow> {
         status,
         environment,
         target_id,
+        target_config_version,
         approved_by,
         approved_at,
         rejection_reason,
@@ -427,6 +570,7 @@ fn decode_row(row: PendingDeployRowTuple) -> CoreResult<PendingDeployRow> {
         status: Status::parse(&status)?,
         environment: Environment::parse(&environment)?,
         target_id,
+        target_config_version,
         approved_by,
         approved_at,
         rejection_reason,

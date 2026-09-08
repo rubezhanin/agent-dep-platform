@@ -38,8 +38,8 @@ async fn migration_018_applies_to_a_fresh_db() {
     let (_dir, pool) = fresh_db().await;
     let v = read_schema_version(&pool).await;
     assert_eq!(
-        v, 22,
-        "schema_version must be 22 after fresh migrate (018 + 019 + 020 + 021 + 022)"
+        v, 23,
+        "schema_version must be 23 after fresh migrate (018 + 019 + 020 + 021 + 022 + 023)"
     );
 }
 
@@ -140,14 +140,14 @@ async fn migration_018_orphan_row_is_dropped() {
     // fresh_db() helper applies every
     // migration in order), so this
     // assertion is just the post-019 value.
-    // P1-D-01 (migration 022): fresh DB
-    // is at 22 after 018 + 019 + 020 +
-    // 021 + 022. The orphan-insert test
-    // still exercises the 2.5.3 NOT NULL
-    // constraint (the fresh_db() helper
-    // applies every migration in order),
-    // so this assertion is just the
-    // post-022 value.
+    // P1-D-01b (migration 023): fresh DB
+    // is at 23 after 018 + 019 + 020 +
+    // 021 + 022 + 023. The orphan-insert
+    // test still exercises the 2.5.3
+    // NOT NULL constraint (the fresh_db()
+    // helper applies every migration in
+    // order), so this assertion is just
+    // the post-023 value.
     let v = read_schema_version(&pool).await;
-    assert_eq!(v, 22);
+    assert_eq!(v, 23);
 }

@@ -78,4 +78,36 @@ pub enum CoreError {
 
     #[error("git remote URL changed: was `{old}`, now `{new}`; remove the working copy at `{new}`'s source_id directory and retry")]
     ErrGitRemoteChanged { old: String, new: String },
+
+    /// 2.11.0 (P1-D-01b, TZ #1 §10 / D-01,
+    /// CWE-494): a deploy was approved
+    /// against one version of a
+    /// `DeploymentIntent` field
+    /// (currently only
+    /// `target_config_version`)
+    /// and the underlying value has
+    /// since changed. Applying the
+    /// deploy anyway would land a
+    /// different artifact than the
+    /// one the operator approved.
+    /// The typed error carries the
+    /// `deploy_id`, the
+    /// `target_id`, the captured
+    /// version, and the current
+    /// version so the audit log can
+    /// record the exact mismatch
+    /// and the SPA can surface a
+    /// "deploy stale" error.
+    #[error("deploy {deploy_id} is stale: {kind} for target {target_id} was {captured_version} at approval, now {current_version}")]
+    ErrStaleDeployment {
+        deploy_id: i64,
+        target_id: i64,
+        /// 2.11.0 (P1-D-01b): the
+        /// field that mismatched.
+        /// Currently always
+        /// `"target_config_version"`.
+        kind: String,
+        captured_version: i64,
+        current_version: i64,
+    },
 }
