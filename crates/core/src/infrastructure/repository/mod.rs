@@ -60,6 +60,21 @@ type SnapshotRow = (
     String,
     Option<String>,
     Option<String>,
+    // 2.11.0 (P1-G-04b, CWE-494): the
+    // three P1-G-04 integrity hashes
+    // (tree_hash, artifact_manifest_hash,
+    // scanner_result_hash) are now
+    // persisted as columns on the
+    // `source_snapshots` table. All
+    // three are `Option<String>` so
+    // pre-2.11.0 rows hydrate as
+    // `None` (no backfill needed;
+    // the columns were ADD-ed with
+    // a default of NULL by migration
+    // 026).
+    Option<String>,
+    Option<String>,
+    Option<String>,
 );
 
 type DivisionRow = (String, i64, String, Option<String>);
@@ -291,10 +306,24 @@ impl IngestRepository {
 
         // Step 2: insert the new snapshot row.
         let snapshot = &result.snapshot;
+        // 2.11.0 (P1-G-04b, CWE-494):
+        // the INSERT now also writes
+        // the three P1-G-04 integrity
+        // hashes (tree_hash,
+        // artifact_manifest_hash,
+        // scanner_result_hash) into
+        // the new columns added by
+        // migration 026. All three are
+        // `Option<String>`; for
+        // filesystem-only sources the
+        // `tree_hash` may legitimately
+        // be `None` (no `.git` working
+        // copy to resolve HEAD from).
         sqlx::query(
             "INSERT INTO source_snapshots (id, source_id, commit_sha, status, \
              agent_count, division_count, created_at, upstream_template_version, \
-             scan_note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             scan_note, tree_hash, artifact_manifest_hash, scanner_result_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )
         .bind(snapshot.id.to_string())
         .bind(source_id.to_string())
@@ -310,6 +339,9 @@ impl IngestRepository {
                 .map(|v| v.to_string()),
         )
         .bind(&snapshot.scan_note)
+        .bind(snapshot.tree_hash.as_ref())
+        .bind(snapshot.artifact_manifest_hash.as_ref())
+        .bind(snapshot.scanner_result_hash.as_ref())
         .execute(&mut *tx)
         .await?;
 
@@ -434,7 +466,8 @@ impl IngestRepository {
     pub async fn list_snapshots(&self, source_id: Uuid) -> CoreResult<Vec<StoredSnapshotSummary>> {
         let rows: Vec<SnapshotRow> = sqlx::query_as(
             "SELECT id, source_id, commit_sha, status, agent_count, division_count, \
-             created_at, upstream_template_version, scan_note FROM source_snapshots \
+             created_at, upstream_template_version, scan_note, tree_hash, \
+             artifact_manifest_hash, scanner_result_hash FROM source_snapshots \
              WHERE source_id = ?1 ORDER BY created_at DESC",
         )
         .bind(source_id.to_string())
@@ -452,6 +485,9 @@ impl IngestRepository {
             created_at,
             upstream,
             scan_note,
+            tree_hash,
+            artifact_manifest_hash,
+            scanner_result_hash,
         ) in rows
         {
             let id = Uuid::parse_str(&id).map_err(|e| CoreError::ErrSchemaInvalid {
@@ -480,25 +516,24 @@ impl IngestRepository {
                     id,
                     source_id,
                     commit_sha: commit,
-                    // 2.11.0 (P1-G-04): the
+                    // 2.11.0 (P1-G-04b, CWE-494):
+                    // the SELECT-side hydrate
+                    // now reads the three
                     // P1-G-04 integrity
-                    // hashes (tree_hash,
-                    // artifact_manifest_hash,
-                    // scanner_result_hash)
-                    // are not stored in the
-                    // SQLite `source_snapshots`
-                    // table yet (a follow-up
-                    // migration); the
-                    // SELECT-side hydrate
-                    // fills them with
-                    // `None` for the
-                    // existing rows. A
-                    // follow-up P1-G-04b
-                    // commit will add the
-                    // columns + backfill.
-                    tree_hash: None,
-                    artifact_manifest_hash: None,
-                    scanner_result_hash: None,
+                    // hashes from the columns
+                    // added by migration 026.
+                    // Pre-2.11.0 rows have
+                    // NULL in all three
+                    // columns (no backfill
+                    // needed; the default of
+                    // `NULL` is the right
+                    // hydration for the
+                    // "snapshot predates the
+                    // integrity-hash feature"
+                    // case).
+                    tree_hash,
+                    artifact_manifest_hash,
+                    scanner_result_hash,
                     status,
                     agent_count: agent_count as u32,
                     division_count: division_count as u32,
@@ -527,7 +562,8 @@ impl IngestRepository {
     ) -> CoreResult<Option<StoredSnapshotDetail>> {
         let snap_row: Option<SnapshotRow> = sqlx::query_as(
             "SELECT id, source_id, commit_sha, status, agent_count, division_count, \
-             created_at, upstream_template_version, scan_note FROM source_snapshots \
+             created_at, upstream_template_version, scan_note, tree_hash, \
+             artifact_manifest_hash, scanner_result_hash FROM source_snapshots \
              WHERE id = ?1",
         )
         .bind(snapshot_id.to_string())
@@ -546,6 +582,9 @@ impl IngestRepository {
                 created_at,
                 upstream,
                 scan_note,
+                tree_hash,
+                artifact_manifest_hash,
+                scanner_result_hash,
             )) => {
                 let id = Uuid::parse_str(&id).map_err(|e| CoreError::ErrSchemaInvalid {
                     path: "source_snapshots.id".to_string(),
@@ -571,22 +610,18 @@ impl IngestRepository {
                     id,
                     source_id,
                     commit_sha,
-                    // 2.11.0 (P1-G-04):
-                    // SELECT-side hydrate
-                    // fills the P1-G-04
-                    // integrity hashes
-                    // with `None` for
-                    // existing rows; a
-                    // follow-up P1-G-04b
-                    // migration will
-                    // add the columns +
-                    // backfill. See
-                    // `list_snapshots`
-                    // above for the
-                    // matching comment.
-                    tree_hash: None,
-                    artifact_manifest_hash: None,
-                    scanner_result_hash: None,
+                    // 2.11.0 (P1-G-04b, CWE-494):
+                    // hydrate the three
+                    // P1-G-04 integrity
+                    // hashes from the
+                    // columns added by
+                    // migration 026. See
+                    // `list_snapshots` above
+                    // for the matching
+                    // comment.
+                    tree_hash,
+                    artifact_manifest_hash,
+                    scanner_result_hash,
                     status,
                     agent_count: agent_count as u32,
                     division_count: division_count as u32,

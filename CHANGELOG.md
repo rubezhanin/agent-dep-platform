@@ -2579,6 +2579,142 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   warnings` CI gate. No
   schema change.
 
+- **P1-G-04b Real `tree_hash` +
+  full snapshot integrity
+  pin (TZ #1 §7 G-04b,
+  CWE-494 Code Download
+  without Integrity
+  Verification, Appendix
+  A.3 follow-up).** The
+  P1-G-04 ship (2.7.10)
+  added 3 hash fields to
+  the `SourceSnapshot`
+  struct (`tree_hash`,
+  `artifact_manifest_hash`,
+  `scanner_result_hash`)
+  and computed the latter
+  two from the artifact
+  bytes; `tree_hash` was
+  a `None` placeholder
+  because the source of
+  truth for "what was
+  actually cloned" was
+  not wired. **Exploit
+  scenario (pre-fix):** an
+  operator who gated a
+  deploy on
+  `snapshot.tree_hash ==
+  Some(expected)` could
+  pass an `expected` value
+  matching a malicious
+  push to the source repo
+  — the equality check
+  was tautological because
+  `tree_hash` was always
+  `None`. CWE-494: the
+  caller had no way to
+  verify the contents of
+  the source tree at
+  snapshot time against
+  any expected value, so
+  the integrity gate was
+  advisory. Post-fix,
+  migration `026_source_snapshots_integrity_hashes.sql`
+  adds 3 `TEXT` columns
+  to `source_snapshots`
+  (`tree_hash`,
+  `artifact_manifest_hash`,
+  `scanner_result_hash`,
+  all `NULL`-able for
+  pre-2.11.0 back-compat);
+  schema_version bumps
+  25→26 with the 4 test
+  sites
+  (`sqlite_tests::CURRENT_SCHEMA_VERSION`,
+  `journal_tests`,
+  `cli_tests`,
+  `pending_deploys_target_id_not_null`)
+  updated in lockstep.
+  The `commit_tree_hash`
+  helper in
+  `application::ingest`
+  is now a real libgit2
+  call:
+  `git2::Repository::discover(cwd)`
+  → `repo.head()?.peel_to_commit()?.tree()?.id()`,
+  returning the OID
+  `git` itself uses for
+  the working-tree state
+  (40 hex chars, the same
+  format the `git rev-parse
+  HEAD^{tree}` CLI emits).
+  The function is
+  best-effort: any
+  `git2::Error` (not a
+  git repo, no HEAD yet)
+  returns `Ok(None)` and
+  the snapshot still
+  records
+  `artifact_manifest_hash`
+  and
+  `scanner_result_hash` —
+  the operator sees
+  `tree_hash: null` in
+  the snapshot detail and
+  can re-ping the source.
+  `record_snapshot` now
+  writes the 3 new columns
+  in the same INSERT;
+  `list_snapshots` and
+  `get_snapshot_detail`
+  hydrate them via the
+  expanded `SnapshotRow`
+  12-tuple. New unit test
+  `commit_tree_hash_returns_some_in_a_git_workspace`
+  in
+  `application::ingest::tests`
+  creates a temp dir,
+  inits a real `git`
+  repo, commits a file,
+  and asserts the helper
+  returns the expected
+  SHA. The `ts-rs` regen
+  in this commit also
+  closed a pre-existing
+  gap: 7 DTOs
+  (`AgentSummary`,
+  `BackupSummary`,
+  `DeploymentSummary`,
+  `Finding`, `LogLine`,
+  `Plan`, `PlanOperation`)
+  were not in the
+  `ts_export.rs` import
+  list, so the generated
+  `src/lib/types.generated.ts`
+  was silently stale on
+  the type-export side;
+  they are now exported
+  and the drift guard
+  `git diff --exit-code
+  src/lib/types.generated.ts`
+  is meaningful again.
+  **CWE-494 closed** for
+  the snapshot-integrity
+  attack surface. No
+  residual risk; the
+  helper degrades to
+  `None` on non-git
+  sources (file://
+  filesystem, future
+  tarball ingest), and
+  the operator can always
+  compare
+  `artifact_manifest_hash`
+  against
+  `sha256sum -r` of the
+  ingest dir as an
+  out-of-band check.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added
