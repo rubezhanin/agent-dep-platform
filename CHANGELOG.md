@@ -1279,6 +1279,68 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     not a silent mock-authenticated
     deployment.
 
+- **P1-D-01a DeploymentIntent
+  schema (TZ #1 §10 / D-01,
+  CWE-494 Download of Code
+  Without Integrity Check) —
+  foundation.** The pre-fix
+  2.10.0 `pending_deploys` row
+  carries a `plan_summary` JSON,
+  an `environment`, and a
+  `target_id`. That is enough to
+  APPROVE a deploy, but not
+  enough to detect drift between
+  approval time and apply time:
+  the operator could approve a
+  deploy against snapshot N, and
+  by the time the deploy runs
+  (hours or days later) the
+  source could have advanced to
+  snapshot N+1 (a new commit,
+  new files, new manifest). A
+  naive apply would deploy a
+  different artifact than the
+  one the operator approved. CWE-494.
+  - Migration 022: extend
+    `pending_deploys` with six
+    new nullable columns:
+    `source_snapshot_id` (UUID,
+    FK to `source_snapshots`),
+    `commit_sha` (40 hex), `plan_hash`
+    (SHA-256 of the plan),
+    `policy_set_version`,
+    `artifact_manifest_hash`,
+    `target_config_version`
+    (monotonic integer mirroring
+    `targets.version`). All
+    nullable in this commit so
+    pre-P1-D-01 rows are
+    backfilled with `NULL`; the
+    P1-D-01b follow-up promotes
+    them to `NOT NULL` for fresh
+    rows. Bump schema_version
+    21 → 22. Four test sites
+    updated.
+  - Two new indexes:
+    `idx_pending_deploys_source_snapshot`
+    and
+    `idx_pending_deploys_target_version`
+    to support the freshness
+    query in P1-D-01b.
+  - **No API change yet.** The
+    `mark_applied` freshness
+    check is a P1-D-01b
+    follow-up; this commit is the
+    data-layer foundation. The
+    `PendingDeployRepository::request`
+    signature is unchanged, so
+    every existing test
+    continues to work. Pre-P1-D-01
+    rows are readable as before;
+    new `request` calls do not
+    yet populate the new columns
+    (P1-D-01b does that).
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added
