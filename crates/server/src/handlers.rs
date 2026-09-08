@@ -51,7 +51,7 @@ pub async fn list_audit(
             let details = Some(json!({"limit": limit, "cursor": q.cursor}).to_string());
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -71,7 +71,7 @@ pub async fn list_audit(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     "GET /v1/audit",
                     None,
@@ -106,22 +106,26 @@ pub async fn list_systems(
     match result {
         Ok(rows) => {
             let details = Some(json!({"count": rows.len()}).to_string());
-            let _ = state
-                .audit
-                .record(
-                    &user.name,
-                    &action,
-                    None,
-                    AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+            // P1-PERF-01 (TZ #1 §19): batched /
+            // non-durable audit for successful
+            // GETs. The flush task lands this on
+            // disk within `flush_interval`
+            // (default 1 s) or when the batch
+            // hits `batch_size` (default 100)
+            // events, whichever comes first.
+            state.audit.record_async(
+                &user.name,
+                &action,
+                None,
+                AuditOutcome::Ok,
+                details.as_deref(),
+            );
             (StatusCode::OK, Json(rows)).into_response()
         }
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     &action,
                     None,
@@ -211,7 +215,7 @@ pub async fn plan_system(
             let details = Some(json!({"wrote": summary.writes.len()}).to_string());
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     &action,
                     Some(&target),
@@ -224,7 +228,7 @@ pub async fn plan_system(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     &action,
                     None,
@@ -261,7 +265,7 @@ pub async fn rollback_operation(
             );
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     &action,
                     Some(&target),
@@ -274,7 +278,7 @@ pub async fn rollback_operation(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     &action,
                     Some(&format!("operation:{id}")),
@@ -333,7 +337,7 @@ pub async fn list_users(
             let details = Some(json!({"count": views.len()}).to_string());
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -346,7 +350,7 @@ pub async fn list_users(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -375,7 +379,7 @@ pub async fn create_user(
             let details = Some(json!({"role": created.user.role.as_str()}).to_string());
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -399,7 +403,7 @@ pub async fn create_user(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -427,14 +431,14 @@ pub async fn disable_user(
         Ok(true) => {
             let _ = state
                 .audit
-                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .record_sync(&user.name, action, Some(&target), AuditOutcome::Ok, None)
                 .await;
             (StatusCode::NO_CONTENT, ()).into_response()
         }
         Ok(false) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -451,7 +455,7 @@ pub async fn disable_user(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -479,14 +483,14 @@ pub async fn rotate_user_token(
         Ok(Some(new_token)) => {
             let _ = state
                 .audit
-                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .record_sync(&user.name, action, Some(&target), AuditOutcome::Ok, None)
                 .await;
             (StatusCode::OK, Json(json!({"id": id, "token": new_token}))).into_response()
         }
         Ok(None) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -503,7 +507,7 @@ pub async fn rotate_user_token(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -635,7 +639,7 @@ pub async fn request_deploy(
         Ok(None) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -660,7 +664,7 @@ pub async fn request_deploy(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -682,7 +686,7 @@ pub async fn request_deploy(
                 Err(e) => {
                     let _ = state
                         .audit
-                        .record(
+                        .record_sync(
                             &user.name,
                             action,
                             None,
@@ -721,7 +725,7 @@ pub async fn request_deploy(
                     );
                     let _ = state
                         .audit
-                        .record(
+                        .record_sync(
                             &user.name,
                             action,
                             Some(&target),
@@ -742,7 +746,7 @@ pub async fn request_deploy(
                 Err(e) => {
                     let _ = state
                         .audit
-                        .record(
+                        .record_sync(
                             &user.name,
                             action,
                             None,
@@ -788,7 +792,7 @@ pub async fn request_deploy(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -833,7 +837,7 @@ pub async fn list_deploys(
             );
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -846,7 +850,7 @@ pub async fn list_deploys(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -874,14 +878,14 @@ pub async fn get_deploy(
         Ok(Some(row)) => {
             let _ = state
                 .audit
-                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .record_sync(&user.name, action, Some(&target), AuditOutcome::Ok, None)
                 .await;
             (StatusCode::OK, Json(deploy_view(&row))).into_response()
         }
         Ok(None) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -898,7 +902,7 @@ pub async fn get_deploy(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -927,7 +931,7 @@ pub async fn approve_deploy(
             let details = Some(json!({"status": "approved"}).to_string());
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -940,7 +944,7 @@ pub async fn approve_deploy(
         Ok(None) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -957,7 +961,7 @@ pub async fn approve_deploy(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1002,7 +1006,7 @@ pub async fn reject_deploy(
             );
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1015,7 +1019,7 @@ pub async fn reject_deploy(
         Ok(None) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1032,7 +1036,7 @@ pub async fn reject_deploy(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1060,14 +1064,14 @@ pub async fn mark_applied(
         Ok(Some(row)) => {
             let _ = state
                 .audit
-                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .record_sync(&user.name, action, Some(&target), AuditOutcome::Ok, None)
                 .await;
             (StatusCode::OK, Json(deploy_view(&row))).into_response()
         }
         Ok(None) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1084,7 +1088,7 @@ pub async fn mark_applied(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1171,7 +1175,7 @@ pub async fn list_secrets(
             let details = Some(json!({"count": rows.len()}).to_string());
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -1184,7 +1188,7 @@ pub async fn list_secrets(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -1212,7 +1216,7 @@ pub async fn get_secret(
         Ok(value) => {
             let _ = state
                 .audit
-                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .record_sync(&user.name, action, Some(&target), AuditOutcome::Ok, None)
                 .await;
             (
                 StatusCode::OK,
@@ -1226,7 +1230,7 @@ pub async fn get_secret(
             // only a generic 404.
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1250,7 +1254,7 @@ pub async fn create_secret(
         Ok(row) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1263,7 +1267,7 @@ pub async fn create_secret(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1292,7 +1296,7 @@ pub async fn update_secret(
         Ok(Some(row)) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1305,7 +1309,7 @@ pub async fn update_secret(
         Ok(None) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1318,7 +1322,7 @@ pub async fn update_secret(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1346,14 +1350,14 @@ pub async fn delete_secret(
         Ok(true) => {
             let _ = state
                 .audit
-                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .record_sync(&user.name, action, Some(&target), AuditOutcome::Ok, None)
                 .await;
             (StatusCode::NO_CONTENT, ()).into_response()
         }
         Ok(false) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1366,7 +1370,7 @@ pub async fn delete_secret(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1395,7 +1399,7 @@ pub async fn list_environments(
     let names: Vec<&'static str> = Environment::all().iter().map(|e| e.as_str()).collect();
     let _ = state
         .audit
-        .record(&user.name, action, None, AuditOutcome::Ok, None)
+        .record_sync(&user.name, action, None, AuditOutcome::Ok, None)
         .await;
     (StatusCode::OK, Json(json!({ "environments": names }))).into_response()
 }
@@ -1443,7 +1447,7 @@ pub async fn list_targets(
             );
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -1456,7 +1460,7 @@ pub async fn list_targets(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     None,
@@ -1484,14 +1488,14 @@ pub async fn get_target(
         Ok(Some(row)) => {
             let _ = state
                 .audit
-                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .record_sync(&user.name, action, Some(&target), AuditOutcome::Ok, None)
                 .await;
             (StatusCode::OK, Json(row)).into_response()
         }
         Ok(None) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1508,7 +1512,7 @@ pub async fn get_target(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1547,7 +1551,7 @@ pub async fn create_target(
         Ok(row) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1560,7 +1564,7 @@ pub async fn create_target(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1588,14 +1592,14 @@ pub async fn delete_target(
         Ok(true) => {
             let _ = state
                 .audit
-                .record(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .record_sync(&user.name, action, Some(&target), AuditOutcome::Ok, None)
                 .await;
             (StatusCode::NO_CONTENT, ()).into_response()
         }
         Ok(false) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),
@@ -1612,7 +1616,7 @@ pub async fn delete_target(
         Err(e) => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     &user.name,
                     action,
                     Some(&target),

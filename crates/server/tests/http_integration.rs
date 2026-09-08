@@ -19,6 +19,7 @@ use agent_dep_core::infrastructure::repository::secrets_repository::SecretReposi
 use agent_dep_core::infrastructure::repository::targets_repository::TargetRepository;
 use agent_dep_core::infrastructure::repository::users_repository::{Role, UserRepository};
 use agent_dep_core::infrastructure::sqlite::connect;
+use agent_dep_server::audit_recorder::AuditRecorder;
 use agent_dep_server::{router, ServerState};
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -49,7 +50,7 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
     let db_path: PathBuf = dir.path().join("audit.db");
     let db = connect(&db_path).await.expect("connect");
     db.migrate().await.expect("migrate");
-    let audit = AuditLogRepository::new(db.pool().clone());
+    let audit = AuditRecorder::direct(AuditLogRepository::new(db.pool().clone()));
     let users = UserRepository::new(db.pool().clone());
     let admin_token = match legacy {
         Some(t) => {
@@ -273,7 +274,7 @@ spec:
     let db_path = dir.path().join("audit.db");
     let db = connect(&db_path).await.unwrap();
     db.migrate().await.unwrap();
-    let audit = AuditLogRepository::new(db.pool().clone());
+    let audit = AuditRecorder::direct(AuditLogRepository::new(db.pool().clone()));
     let users = UserRepository::new(db.pool().clone());
     let created = users
         .create(

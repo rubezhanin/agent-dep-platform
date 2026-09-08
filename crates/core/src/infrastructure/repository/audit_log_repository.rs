@@ -56,7 +56,7 @@ pub enum AuditOutcome {
 }
 
 impl AuditOutcome {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             AuditOutcome::Ok => "ok",
             AuditOutcome::Error => "error",
@@ -83,6 +83,17 @@ pub struct AuditLogRepository {
 impl AuditLogRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    /// Borrow the underlying pool. Used by the
+    /// 2.11.0 `AuditRecorder` (P1-PERF-01) which
+    /// needs to open a transaction for batched
+    /// `INSERT` flushes. Returning `&SqlitePool`
+    /// (not `SqlitePool`) keeps the
+    /// `Clone`-cheapness invariant — the recorder
+    /// itself clones the repo, not the pool.
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     /// Append one audit row. `occurred_at` is recorded as

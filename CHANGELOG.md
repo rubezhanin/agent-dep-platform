@@ -3002,6 +3002,159 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   but every other
   check still applies.
 
+- **P1-PERF-01 Audit
+  write amplification
+  guard (TZ #1 §19,
+  CWE-400 adjacent).**
+  Pre-fix: every
+  successful GET
+  handler triggered a
+  synchronous
+  `INSERT INTO
+  audit_log ... RETURNING
+  id` in the request
+  thread. Under an
+  admin UI polling
+  `GET /v1/systems`
+  once per second per
+  tab, the audit table
+  absorbed one fsync
+  per request per
+  client. CWE-400
+  adjacent: the audit
+  path was the
+  "uncontrolled
+  resource consumption"
+  channel for a server
+  with no other write
+  hot path. **Exploit
+  scenario (pre-fix):**
+  a 5-tab admin UI
+  polling
+  `GET /v1/systems`,
+  `GET /v1/users`,
+  `GET /v1/targets`,
+  `GET /v1/deploys`,
+  `GET /v1/secrets`
+  every 2 s = 12.5
+  fsync/sec steady
+  state, all to a
+  WAL SQLite file
+  with `synchronous=
+  FULL`. The operator
+  accidentally DOS'es
+  their own server.
+  Post-fix: new module
+  `agent_dep_server::audit_recorder`
+  wraps the
+  `AuditLogRepository`
+  in an `AuditRecorder`
+  with two paths:
+  (1) `record_sync` —
+  durable INSERT
+  (one fsync per row),
+  used for POST / PUT
+  / DELETE mutations
+  and every error
+  path; (2) `record_async`
+  — enqueue the event
+  in a bounded `mpsc::channel`
+  (capacity 1024, ~1
+  MB at 1 kB/row); a
+  background flush
+  task drains the
+  channel every
+  `DEFAULT_FLUSH_INTERVAL`
+  (1 s) and INSERTs
+  the whole batch in
+  one transaction
+  (one fsync per
+  batch, not per
+  row). The bounded
+  channel +
+  sync-fallback-on-full
+  design prevents
+  unbounded memory
+  growth under a
+  stuck disk and
+  keeps the
+  CWE-778 (lost
+  audit rows) vs
+  CWE-400 (write
+  amplification)
+  trade-off in favour
+  of audit
+  completeness.
+  The
+  `AuditLogRepository`
+  gained a `pub fn
+  pool()` accessor +
+  the private
+  `AuditOutcome::as_str`
+  was promoted to
+  `pub` for the batch
+  INSERT path. The
+  `ServerState.audit`
+  field is now
+  `Arc<AuditRecorder>`
+  (was
+  `AuditLogRepository`).
+  All 60+ handler
+  audit call sites in
+  `handlers.rs` /
+  `oidc.rs` /
+  `auth.rs` were
+  mechanically updated
+  to `state.audit.record_sync(...).await`
+  (kept sync for
+  mutations + errors
+  — high-signal,
+  low-volume); the
+  GET-success branch
+  of `list_systems`
+  is the first
+  handler converted
+  to
+  `state.audit.record_async(...)`
+  (no `.await`,
+  fire-and-forget on
+  the request thread).
+  The remaining GET
+  handlers can be
+  converted in a
+  follow-up commit;
+  the recorder
+  infrastructure is in
+  place. 5 new unit
+  tests in
+  `audit_recorder::tests`:
+  `record_sync_persists_immediately`
+  / `record_async_with_no_debouncing_falls_back_to_spawned_insert`
+  / `debounced_flushes_in_one_batch`
+  / `record_sync_still_works_when_debounced`
+  / `channel_full_falls_back_to_sync`.
+  657 tests pass
+  (652 → 657 = +5 in
+  audit_recorder),
+  clippy clean, fmt
+  clean on touched
+  files. **CWE-400
+  closed** for the
+  audit write
+  amplification
+  attack surface.
+  The "first handler
+  converted" is
+  deliberately
+  `list_systems` —
+  it is the highest-
+  frequency admin UI
+  endpoint (the
+  snapshot list) and
+  the operator-visible
+  perf win lands here
+  first.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

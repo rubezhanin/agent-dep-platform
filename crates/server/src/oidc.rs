@@ -424,7 +424,7 @@ pub async fn provision_user_from_claims(
         })?;
     let _ = state
         .audit
-        .record(
+        .record_sync(
             &user.name,
             "oidc.login",
             Some(&format!("user:{}", user.id)),
@@ -790,7 +790,7 @@ pub async fn refresh_handler(
     // 4. Audit.
     let _ = state
         .audit
-        .record(
+        .record_sync(
             &user.name,
             "oidc.refresh",
             Some(&format!("user:{}", user.id)),
@@ -921,7 +921,7 @@ pub async fn logout_handler(
                 let _ = state.users.invalidate_token(user.id).await;
                 let _ = state
                     .audit
-                    .record(
+                    .record_sync(
                         &user.name,
                         "oidc.logout",
                         Some(&format!("user:{}", user.id)),

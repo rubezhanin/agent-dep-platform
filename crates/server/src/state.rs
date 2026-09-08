@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use agent_dep_core::infrastructure::repository::audit_log_repository::AuditLogRepository;
 use agent_dep_core::infrastructure::repository::idempotency_repository::IdempotencyRepository;
 use agent_dep_core::infrastructure::repository::oidc_pending_repository::OidcPendingRepository;
 use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
@@ -12,13 +11,24 @@ use agent_dep_core::infrastructure::repository::targets_repository::TargetReposi
 use agent_dep_core::infrastructure::repository::users_repository::UserRepository;
 use agent_dep_core::infrastructure::sqlite::Db;
 
+use crate::audit_recorder::AuditRecorder;
 use crate::oidc::OidcConfig;
 use crate::oidc_client::OidcClient;
 
 #[derive(Clone)]
 pub struct ServerState {
     pub db: Db,
-    pub audit: AuditLogRepository,
+    /// 2.11.0 (P1-PERF-01, TZ #1 §19):
+    /// two-tier audit recorder. Successful
+    /// GETs go through `record_async`
+    /// (batched, one fsync per batch); POST /
+    /// PUT / DELETE and every error path go
+    /// through `record_sync` (one fsync per
+    /// row, durable). The `Arc<AuditRecorder>`
+    /// is `Clone`-cheap so handlers can take
+    /// a reference without owning a mutable
+    /// borrow.
+    pub audit: Arc<AuditRecorder>,
     /// 2.1.0: per-user lookup. The 2.0.0 single-token
     /// field is gone — the `users` table is the only
     /// source of truth.

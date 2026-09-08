@@ -5,6 +5,7 @@
 //! `main.rs` binary is a thin wrapper that constructs
 //! the production `ServerState` and calls `axum::serve`.
 
+pub mod audit_recorder;
 pub mod auth;
 pub mod catalog;
 pub mod env_validate;
@@ -393,6 +394,38 @@ pub async fn boot_default_state() -> Result<ServerState> {
         token
     };
     let audit = AuditLogRepository::new(db.pool().clone());
+    // P1-PERF-01 (TZ #1 §19, CWE-400
+    // adjacent): wrap the audit repo in a
+    // debounced recorder. Successful GETs go
+    // through `record_async` (batched, one
+    // fsync per batch); POST / PUT / DELETE
+    // and every error path go through
+    // `record_sync` (durable, one fsync per
+    // row). The flush task lives for the
+    // lifetime of the `ServerState`; tests
+    // shut it down explicitly before
+    // asserting audit row counts.
+    //
+    // We discard the `JoinHandle` here because
+    // the production main loop does not have a
+    // clean shutdown signal — the OS kills the
+    // tokio runtime on Ctrl-C, the flush task
+    // exits on its next `select!` arm, and any
+    // uncommitted events in the queue are
+    // lost. This is the standard
+    // "best-effort background task" trade-off;
+    // the alternative (synchronous drain on
+    // shutdown) would require plumbing a
+    // `CancellationToken` through every
+    // request handler, which is a much larger
+    // refactor.
+    let (audit_recorder, _flush_handle) = audit_recorder::AuditRecorder::debounced(
+        audit,
+        audit_recorder::DEFAULT_FLUSH_INTERVAL,
+        audit_recorder::DEFAULT_BATCH_SIZE,
+        audit_recorder::DEFAULT_CHANNEL_CAPACITY,
+    );
+    let audit = audit_recorder;
     let deploys = PendingDeployRepository::new(db.pool().clone());
     // P0-F-05 (TZ #1 §6 F-05 + TZ #2 WP-2.1):
     // vault passphrase is fail-closed.

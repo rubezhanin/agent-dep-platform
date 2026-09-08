@@ -182,7 +182,7 @@ async fn unauthorized(state: &ServerState, method: &str, path: &str, reason: &st
     let details = json!({"reason": reason}).to_string();
     if let Err(e) = state
         .audit
-        .record(
+        .record_sync(
             "anonymous",
             &action,
             None,
@@ -352,7 +352,7 @@ pub async fn check_role(state: ServerState, request: Request, next: Next) -> Res
             .to_string();
             let _ = state
                 .audit
-                .record(&u.name, &action, None, AuditOutcome::Error, Some(&details))
+                .record_sync(&u.name, &action, None, AuditOutcome::Error, Some(&details))
                 .await;
             (
                 axum::http::StatusCode::FORBIDDEN,
@@ -363,7 +363,7 @@ pub async fn check_role(state: ServerState, request: Request, next: Next) -> Res
         None => {
             let _ = state
                 .audit
-                .record(
+                .record_sync(
                     "anonymous",
                     &action,
                     None,
