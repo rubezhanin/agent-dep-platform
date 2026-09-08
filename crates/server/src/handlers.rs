@@ -699,7 +699,14 @@ pub async fn request_deploy(
             };
             match state
                 .deploys
-                .request(&summary.system_id, &plan_json, user.id, env, target_id)
+                .request(
+                    &summary.system_id,
+                    &plan_json,
+                    user.id,
+                    env,
+                    target_id,
+                    None,
+                )
                 .await
             {
                 Ok(row) => {

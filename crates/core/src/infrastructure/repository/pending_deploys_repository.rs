@@ -112,6 +112,49 @@ pub struct PendingDeployRow {
     /// migration 022); the check
     /// is a no-op for those rows.
     pub target_config_version: Option<i64>,
+    /// 2.11.0 (P1-D-01c, CWE-494): the
+    /// `source_snapshots.id` (UUID)
+    /// the plan was built against.
+    /// `mark_applied` re-verifies
+    /// that the row still exists.
+    pub source_snapshot_id: Option<String>,
+    /// 2.11.0 (P1-D-01c, CWE-494): the
+    /// resolved HEAD `commit_sha`
+    /// at `request` time.
+    /// `mark_applied` re-verifies it
+    /// against the current
+    /// `source_snapshots.commit_sha`.
+    pub commit_sha: Option<String>,
+    /// 2.11.0 (P1-D-01c, CWE-494):
+    /// SHA-256 of the canonical
+    /// `plan_summary` bytes. The
+    /// apply path recomputes the
+    /// hash and refuses to apply if
+    /// it differs (catches
+    /// hand-edits in the DB and
+    /// version-skew between server
+    /// restarts).
+    pub plan_hash: Option<String>,
+    /// 2.11.0 (P1-D-01c, CWE-494):
+    /// the policy-set version in
+    /// force at `request` time.
+    /// Currently the constant
+    /// `DEFAULT_POLICY_SET_VERSION`
+    /// ("1.0.0"); a 2.12.0
+    /// follow-up will turn this
+    /// into a per-tenant
+    /// versioned table.
+    pub policy_set_version: Option<String>,
+    /// 2.11.0 (P1-D-01c, CWE-494):
+    /// SHA-256 of the
+    /// `(path, sha256, size_bytes)`
+    /// tuples for the snapshot
+    /// (sorted lexicographically by
+    /// path). A file added or
+    /// removed in the source
+    /// between request and apply
+    /// trips the freshness check.
+    pub artifact_manifest_hash: Option<String>,
     pub approved_by: Option<i64>,
     pub approved_at: Option<String>,
     pub rejection_reason: Option<String>,
@@ -137,6 +180,57 @@ impl PendingDeployRepository {
     /// (2.5.0): NULL means the deploy predates the
     /// fleet registry or the operator is using the
     /// legacy `--target <path>` CLI path.
+    ///
+    /// 2.11.0 (P1-D-01c, CWE-494): the
+    /// `request` call now also takes
+    /// the optional
+    /// `source_snapshot_id`. When
+    /// present, the row is created
+    /// with the `DeploymentIntent`
+    /// fields populated from the
+    /// snapshot at `request` time:
+    /// - `commit_sha` — read from
+    ///   `source_snapshots.commit_sha`.
+    /// - `plan_hash` — SHA-256 of the
+    ///   canonical `plan_summary`
+    ///   bytes.
+    /// - `artifact_manifest_hash` —
+    ///   SHA-256 of the
+    ///   `(path, sha256, size_bytes)`
+    ///   tuples for the snapshot
+    ///   (sorted lexicographically
+    ///   by path). A file added or
+    ///   removed between request and
+    ///   apply will trip the
+    ///   `mark_applied` freshness
+    ///   check.
+    /// - `policy_set_version` — the
+    ///   policy set in force at
+    ///   request time (a constant
+    ///   `DEFAULT_POLICY_SET_VERSION`
+    ///   for now; a 2.12.0 follow-up
+    ///   will turn this into a
+    ///   per-tenant versioned table).
+    /// - `target_config_version` —
+    ///   the current `targets.version`
+    ///   for `target_id`. P1-D-01b
+    ///   already wired the
+    ///   `mark_applied` freshness
+    ///   check for this field.
+    ///
+    /// When `source_snapshot_id` is
+    /// `None` (a pre-P1-D-01c caller
+    /// that does not know about
+    /// snapshots), the new columns
+    /// are `NULL` and the
+    /// `mark_applied` freshness
+    /// check is a no-op for them
+    /// (the migration backfill
+    /// case). The check is
+    /// activated as soon as the
+    /// caller starts passing a
+    /// `Some(...)` source_snapshot_id.
+    #[allow(clippy::too_many_arguments)]
     pub async fn request(
         &self,
         system_id: &str,
@@ -144,14 +238,71 @@ impl PendingDeployRepository {
         requested_by: i64,
         environment: Environment,
         target_id: Option<i64>,
+        source_snapshot_id: Option<&str>,
     ) -> CoreResult<PendingDeployRow> {
+        // 2.11.0 (P1-D-01c): populate
+        // the `DeploymentIntent`
+        // fields from the snapshot +
+        // target. A failure here is
+        // a hard error (the operator
+        // asked for a deploy with a
+        // snapshot id that does not
+        // exist; we refuse to
+        // insert a row that would
+        // pass the `mark_applied`
+        // freshness check on a
+        // stale source).
+        let mut commit_sha: Option<String> = None;
+        let mut plan_hash: Option<String> = None;
+        let mut artifact_manifest_hash: Option<String> = None;
+        let policy_set_version: Option<String> = Some(DEFAULT_POLICY_SET_VERSION.to_string());
+        let mut target_config_version: Option<i64> = None;
+        if let Some(snapshot_id) = source_snapshot_id {
+            // 1. commit_sha from
+            //    source_snapshots.
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT commit_sha FROM source_snapshots WHERE id = ?1")
+                    .bind(snapshot_id)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            let sha: String = row
+                .ok_or_else(|| CoreError::ErrSchemaInvalid {
+                    path: "pending_deploys.source_snapshot_id".to_string(),
+                    reason: format!("source_snapshot `{snapshot_id}` does not exist"),
+                })?
+                .0;
+            commit_sha = Some(sha);
+            // 2. plan_hash =
+            //    SHA-256(canonical
+            //    plan_summary).
+            plan_hash = Some(sha256_hex(plan_summary.as_bytes()));
+            // 3. artifact_manifest_hash
+            //    = SHA-256 of the
+            //    sorted
+            //    (path, sha256,
+            //    size_bytes) tuples.
+            artifact_manifest_hash =
+                Some(compute_artifact_manifest_hash(&self.pool, snapshot_id).await?);
+        }
+        if let Some(t) = target_id {
+            // target_config_version =
+            // current targets.version.
+            let row: Option<(i64,)> = sqlx::query_as("SELECT version FROM targets WHERE id = ?1")
+                .bind(t)
+                .fetch_optional(&self.pool)
+                .await?;
+            target_config_version = row.map(|(v,)| v);
+        }
         let now: DateTime<Utc> = Utc::now();
         let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let row: (i64,) = sqlx::query_as(
             "INSERT INTO pending_deploys \
              (system_id, plan_summary, requested_by, requested_at, status, \
-              environment, target_id) \
-             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6) RETURNING id",
+              environment, target_id, \
+              source_snapshot_id, commit_sha, plan_hash, \
+              policy_set_version, artifact_manifest_hash, target_config_version) \
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, \
+                     ?7, ?8, ?9, ?10, ?11, ?12) RETURNING id",
         )
         .bind(system_id)
         .bind(plan_summary)
@@ -159,26 +310,29 @@ impl PendingDeployRepository {
         .bind(&now_str)
         .bind(environment.as_str())
         .bind(target_id)
+        .bind(source_snapshot_id)
+        .bind(&commit_sha)
+        .bind(&plan_hash)
+        .bind(&policy_set_version)
+        .bind(&artifact_manifest_hash)
+        .bind(target_config_version)
         .fetch_one(&self.pool)
         .await?;
         Ok(PendingDeployRow {
             id: row.0,
             system_id: system_id.to_string(),
             plan_summary: plan_summary.to_string(),
-            // P1-D-01c follow-up: copy
-            // `targets.version` into this
-            // field. For now the
-            // freshness check on
-            // `mark_applied` is a
-            // no-op for rows where this
-            // is `None` (the pre-P1-D-01c
-            // backfill case).
             requested_by,
             requested_at: now_str,
             status: Status::Pending,
             environment,
             target_id,
-            target_config_version: None,
+            target_config_version,
+            source_snapshot_id: source_snapshot_id.map(String::from),
+            commit_sha,
+            plan_hash,
+            policy_set_version,
+            artifact_manifest_hash,
             approved_by: None,
             approved_at: None,
             rejection_reason: None,
@@ -188,9 +342,11 @@ impl PendingDeployRepository {
 
     /// Read a single row by id.
     pub async fn get(&self, id: i64) -> CoreResult<Option<PendingDeployRow>> {
-        let row: Option<PendingDeployRowTuple> = sqlx::query_as(
+        let row: Option<PendingDeployRowRaw> = sqlx::query_as(
             "SELECT id, system_id, plan_summary, requested_by, requested_at, \
                     status, environment, target_id, target_config_version, \
+                    source_snapshot_id, commit_sha, plan_hash, \
+                    policy_set_version, artifact_manifest_hash, \
                     approved_by, approved_at, \
                     rejection_reason, applied_at \
              FROM pending_deploys WHERE id = ?1",
@@ -210,11 +366,13 @@ impl PendingDeployRepository {
         limit: u32,
     ) -> CoreResult<Vec<PendingDeployRow>> {
         let limit_i = limit.clamp(1, 500) as i64;
-        let rows: Vec<PendingDeployRowTuple> = match (status_filter, environment_filter) {
+        let rows: Vec<PendingDeployRowRaw> = match (status_filter, environment_filter) {
             (None, None) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
                         status, environment, target_id, target_config_version, \
+                        source_snapshot_id, commit_sha, plan_hash, \
+                        policy_set_version, artifact_manifest_hash, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys ORDER BY id ASC LIMIT ?1",
@@ -227,6 +385,8 @@ impl PendingDeployRepository {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
                         status, environment, target_id, target_config_version, \
+                        source_snapshot_id, commit_sha, plan_hash, \
+                        policy_set_version, artifact_manifest_hash, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE status = ?1 \
@@ -241,6 +401,8 @@ impl PendingDeployRepository {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
                         status, environment, target_id, target_config_version, \
+                        source_snapshot_id, commit_sha, plan_hash, \
+                        policy_set_version, artifact_manifest_hash, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE environment = ?1 \
@@ -255,6 +417,8 @@ impl PendingDeployRepository {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
                         status, environment, target_id, target_config_version, \
+                        source_snapshot_id, commit_sha, plan_hash, \
+                        policy_set_version, artifact_manifest_hash, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE status = ?1 AND environment = ?2 \
@@ -439,6 +603,100 @@ impl PendingDeployRepository {
                     }
                 }
             }
+            // 2.11.0 (P1-D-01c, CWE-494):
+            // freshness checks for the
+            // remaining `DeploymentIntent`
+            // fields. A mismatch on any of
+            // them returns a typed
+            // `ErrStaleDeployment` and the
+            // row stays in `approved`.
+            if r.status == Status::Approved {
+                // a. `source_snapshot_id` —
+                // the row must still exist
+                // in `source_snapshots`.
+                if let Some(snapshot_id) = r.source_snapshot_id.as_deref() {
+                    let snap_exists: Option<(String,)> =
+                        sqlx::query_as("SELECT id FROM source_snapshots WHERE id = ?1")
+                            .bind(snapshot_id)
+                            .fetch_optional(&self.pool)
+                            .await?;
+                    if snap_exists.is_none() {
+                        return Err(CoreError::ErrStaleDeployment {
+                            deploy_id: id,
+                            target_id: r.target_id.expect("target_id NOT NULL after migration 018"),
+                            captured_version: 0,
+                            current_version: -1,
+                            kind: "source_snapshot_id (snapshot deleted)".to_string(),
+                        });
+                    }
+                    // b. `commit_sha` — the
+                    // current `commit_sha`
+                    // for the same snapshot
+                    // must match what we
+                    // recorded.
+                    if let Some(captured_sha) = r.commit_sha.as_deref() {
+                        let current: Option<(String,)> =
+                            sqlx::query_as("SELECT commit_sha FROM source_snapshots WHERE id = ?1")
+                                .bind(snapshot_id)
+                                .fetch_optional(&self.pool)
+                                .await?;
+                        if let Some((cur_sha,)) = current {
+                            if cur_sha != captured_sha {
+                                return Err(CoreError::ErrStaleDeployment {
+                                    deploy_id: id,
+                                    target_id: r
+                                        .target_id
+                                        .expect("target_id NOT NULL after migration 018"),
+                                    captured_version: 0,
+                                    current_version: 0,
+                                    kind: format!(
+                                        "commit_sha (was `{captured_sha}`, now `{cur_sha}`)"
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    // c. `artifact_manifest_hash`
+                    // — recompute the
+                    // canonical hash from
+                    // `snapshot_files` and
+                    // compare to the recorded
+                    // value.
+                    if let Some(captured_amh) = r.artifact_manifest_hash.as_deref() {
+                        let current_amh =
+                            compute_artifact_manifest_hash(&self.pool, snapshot_id).await?;
+                        if current_amh != captured_amh {
+                            return Err(CoreError::ErrStaleDeployment {
+                                deploy_id: id,
+                                target_id: r
+                                    .target_id
+                                    .expect("target_id NOT NULL after migration 018"),
+                                captured_version: 0,
+                                current_version: 0,
+                                kind: "artifact_manifest_hash (files added/removed/modified)"
+                                    .to_string(),
+                            });
+                        }
+                    }
+                }
+                // d. `plan_hash` — recompute
+                // SHA-256 of the current
+                // `plan_summary` (the row's
+                // own value) and compare to
+                // the recorded value.
+                if let Some(captured_ph) = r.plan_hash.as_deref() {
+                    let current_ph = sha256_hex(r.plan_summary.as_bytes());
+                    if current_ph != captured_ph {
+                        return Err(CoreError::ErrStaleDeployment {
+                            deploy_id: id,
+                            target_id: r.target_id.expect("target_id NOT NULL after migration 018"),
+                            captured_version: 0,
+                            current_version: 0,
+                            kind: "plan_hash (plan_summary edited)".to_string(),
+                        });
+                    }
+                }
+            }
         }
         let affected = sqlx::query(
             "UPDATE pending_deploys \
@@ -474,11 +732,13 @@ impl PendingDeployRepository {
         &self,
         environment_filter: Option<Environment>,
     ) -> CoreResult<Vec<PendingDeployRow>> {
-        let rows: Vec<PendingDeployRowTuple> = match environment_filter {
+        let rows: Vec<PendingDeployRowRaw> = match environment_filter {
             Some(e) => {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
                         status, environment, target_id, target_config_version, \
+                        source_snapshot_id, commit_sha, plan_hash, \
+                        policy_set_version, artifact_manifest_hash, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE target_id IS NULL AND environment = ?1 \
@@ -492,6 +752,8 @@ impl PendingDeployRepository {
                 sqlx::query_as(
                     "SELECT id, system_id, plan_summary, requested_by, requested_at, \
                         status, environment, target_id, target_config_version, \
+                        source_snapshot_id, commit_sha, plan_hash, \
+                        policy_set_version, artifact_manifest_hash, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE target_id IS NULL \
@@ -529,53 +791,130 @@ impl PendingDeployRepository {
     }
 }
 
-type PendingDeployRowTuple = (
-    i64,
-    String,
-    String,
-    i64,
-    String,
-    String,
-    String,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+// 2.11.0 (P1-D-01c): sqlx caps
+// anonymous tuples at 16 fields;
+// `PendingDeployRow` now has 18
+// columns (5 new
+// `DeploymentIntent` fields
+// added by P1-D-01c), so we use
+// a named-fields struct with
+// `#[derive(sqlx::FromRow)]`. The
+// struct is private because
+// `decode_row` is the only thing
+// that needs it; the public API
+// is `PendingDeployRow` (the
+// higher-level decoded form).
+#[derive(sqlx::FromRow)]
+struct PendingDeployRowRaw {
+    id: i64,
+    system_id: String,
+    plan_summary: String,
+    requested_by: i64,
+    requested_at: String,
+    status: String,
+    environment: String,
+    target_id: Option<i64>,
+    target_config_version: Option<i64>,
+    source_snapshot_id: Option<String>,
+    commit_sha: Option<String>,
+    plan_hash: Option<String>,
+    policy_set_version: Option<String>,
+    artifact_manifest_hash: Option<String>,
+    approved_by: Option<i64>,
+    approved_at: Option<String>,
+    rejection_reason: Option<String>,
+    applied_at: Option<String>,
+}
 
-fn decode_row(row: PendingDeployRowTuple) -> CoreResult<PendingDeployRow> {
-    let (
-        id,
-        system_id,
-        plan_summary,
-        requested_by,
-        requested_at,
-        status,
-        environment,
-        target_id,
-        target_config_version,
-        approved_by,
-        approved_at,
-        rejection_reason,
-        applied_at,
-    ) = row;
+fn decode_row(row: PendingDeployRowRaw) -> CoreResult<PendingDeployRow> {
     Ok(PendingDeployRow {
-        id,
-        system_id,
-        plan_summary,
-        requested_by,
-        requested_at,
-        status: Status::parse(&status)?,
-        environment: Environment::parse(&environment)?,
-        target_id,
-        target_config_version,
-        approved_by,
-        approved_at,
-        rejection_reason,
-        applied_at,
+        id: row.id,
+        system_id: row.system_id,
+        plan_summary: row.plan_summary,
+        requested_by: row.requested_by,
+        requested_at: row.requested_at,
+        status: Status::parse(&row.status)?,
+        environment: Environment::parse(&row.environment)?,
+        target_id: row.target_id,
+        target_config_version: row.target_config_version,
+        source_snapshot_id: row.source_snapshot_id,
+        commit_sha: row.commit_sha,
+        plan_hash: row.plan_hash,
+        policy_set_version: row.policy_set_version,
+        artifact_manifest_hash: row.artifact_manifest_hash,
+        approved_by: row.approved_by,
+        approved_at: row.approved_at,
+        rejection_reason: row.rejection_reason,
+        applied_at: row.applied_at,
     })
+}
+
+// 2.11.0 (P1-D-01c, CWE-494):
+// the policy set version that
+// `request()` writes into the
+// `pending_deploys.policy_set_version`
+// column. A future 2.12.0 will
+// turn this into a per-tenant
+// versioned table; the constant
+// matches the 2.11.0 server
+// baseline.
+const DEFAULT_POLICY_SET_VERSION: &str = "1.0.0";
+
+// 2.11.0 (P1-D-01c): SHA-256 hex of
+// arbitrary bytes. Used for
+// `plan_hash` and the
+// `artifact_manifest_hash`
+// canonicalization.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let digest = h.finalize();
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+// 2.11.0 (P1-D-01c): compute the
+// canonical `artifact_manifest_hash`
+// for a `source_snapshots` row.
+// The canonical form is the
+// `snapshot_files` rows for the
+// snapshot, sorted lexicographically
+// by `relative` path, concatenated as
+// `path\nsha256\nsize_bytes\n`
+// (LF-separated, no escaping), and
+// then SHA-256 hashed. Adding,
+// removing, or modifying a file
+// in the snapshot between
+// `request_deploy` and `mark_applied`
+// changes the hash and trips the
+// freshness check.
+async fn compute_artifact_manifest_hash(
+    pool: &SqlitePool,
+    snapshot_id: &str,
+) -> CoreResult<String> {
+    let rows: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT relative, sha256, size_bytes \
+         FROM snapshot_files \
+         WHERE snapshot_id = ?1 \
+         ORDER BY relative ASC",
+    )
+    .bind(snapshot_id)
+    .fetch_all(pool)
+    .await?;
+    let mut buf: Vec<u8> = Vec::new();
+    for (rel, sha, size) in rows {
+        buf.extend_from_slice(rel.as_bytes());
+        buf.push(b'\n');
+        buf.extend_from_slice(sha.as_bytes());
+        buf.push(b'\n');
+        buf.extend_from_slice(size.to_string().as_bytes());
+        buf.push(b'\n');
+    }
+    Ok(sha256_hex(&buf))
 }
 
 #[cfg(test)]

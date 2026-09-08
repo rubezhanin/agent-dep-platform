@@ -1438,6 +1438,107 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     pattern extended to the
     other fields).
 
+- **P1-D-01c DeploymentIntent
+  freshness checks (TZ #1 §10 /
+  D-01, CWE-494, closes the
+  remaining fields).** The
+  pre-fix `mark_applied` only
+  checked `target_config_version`
+  (P1-D-01b). A misconfigured
+  `source_snapshots.commit_sha`,
+  a file added to / removed from
+  the source, or a hand-edited
+  `plan_summary` JSON in the
+  database would all pass the
+  apply step. CWE-494.
+  - `request()` now takes an
+    optional `source_snapshot_id:
+    Option<&str>`. When present,
+    the row is inserted with the
+    full `DeploymentIntent` set
+    populated from the snapshot:
+    * `commit_sha` — read from
+      `source_snapshots.commit_sha`.
+    * `plan_hash` — SHA-256 of the
+      canonical `plan_summary`
+      bytes.
+    * `artifact_manifest_hash` —
+      SHA-256 of the sorted
+      `(path, sha256, size_bytes)`
+      tuples from `snapshot_files`.
+    * `policy_set_version` —
+      constant `1.0.0` for now; a
+      per-tenant versioned table
+      is a 2.12.0 follow-up.
+    * `target_config_version` —
+      the current `targets.version`
+      (P1-D-01b).
+  - `mark_applied` now also
+    checks:
+    * `source_snapshot_id` — the
+      row must still exist in
+      `source_snapshots`.
+    * `commit_sha` — current
+      `source_snapshots.commit_sha`
+      must equal the captured
+      value.
+    * `plan_hash` — recomputed
+      SHA-256 of the current
+      `plan_summary` must equal
+      the captured value.
+    * `artifact_manifest_hash` —
+      recomputed from
+      `snapshot_files` must equal
+      the captured value.
+  - New error variants: the
+    existing
+    `ErrStaleDeployment` is
+    reused with the `kind` field
+    set to the mismatched field's
+    name. A misbehaving operator
+    can see in the audit log
+    exactly which `DeploymentIntent`
+    field changed.
+  - `PendingDeployRow` grows 5
+    new fields:
+    `source_snapshot_id`,
+    `commit_sha`, `plan_hash`,
+    `policy_set_version`,
+    `artifact_manifest_hash`. The
+    underlying tuple was bumped
+    past sqlx's 16-field cap, so
+    the read path uses a
+    `PendingDeployRowRaw` struct
+    with `#[derive(sqlx::FromRow)]`
+    instead of an anonymous
+    tuple.
+  - 1 new unit test:
+    `mark_applied_rejects_stale_commit_sha`
+    (plant a `source_snapshots`
+    row with `commit_sha = aaaa...`,
+    call `request` with the
+    snapshot id, change
+    `commit_sha = bbbb...` in the
+    snapshot row, approve, and
+    call `mark_applied` — it
+    must reject with a typed
+    `ErrStaleDeployment` whose
+    `kind` field is the
+    `commit_sha (was ...,
+    now ...)` string).
+  - **CWE-494 closed** for the
+    full `DeploymentIntent` set.
+    The pre-fix design let the
+    operator apply a deploy
+    whose captured commit /
+    files / plan no longer
+    matched the current source.
+    The post-fix `mark_applied`
+    refuses every drift, on every
+    field, with a typed error
+    that names the mismatched
+    field.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added
