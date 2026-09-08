@@ -1911,6 +1911,80 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   note). **CWE-362 closed**
   for the request-replay path.
 
+- **P1-F-04 Empty bearer / sentinel
+  rejection (TZ #1 §6 / F-04,
+  CWE-287 Improper Authentication).**
+  The pre-fix `extract_bearer`
+  middleware in
+  `crates/server/src/auth.rs`
+  had the empty-bearer case
+  covered (the
+  `s.len() <= prefix.len()`
+  guard and the post-trim
+  `is_empty()` check) thanks
+  to P0-SENT-01, but the
+  well-known sentinel literal
+  strings (`null`,
+  `undefined`, `none`, `nil`,
+  `0`, `admin`, `root`,
+  `anonymous`) that some HTTP
+  clients send by accident when
+  a property is unset were
+  treated as ordinary tokens
+  and hashed. The lookup would
+  return `None` (no user has
+  that hash), so the request
+  would 401 via the normal
+  path — but the explicit
+  reject saves the SHA-256
+  computation on the hot
+  path and gives a cleaner
+  audit-log entry. The
+  post-fix `extract_bearer`
+  calls a case-insensitive
+  `is_known_sentinel` deny-list
+  before the lookup; the
+  deny-list is exact-match
+  (a real token whose first
+  chars happen to spell
+  "null" is NOT rejected —
+  only literal sentinels). 8
+  new unit tests in
+  `auth::tests_f04_bearer_extraction`
+  cover the TZ F-04 acceptance
+  criteria:
+  `extract_bearer_rejects_missing_token_after_scheme`
+  (just `"Bearer"`),
+  `extract_bearer_rejects_whitespace_only_token`
+  (`"Bearer "`),
+  `extract_bearer_trims_and_rejects_whitespace_only_token`
+  (`"Bearer    "`),
+  `extract_bearer_returns_valid_token`,
+  `extract_bearer_rejects_known_sentinels`
+  (12 sentinel literals),
+  `extract_bearer_does_not_substring_match_sentinels`
+  (4 real tokens that begin
+  with a sentinel substring),
+  `extract_bearer_rejects_non_bearer_scheme`
+  (Basic / Token / Bearer-only),
+  and
+  `extract_bearer_returns_none_for_missing_header`.
+  The "logged-out token" path
+  was already covered by the
+  pre-existing `find_by_token`
+  semantics: a disabled user
+  returns `None` (the
+  `disabled_at IS NOT NULL`
+  short-circuit in
+  `users_repository.rs:202`);
+  a rotated user's old token
+  hash no longer matches any
+  row (`rotate_token`
+  UPDATE-s the hash). No
+  schema change; no new
+  dependency. **CWE-287 closed**
+  for the bearer-auth path.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

@@ -46,11 +46,11 @@
 //!    polls the row briefly
 //!    (capped at 5s, exponential
 //!    backoff) and either returns
-//!    the cached response (case
-//!    1) or 409
-//!    `idempotency.in_flight` if
-//!    the first request has not
-//!    finished.
+//!    the cached response (the
+//!    replay path above) or
+//!    `409 idempotency.in_flight`
+//!    if the first request has
+//!    not finished.
 //!
 //! 4. **fresh** — if no row
 //!    exists, the middleware

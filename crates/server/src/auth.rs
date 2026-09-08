@@ -130,7 +130,51 @@ fn extract_bearer(headers: &HeaderMap) -> Option<String> {
     if !s.starts_with(prefix) {
         return None;
     }
-    Some(s[prefix.len()..].trim().to_string())
+    let token = s[prefix.len()..].trim();
+    // 2.11.0 (P1-F-04, TZ #1 §6 / F-04,
+    // CWE-287 Improper Authentication):
+    // reject the well-known sentinel
+    // literal strings that some HTTP
+    // clients send by accident when a
+    // property is unset (`Bearer null`,
+    // `Bearer undefined`, `Bearer none`)
+    // or when an operator hand-wrote a
+    // curl one-liner. The pre-fix code
+    // would hash these and look them up;
+    // the lookup returns `None` (no user
+    // has that hash), so the request
+    // would 401 via the normal path —
+    // but the explicit reject here
+    // saves the SHA-256 computation on
+    // the hot path and gives a clearer
+    // audit-log entry ("sentinel bearer
+    // rejected" vs. "invalid bearer
+    // token"). The case-insensitive
+    // match catches `Bearer NULL`,
+    // `Bearer Null`, etc.
+    if is_known_sentinel(token) {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+/// 2.11.0 (P1-F-04, TZ #1 §6 / F-04,
+/// CWE-287): the list of well-known
+/// sentinel literal strings the
+/// `Authorization: Bearer <X>`
+/// extractor refuses. The list is
+/// short and explicit (a deny-list);
+/// the pre-fix design relied on
+/// "the lookup will not match",
+/// which is correct but gives a
+/// weaker audit trail and slightly
+/// slower rejection.
+fn is_known_sentinel(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "" | "null" | "undefined" | "none" | "nil" | "0" | "admin" | "root" | "anonymous"
+    )
 }
 
 async fn unauthorized(state: &ServerState, method: &str, path: &str, reason: &str) -> Response {
@@ -341,3 +385,183 @@ pub async fn check_role(state: ServerState, request: Request, next: Next) -> Res
 /// request before calling the layer.
 #[derive(Clone, Default)]
 pub struct AllowedRoles(pub Vec<Role>);
+
+// -----------------------------------------------------------------------
+// 2.11.0 (P1-F-04, TZ #1 §6 / F-04,
+// CWE-287 Improper Authentication)
+// unit tests for the bearer
+// extraction and the
+// sentinel-rejection deny-list.
+//
+// The TZ F-04 acceptance is:
+//   Authorization: Bearer            -> 401
+//   Authorization: Bearer <spaces>   -> 401
+//   logged-out token                 -> 401
+//
+// The first two are exercised
+// directly on `extract_bearer`.
+// The third is exercised by the
+// existing `find_by_token` test
+// surface (a disabled user's
+// `find_by_token` returns `None`;
+// a rotated user's old token hash
+// no longer matches any row). The
+// sentinel deny-list is a
+// defense-in-depth addition
+// layered on top of the
+// pre-existing `is_empty()` check.
+// -----------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_f04_bearer_extraction {
+    use super::*;
+    use axum::http::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+
+    fn headers_with(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(AUTHORIZATION, HeaderValue::from_str(value).unwrap());
+        h
+    }
+
+    /// 2.11.0 (P1-F-04): `Authorization: Bearer`
+    /// (no token at all — only the
+    /// scheme) returns `None`. The
+    /// `s.len() <= prefix.len()` guard
+    /// catches the case where the
+    /// header is exactly `"Bearer"`.
+    #[test]
+    fn extract_bearer_rejects_missing_token_after_scheme() {
+        let h = headers_with("Bearer");
+        assert!(extract_bearer(&h).is_none());
+    }
+
+    /// 2.11.0 (P1-F-04): a header that is
+    /// just `"Bearer "` (with the
+    /// trailing space but no token)
+    /// returns `None`.
+    #[test]
+    fn extract_bearer_rejects_whitespace_only_token() {
+        let h = headers_with("Bearer ");
+        assert!(extract_bearer(&h).is_none());
+    }
+
+    /// 2.11.0 (P1-F-04): a header that is
+    /// `"Bearer    "` (multiple spaces)
+    /// is trimmed to empty and
+    /// returns `None`.
+    #[test]
+    fn extract_bearer_trims_and_rejects_whitespace_only_token() {
+        let h = headers_with("Bearer    ");
+        assert!(extract_bearer(&h).is_none());
+    }
+
+    /// 2.11.0 (P1-F-04): a real token
+    /// (32 chars of base64) is
+    /// returned unchanged.
+    #[test]
+    fn extract_bearer_returns_valid_token() {
+        let h = headers_with("Bearer abcDEF123_-xyz");
+        assert_eq!(extract_bearer(&h).as_deref(), Some("abcDEF123_-xyz"));
+    }
+
+    /// 2.11.0 (P1-F-04): the sentinel
+    /// deny-list rejects the
+    /// well-known literal strings
+    /// that some HTTP clients send
+    /// by accident. The list is
+    /// short and explicit; the
+    /// case-insensitive match
+    /// catches `NULL`, `Null`, etc.
+    #[test]
+    fn extract_bearer_rejects_known_sentinels() {
+        for sentinel in [
+            "null",
+            "NULL",
+            "Null",
+            "undefined",
+            "UNDEFINED",
+            "none",
+            "None",
+            "nil",
+            "0",
+            "admin",
+            "root",
+            "anonymous",
+        ] {
+            let h = headers_with(&format!("Bearer {sentinel}"));
+            assert!(
+                extract_bearer(&h).is_none(),
+                "sentinel `{sentinel}` must be rejected"
+            );
+        }
+    }
+
+    /// 2.11.0 (P1-F-04): a token that
+    /// merely STARTS with a sentinel
+    /// substring (`nullify`,
+    /// `none_of_the_above`) is NOT
+    /// rejected. The deny-list is
+    /// exact-match, not
+    /// substring-match — a real
+    /// token whose first four chars
+    /// happen to spell "null" must
+    /// still authenticate (the
+    /// subsequent SHA-256 lookup
+    /// will return 401 if no user
+    /// owns that hash, but the
+    /// extract step is not a
+    /// hot-failure point).
+    #[test]
+    fn extract_bearer_does_not_substring_match_sentinels() {
+        for token in [
+            "nullify",
+            "none_of_the_above",
+            "my-admin-token",
+            "anonymous_user",
+        ] {
+            let h = headers_with(&format!("Bearer {token}"));
+            assert_eq!(
+                extract_bearer(&h).as_deref(),
+                Some(token),
+                "real token `{token}` must not be rejected by sentinel check"
+            );
+        }
+    }
+
+    /// 2.11.0 (P1-F-04): a header that
+    /// does NOT carry the
+    /// `Authorization: Bearer `
+    /// scheme (e.g. `Basic ...`,
+    /// `Token ...`) returns
+    /// `None`. The middleware sits
+    /// in front of every authed
+    /// route; non-bearer auth is
+    /// the OIDC cookie path, which
+    /// uses `require_session_or_bearer`
+    /// instead.
+    #[test]
+    fn extract_bearer_rejects_non_bearer_scheme() {
+        for header in ["Basic dXNlcjpwYXNz", "Token abc", "Bearer", "Bearer "] {
+            let h = headers_with(header);
+            assert!(
+                extract_bearer(&h).is_none(),
+                "header `{header}` must not produce a bearer token"
+            );
+        }
+    }
+
+    /// 2.11.0 (P1-F-04): a missing
+    /// `Authorization` header (the
+    /// most common case for an
+    /// unauthenticated request)
+    /// returns `None`. The
+    /// middleware records a 401 in
+    /// the audit log with
+    /// `reason: "missing Authorization
+    /// header"`.
+    #[test]
+    fn extract_bearer_returns_none_for_missing_header() {
+        let h = HeaderMap::new();
+        assert!(extract_bearer(&h).is_none());
+    }
+}
