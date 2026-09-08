@@ -1737,6 +1737,180 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   `mark_applied` inline
   comments).
 
+- **P1-D-03 Idempotency-Key
+  on every mutation endpoint
+  (TZ #1 §10 / D-03, CWE-362
+  Concurrent Execution using
+  Shared Resource without Proper
+  Synchronization, closes the
+  CWE-362 attack surface for
+  the request-replay path).**
+  The pre-fix mutation endpoints
+  (`POST /v1/deploys`,
+  `POST /v1/deploys/:id/approve`,
+  `POST /v1/deploys/:id/reject`,
+  `POST /v1/deploys/:id/applied`,
+  `POST /v1/targets`,
+  `PUT /v1/targets/:id`,
+  `POST /v1/secrets`,
+  `PUT /v1/secrets/:name`,
+  `DELETE /v1/targets/:id`,
+  `DELETE /v1/secrets/:name`,
+  `POST /v1/users`,
+  `DELETE /v1/users/:id`,
+  `POST /v1/users/:id/rotate`,
+  `POST /v1/rollback/:id`,
+  `POST /v1/systems/plan`) had
+  no protection against
+  duplicate-request replays.
+  The realistic threat: a
+  network blip between the SPA
+  and the agency-server caused
+  the client to retry a
+  `POST /v1/deploys`. Both
+  calls landed, creating two
+  `pending_deploys` rows with
+  the same plan but different
+  `id`s and `requested_at`. The
+  SPA polled `/v1/deploys` and
+  showed both rows; the operator
+  was confused about which one
+  to approve. CWE-362. The
+  post-fix design: every
+  mutation endpoint accepts an
+  `Idempotency-Key` header
+  (1..=255 opaque chars; UUID
+  v4 is the recommended shape).
+  A request that arrives with
+  a key the server has seen in
+  the last 24h returns the
+  cached response verbatim
+  (with an `Idempotent-Replay:
+  true` header) instead of
+  running the handler again.
+  Three post-fix paths in the
+  middleware:
+  (1) **replay** — the cached
+  `(status, body)` pair is
+  returned verbatim with
+  `Idempotent-Replay: true`.
+  The handler is not run.
+  (2) **mismatch** — a row
+  exists with the same
+  `(key, route)` but a
+  DIFFERENT `request_hash`
+  (SHA-256 of the request body
+  bytes). The server returns
+  422 `idempotency.mismatch`
+  (cached) instead of running
+  the handler. This catches
+  the "client reused the key
+  with a different body"
+  client bug.
+  (3) **in-flight** — a row
+  exists with the same
+  `(key, route)` and
+  `response_status IS NULL` (a
+  previous request is still
+  being processed). The
+  middleware polls briefly
+  (capped at 5s, exponential
+  backoff up to 250ms) for
+  the final response, then
+  either replays it (case 1)
+  or returns 409
+  `idempotency.in_flight` if
+  the first request has not
+  finished. New table
+  `idempotency_keys`
+  (migration 025) with PRIMARY
+  KEY `(key, route)` (the
+  same key can be reused on
+  a different route without
+  collision). The
+  `response_status` /
+  `response_body` columns are
+  NULL while the request is in
+  flight; the middleware
+  inserts the row before
+  running the handler, then
+  UPDATE-s it after the
+  handler returns. New
+  `IdempotencyRepository` with
+  `record_in_flight`,
+  `finalize`, `lookup`, and
+  `gc_expired` (the GC task
+  spawns alongside the
+  `sessions` and
+  `oidc_pending_state` GCs on
+  the same 60s timer; reaps
+  rows past their
+  `expires_at`, default 24h).
+  The middleware is a no-op
+  for non-mutation methods
+  (GET / HEAD / OPTIONS) and
+  for requests without the
+  `Idempotency-Key` header, so
+  pre-P1-D-03 clients and
+  ad-hoc curl scripts work
+  exactly as before. The
+  middleware is wired into
+  the `authed` sub-router as
+  a `route_layer` AFTER the
+  `require_session_or_bearer`
+  layer (auth happens first;
+  the idempotency layer never
+  sees an unauthenticated
+  request). The middleware
+  only caches JSON responses
+  (Content-Type starts with
+  `application/json`); a
+  streaming / non-JSON
+  response is passed through
+  unchanged. The
+  MAX_BODY_BYTES is 1 MiB;
+  a request body larger than
+  that is 413
+  `request.too_large`. New
+  typed error responses:
+  `idempotency.invalid_key`
+  (400),
+  `idempotency.mismatch` (422),
+  `idempotency.in_flight`
+  (409), `request.too_large`
+  (413). The
+  `Idempotent-Replay: true`
+  response header is set on
+  every cached response so
+  the SPA can distinguish a
+  replay from a fresh result
+  (a "X% of our requests are
+  replays" telemetry signal).
+  6 new unit tests in
+  `idempotency_repository_tests.rs`
+  cover the in-flight marker,
+  the second-caller UNIQUE
+  violation, the finalize /
+  replay promotion, the
+  unknown-key lookup, the
+  same-key-different-route
+  case, and the
+  GC-expired-removes-only-expired-rows
+  case. Full workspace:
+  595+ tests pass (the
+  pre-existing 589 + the 6
+  new), 0 failed, 13 ignored
+  (pre-existing P1-F-07 test
+  debt unchanged). cargo
+  clippy --workspace
+  --all-targets -- -D warnings
+  clean. cargo fmt clean on
+  my files (reverted 6
+  pre-existing rustfmt 1.98+
+  drift files per memory
+  note). **CWE-362 closed**
+  for the request-replay path.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use agent_dep_core::infrastructure::repository::audit_log_repository::AuditLogRepository;
+use agent_dep_core::infrastructure::repository::idempotency_repository::IdempotencyRepository;
 use agent_dep_core::infrastructure::repository::oidc_pending_repository::OidcPendingRepository;
 use agent_dep_core::infrastructure::repository::pending_deploys_repository::PendingDeployRepository;
 use agent_dep_core::infrastructure::repository::secrets_repository::SecretRepository;
@@ -75,4 +76,16 @@ pub struct ServerState {
     /// localhost. Configured via
     /// `AGENCY_COOKIE_SECURE` (default `true`).
     pub cookie_secure: bool,
+    /// 2.11.0 (P1-D-03, TZ #1 §10 / D-03,
+    /// CWE-362): the `Idempotency-Key` cache.
+    /// Every mutation endpoint is wrapped by
+    /// `idempotency_middleware`, which looks
+    /// up `(key, route)` here and either
+    /// replays the cached response or runs
+    /// the handler and stores its result. A
+    /// GC task (spawned in `lib::boot_default_state`)
+    /// reaps expired rows on the same 60s
+    /// timer as `sessions` and
+    /// `oidc_pending_state`.
+    pub idempotency: IdempotencyRepository,
 }

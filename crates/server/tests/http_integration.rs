@@ -120,6 +120,19 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
                 db.pool().clone(),
             ),
         cookie_secure: false,
+        // 2.11.0 (P1-D-03, CWE-362):
+        // Idempotency-Key cache. The
+        // middleware is a no-op for
+        // requests without the
+        // `Idempotency-Key` header,
+        // so the existing tests work
+        // unchanged. A future
+        // P1-D-03 test will exercise
+        // the replay path.
+        idempotency:
+            agent_dep_core::infrastructure::repository::idempotency_repository::IdempotencyRepository::new(
+                db.pool().clone(),
+            ),
     };
     let app = router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -301,6 +314,17 @@ spec:
         agent_dep_core::infrastructure::repository::sessions_repository::SessionRepository::new(
             db.pool().clone(),
         );
+    // 2.11.0 (P1-D-03, CWE-362):
+    // Idempotency-Key cache. Built
+    // BEFORE `db` is moved into
+    // `ServerState` (the
+    // `IdempotencyRepository` takes
+    // a `SqlitePool`, and `db` is
+    // moved on the next line).
+    let idempotency_for_state =
+        agent_dep_core::infrastructure::repository::idempotency_repository::IdempotencyRepository::new(
+            db.pool().clone(),
+        );
     let state = ServerState {
         db,
         audit,
@@ -314,6 +338,14 @@ spec:
         legacy_token: Arc::new(Some(token.clone())),
         sessions,
         cookie_secure: false,
+        // 2.11.0 (P1-D-03, CWE-362):
+        // Idempotency-Key cache. See
+        // the first `ServerState`
+        // construction above for
+        // the full rationale; the
+        // same `IdempotencyRepository`
+        // is built here.
+        idempotency: idempotency_for_state,
     };
     let app = router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

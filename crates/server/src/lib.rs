@@ -9,6 +9,7 @@ pub mod auth;
 pub mod catalog;
 pub mod error_response;
 pub mod handlers;
+pub mod idempotency;
 pub mod oidc;
 pub mod oidc_client;
 pub mod plan;
@@ -40,6 +41,23 @@ use tower_http::trace::TraceLayer;
 pub use state::ServerState;
 
 pub fn router(state: ServerState) -> Router {
+    // 2.11.0 (P1-D-03, TZ #1 §10 / D-03,
+    // CWE-362): the `Idempotency-Key`
+    // middleware. We add it as a
+    // `route_layer` on the entire
+    // `authed` sub-router so every
+    // mutation endpoint is wrapped
+    // (the middleware is a no-op for
+    // GET / HEAD / OPTIONS and for
+    // requests without the
+    // `Idempotency-Key` header). The
+    // middleware runs AFTER the
+    // `require_session_or_bearer`
+    // layer (auth happens first; the
+    // idempotency layer never sees
+    // an unauthenticated request).
+    let idempotency_layer =
+        middleware::from_fn_with_state(state.clone(), idempotency::idempotency_middleware);
     // Each per-route layer inserts its `AllowedRoles`
     // extension and then delegates to
     // `auth::check_role`. The state is threaded via
@@ -183,7 +201,22 @@ pub fn router(state: ServerState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_session_or_bearer,
-        ));
+        ))
+        // 2.11.0 (P1-D-03, CWE-362):
+        // the `Idempotency-Key` middleware.
+        // Sits AFTER
+        // `require_session_or_bearer` (so
+        // unauthenticated requests get a
+        // 401 first and never reach the
+        // idempotency layer) and BEFORE
+        // the per-route role guard
+        // (a request with a valid key
+        // and a stale role still gets
+        // the cached 403 if it
+        // replays). See
+        // `crate::idempotency` for the
+        // full design.
+        .route_layer(idempotency_layer);
     // 2.7.6 OIDC (ADR-0034). The OIDC
     // endpoints are PUBLIC — no bearer
     // required. They sit OUTSIDE the
@@ -447,6 +480,22 @@ pub async fn boot_default_state() -> Result<ServerState> {
             db.pool().clone(),
         );
     let cookie_secure = oidc.cookie_secure;
+    // 2.11.0 (P1-D-03, TZ #1 §10 /
+    // D-03, CWE-362): the
+    // Idempotency-Key cache. The
+    // middleware in
+    // `crate::idempotency` reads
+    // and writes this repo on
+    // every mutation request;
+    // the GC task spawned below
+    // reaps expired rows on the
+    // same 60s timer as
+    // `sessions` and
+    // `oidc_pending_state`.
+    let idempotency =
+        agent_dep_core::infrastructure::repository::idempotency_repository::IdempotencyRepository::new(
+            db.pool().clone(),
+        );
     // 2.7.10 (ADR-0038): DB-backed
     // OidcPending. The 2.7.6 in-memory
     // `Arc<Mutex<HashMap>>` is
@@ -477,6 +526,7 @@ pub async fn boot_default_state() -> Result<ServerState> {
         legacy_token: Arc::new(Some(legacy_token)),
         sessions,
         cookie_secure,
+        idempotency,
     };
     // 2.7.10 (ADR-0038): background
     // GC of the `oidc_pending_state`
@@ -516,6 +566,29 @@ pub async fn boot_default_state() -> Result<ServerState> {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 let _ = repo.gc_expired().await;
+            }
+        });
+    }
+    // 2.11.0 (P1-D-03, CWE-362):
+    // background GC of the
+    // `idempotency_keys` table.
+    // Removes rows past their
+    // `expires_at` (the default
+    // TTL is 24h). The cadence
+    // matches the other GCs
+    // (every 60s).
+    {
+        let pool = state.db.pool().clone();
+        tokio::spawn(async move {
+            let repo =
+                agent_dep_core::infrastructure::repository::idempotency_repository::IdempotencyRepository::new(pool);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                if let Ok(n) = repo.gc_expired().await {
+                    if n > 0 {
+                        tracing::info!(removed = n, "idempotency.gc removed expired keys");
+                    }
+                }
             }
         });
     }

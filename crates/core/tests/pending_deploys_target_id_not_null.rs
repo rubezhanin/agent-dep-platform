@@ -38,8 +38,8 @@ async fn migration_018_applies_to_a_fresh_db() {
     let (_dir, pool) = fresh_db().await;
     let v = read_schema_version(&pool).await;
     assert_eq!(
-        v, 24,
-        "schema_version must be 24 after fresh migrate (018 + 019 + 020 + 021 + 022 + 023 + 024)"
+        v, 25,
+        "schema_version must be 25 after fresh migrate (018 + 019 + 020 + 021 + 022 + 023 + 024 + 025)"
     );
 }
 
@@ -149,5 +149,5 @@ async fn migration_018_orphan_row_is_dropped() {
     // order), so this assertion is just
     // the post-023 value.
     let v = read_schema_version(&pool).await;
-    assert_eq!(v, 24);
+    assert_eq!(v, 25);
 }
