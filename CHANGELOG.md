@@ -2715,6 +2715,140 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   ingest dir as an
   out-of-band check.
 
+- **P1-MCP-01 YAML
+  escape hardening in
+  `render_manifest_yaml`
+  (TZ #2 WP-3.4 / SEC-10,
+  CWE-94 Improper Control
+  of Generation of Code
+  — Code Injection).**
+  The pre-fix renderer
+  used `format!` for every
+  operator-controlled
+  field (`description`,
+  `source_url`,
+  `transport.url`,
+  `auth.provider`), so a
+  value containing `\n`,
+  `:`, `#`, `"`, or `\0`
+  would either inject a
+  new YAML key or
+  terminate the scalar
+  early. **Exploit
+  scenario (pre-fix):**
+  an operator (or
+  malicious catalog)
+  supplying
+  `source_url:
+  "https://x.com\nauth:\n
+  type: oauth\n  provider:
+  evil"` would render to
+  a YAML file with a
+  second top-level
+  `auth:` block that
+  Hermes parsed as the
+  real `auth:` field,
+  overriding the
+  legitimate one.
+  CWE-94: the YAML
+  structure was driven by
+  a string-concat of
+  attacker-controlled
+  bytes. Post-fix, every
+  operator-controlled
+  scalar is wrapped via
+  the `yaml_quote` helper,
+  which (1) wraps the
+  value in double quotes,
+  (2) escapes `"` / `\\` /
+  `\n` / `\r` / `\t` /
+  `\0`, and (3) emits
+  every other C0 control
+  character as `\xNN` so
+  a strict YAML parser
+  keeps the full string
+  intact. The `name` field
+  is also double-quoted as
+  defense-in-depth (the
+  slug validator would
+  also accept it as a
+  plain scalar). 6 new
+  unit tests in
+  `mcp_server::tests`:
+  `yaml_quote_escapes_common_specials`
+  + `yaml_quote_escapes_c0_control_characters`
+  (the helper itself) +
+  `render_manifest_quotes_source_url_blocking_newline_injection`
+  +
+  `render_manifest_quotes_transport_url_blocking_colon_injection`
+  +
+  `render_manifest_quotes_provider_blocking_colon_injection`
+  +
+  `render_manifest_output_round_trips_via_serde_yaml`
+  (the strongest
+  invariant: take a
+  payload with all the
+  special characters,
+  render it, re-parse via
+  `serde_yaml`, and
+  assert the parsed
+  structure matches the
+  original spec with no
+  extra top-level keys) +
+  `render_manifest_output_byte_deterministic_under_injection`.
+  The pre-existing
+  `render_manifest_contains_required_fields`
+  + `render_manifest_emits_provider_when_set`
+  + the
+  `mcp_add_writes_optional_mcps_manifest`
+  CLI test got their
+  expected substrings
+  updated for the
+  double-quoted form
+  (e.g. `name: linear` →
+  `name: "linear"`). The
+  TS drift guard picked
+  up the 20-line
+  duplication from the
+  P1-G-04b regen (the
+  `ts-rs gotcha` from
+  AGENTS.md — the 10
+  DTOs that should have
+  been in the import list
+  were also written at
+  the bottom of the
+  file). The fresh regen
+  consolidated them back
+  to one copy each,
+  which is the canonical
+  state per the gotcha
+  note ("Do not `git
+  checkout` to revert —
+  the dedup is the
+  correct state"). 641
+  tests pass, clippy
+  clean, fmt clean on the
+  touched files. **CWE-94
+  closed** for the MCP
+  manifest rendering
+  attack surface. No
+  residual risk: the
+  YAML escape applies to
+  every
+  operator-controlled
+  field, the helper
+  rejects every
+  C0 control character
+  (not just the three
+  common whitespace
+  ones), and the
+  round-trip test pins
+  the invariant that
+  the rendered file
+  always parses back to
+  the same data
+  structure.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

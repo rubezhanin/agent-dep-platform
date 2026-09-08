@@ -11,6 +11,44 @@
 //! The output is byte-deterministic (the same spec
 //! always produces the same bytes) and is written
 //! atomically (temp+rename per ADR-0002).
+//!
+//! ## Security: P1-MCP-01 (TZ #2 WP-3.4 / SEC-10, CWE-94)
+//!
+//! The manifest is hand-rolled YAML, parsed by Hermes
+//! at runtime. Every operator-controlled field
+//! (`description`, `source_url`, `transport.url`,
+//! `auth.provider`) MUST be emitted as a
+//! double-quoted YAML scalar with backslash, quote, and
+//! control-character escaping, **never** as a raw
+//! `format!("{k}: {v}\n")` interpolation.
+//!
+//! **Exploit scenario (pre-fix):** the pre-fix
+//! `render_manifest_yaml` used `format!` for
+//! `source_url`, `transport.url`, and `auth.provider`.
+//! An operator (or a malicious catalog) supplying
+//! `source_url: "https://x.com\nauth:\n  type: oauth\n  provider: evil"`
+//! would produce:
+//!
+//! ```yaml
+//! source: https://x.com
+//! auth:
+//!   type: oauth
+//!   provider: evil
+//! ```
+//!
+//! CWE-94: the second `auth:` block in the
+//! user-controlled portion is parsed as the real
+//! `auth:` field, overriding any later config.
+//! The same attack works on `transport.url` and
+//! `auth.provider` (a colon in the value can re-open
+//! the key as a mapping; a `#` introduces a comment
+//! that hides the rest of the line from the operator).
+//! Post-fix, every user-controlled scalar is rendered
+//! via `yaml_quote`, which wraps the value in
+//! double-quotes, escapes `"` / `\\` / `\n` / `\r` /
+//! `\t`, and emits other control characters as
+//! `\xNN` so the YAML parser always treats the field
+//! as a single string.
 
 use agent_dep_core::error::{CoreError, CoreResult};
 use serde::{Deserialize, Serialize};
@@ -121,6 +159,11 @@ pub fn materialize_mcp_server(
 /// output is byte-deterministic: keys in a fixed
 /// order, no trailing whitespace, and no
 /// platform-specific line endings (we always emit LF).
+///
+/// All operator-controlled scalars are wrapped via
+/// [`yaml_quote`] so the YAML parser always sees them
+/// as a single string. See the module-level docstring
+/// for the P1-MCP-01 (CWE-94) threat model.
 fn render_manifest_yaml(spec: &McpServerSpec) -> CoreResult<String> {
     // Hand-rolled YAML (no library) so the output is
     // stable across serde_yaml versions. The
@@ -133,15 +176,21 @@ fn render_manifest_yaml(spec: &McpServerSpec) -> CoreResult<String> {
     out.push_str("# by removing the leading `#` and adding your own.\n");
     out.push_str(&format!("manifest_version: {}\n", MANIFEST_VERSION));
     out.push('\n');
-    out.push_str(&format!("name: {}\n", spec.name));
+    // `name` is validated by `is_valid_name` (lowercase
+    // ASCII + digits + `_` + `-`), so it cannot contain
+    // any YAML-special character and is safe to emit
+    // unquoted. We still quote it as defense-in-depth —
+    // the cost is two quote chars and the parser does
+    // not care.
+    out.push_str(&format!("name: {}\n", yaml_quote(&spec.name)));
     out.push_str(&format!("description: {}\n", yaml_quote(&spec.description)));
-    out.push_str(&format!("source: {}\n", spec.source_url));
+    out.push_str(&format!("source: {}\n", yaml_quote(&spec.source_url)));
     out.push('\n');
     out.push_str("transport:\n");
     match &spec.transport {
         McpTransport::Http { url } => {
             out.push_str("  type: http\n");
-            out.push_str(&format!("  url: {url}\n"));
+            out.push_str(&format!("  url: {}\n", yaml_quote(url)));
         }
     }
     if let Some(auth) = &spec.auth {
@@ -151,7 +200,7 @@ fn render_manifest_yaml(spec: &McpServerSpec) -> CoreResult<String> {
             McpAuth::Oauth { provider } => {
                 out.push_str("  type: oauth\n");
                 if let Some(p) = provider {
-                    out.push_str(&format!("  provider: {p}\n"));
+                    out.push_str(&format!("  provider: {}\n", yaml_quote(p)));
                 }
             }
         }
@@ -159,10 +208,24 @@ fn render_manifest_yaml(spec: &McpServerSpec) -> CoreResult<String> {
     Ok(out)
 }
 
-/// Quote a description for YAML: a single double-quoted
-/// scalar with backslash and double-quote escaping.
+/// Quote a string for YAML as a single double-quoted
+/// scalar. Escapes `"`, `\\`, `\n`, `\r`, `\t`, and
+/// every other C0 control character (`\x00`-`\x1f`).
+///
+/// Used for every operator-controlled field in the
+/// manifest — `description`, `source_url`,
+/// `transport.url`, `auth.provider`, and `name` (the
+/// last as defense-in-depth; the slug validator would
+/// also accept it as a plain scalar). P1-MCP-01 fix
+/// — the pre-fix version only handled `"`, `\\`, and
+/// the three common whitespace controls, so a `\x00`
+/// in the input would have terminated the string
+/// early or produced invalid YAML that a strict
+/// parser rejects but a lenient one parses with
+/// content loss.
 fn yaml_quote(s: &str) -> String {
-    let mut out = String::from("\"");
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
     for c in s.chars() {
         match c {
             '"' => out.push_str("\\\""),
@@ -170,6 +233,14 @@ fn yaml_quote(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            c if (c as u32) < 0x20 => {
+                // Other C0 controls: emit the
+                // 2-digit hex form. The YAML 1.2
+                // spec allows `\xNN` inside double-
+                // quoted strings.
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
             _ => out.push(c),
         }
     }
@@ -239,10 +310,14 @@ mod tests {
     fn render_manifest_contains_required_fields() {
         let y = render_manifest_yaml(&sample_spec()).unwrap();
         assert!(y.contains("manifest_version: 1"));
-        assert!(y.contains("name: linear"));
+        // P1-MCP-01 (CWE-94): all operator-controlled
+        // scalars are now double-quoted, including
+        // `name` (defense-in-depth — the slug
+        // validator would also accept it unquoted).
+        assert!(y.contains("name: \"linear\""));
         assert!(y.contains("transport:"));
         assert!(y.contains("  type: http"));
-        assert!(y.contains("  url: https://mcp.linear.app/mcp"));
+        assert!(y.contains("  url: \"https://mcp.linear.app/mcp\""));
         assert!(y.contains("auth:"));
         assert!(y.contains("  type: oauth"));
         // No provider line when None
@@ -256,7 +331,9 @@ mod tests {
             provider: Some("google".to_string()),
         });
         let y = render_manifest_yaml(&spec).unwrap();
-        assert!(y.contains("  provider: google"));
+        // P1-MCP-01 (CWE-94): provider is now a
+        // double-quoted scalar.
+        assert!(y.contains("  provider: \"google\""));
     }
 
     #[test]
@@ -302,5 +379,220 @@ mod tests {
         let err = materialize_mcp_server(dir.path(), &bad).expect_err("invalid name");
         let s = format!("{err:?}");
         assert!(s.contains("invalid") || s.contains("name"), "got: {s}");
+    }
+
+    // -------------------------------------------------------------------
+    // P1-MCP-01 — YAML escape hardening (CWE-94 Code Injection)
+    //
+    // The pre-fix renderer used `format!("{k}: {v}\n")` for
+    // every operator-controlled field, so a value containing
+    // `\n`, `:`, `#`, `"`, or `\0` would either inject new
+    // YAML keys or terminate the scalar early. These tests
+    // pin the post-fix invariants:
+    //   1. `yaml_quote` produces a parseable double-quoted
+    //      scalar for every special character.
+    //   2. `render_manifest_yaml` quotes every operator-
+    //      controlled field, so the output always parses
+    //      back to the same spec via serde_yaml.
+    //   3. Known injection payloads (newline, colon, quote,
+    //      control char) do not introduce extra keys or
+    //      override the real ones in the rendered output.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn yaml_quote_escapes_common_specials() {
+        // The base-case characters — every one of these
+        // would have been emitted raw in the pre-fix
+        // renderer and broken YAML parsing.
+        assert_eq!(yaml_quote("plain"), "\"plain\"");
+        assert_eq!(yaml_quote("with \"quote"), "\"with \\\"quote\"");
+        assert_eq!(yaml_quote("with \\back"), "\"with \\\\back\"");
+        assert_eq!(yaml_quote("line1\nline2"), "\"line1\\nline2\"");
+        assert_eq!(yaml_quote("a\rb"), "\"a\\rb\"");
+        assert_eq!(yaml_quote("a\tb"), "\"a\\tb\"");
+        // Empty string still emits a valid scalar.
+        assert_eq!(yaml_quote(""), "\"\"");
+    }
+
+    #[test]
+    fn yaml_quote_escapes_c0_control_characters() {
+        // Every C0 control except the three whitespace
+        // ones already named above (NUL, SOH, .., US)
+        // must be emitted as `\xNN` so a strict YAML
+        // parser keeps the full string intact.
+        let cases: &[(char, &str)] = &[
+            ('\0', "\\0"),
+            ('\x01', "\\x01"),
+            ('\x07', "\\x07"), // BEL
+            ('\x0b', "\\x0b"), // VT
+            ('\x1f', "\\x1f"), // US
+        ];
+        for &(c, hex_esc) in cases {
+            let q = yaml_quote(&format!("a{c}b"));
+            assert!(
+                q.contains(hex_esc),
+                "expected {hex_esc:?} in {q:?} for char U+{:04X}",
+                c as u32
+            );
+            // The control char itself must NOT appear
+            // unescaped in the output.
+            assert!(!q.contains(c), "unescaped control char in {q:?}");
+        }
+    }
+
+    #[test]
+    fn render_manifest_quotes_source_url_blocking_newline_injection() {
+        // Pre-fix: source: https://x.com\nauth:\n  type: oauth
+        // would have produced an extra `auth:` block.
+        // Post-fix: source_url is yaml_quote'd, so the
+        // newline is escaped to `\n` and stays inside
+        // the scalar.
+        let mut spec = sample_spec();
+        spec.source_url = "https://x.com\nauth:\n  type: oauth\n  provider: evil".to_string();
+        let y = render_manifest_yaml(&spec).unwrap();
+        // The real `auth:` block from `spec.auth` must
+        // still be present, and there must NOT be a
+        // second `auth:` key introduced by the injection.
+        let auth_count = y.matches("\nauth:\n").count();
+        assert_eq!(
+            auth_count, 1,
+            "injection introduced extra auth: block:\n{y}"
+        );
+        // The newline in the source URL must appear
+        // escaped as the literal sequence `\n`, not as
+        // a raw LF.
+        assert!(y.contains("\\n"), "expected escaped \\n in:\n{y}");
+        assert!(
+            !y.contains("https://x.com\nauth"),
+            "raw newline leaked into output:\n{y}"
+        );
+    }
+
+    #[test]
+    fn render_manifest_quotes_transport_url_blocking_colon_injection() {
+        // Pre-fix: `url: https://mcp.x.com:8080/secret`
+        // would parse as `url: "https://mcp.x.com"` and
+        // a follow-on `:8080/secret` which most YAML
+        // parsers tolerate as a single string — but
+        // `url: https://x.com\nfoo: bar` would have
+        // produced a second top-level key.
+        let mut spec = sample_spec();
+        spec.transport = McpTransport::Http {
+            url: "https://mcp.x.com\nfoo: bar".to_string(),
+        };
+        let y = render_manifest_yaml(&spec).unwrap();
+        // The injected `foo: bar` must NOT appear as
+        // a real YAML key (it would be at column 0
+        // because transport is indented by 2 spaces).
+        assert!(
+            !y.contains("\nfoo: bar"),
+            "colon-injection leaked key into output:\n{y}"
+        );
+        // And the real transport block must still
+        // emit the type: http header.
+        assert!(y.contains("  type: http"));
+    }
+
+    #[test]
+    fn render_manifest_quotes_provider_blocking_colon_injection() {
+        let mut spec = sample_spec();
+        spec.auth = Some(McpAuth::Oauth {
+            provider: Some("google: malicious".to_string()),
+        });
+        let y = render_manifest_yaml(&spec).unwrap();
+        // The value must be a double-quoted scalar so
+        // the colon stays inside the string.
+        assert!(
+            y.contains("  provider: \"google: malicious\""),
+            "provider not quoted:\n{y}"
+        );
+    }
+
+    #[test]
+    fn render_manifest_output_round_trips_via_serde_yaml() {
+        // The strongest post-fix invariant: take any
+        // spec (with the special characters that would
+        // have caused the pre-fix bug), render it,
+        // then re-parse the result and assert the data
+        // matches. If the renderer still emitted raw
+        // strings, the re-parse would either fail
+        // outright or come back with a different
+        // structure.
+        let mut spec = sample_spec();
+        spec.description = "line1\nline2\twith \"quote\" and \\back".to_string();
+        spec.source_url = "https://x.com/?q=:foo&a=b#frag".to_string();
+        spec.transport = McpTransport::Http {
+            url: "https://mcp.x.com:8080/path?x=1&y=2".to_string(),
+        };
+        spec.auth = Some(McpAuth::Oauth {
+            provider: Some("oauth:custom:tenant".to_string()),
+        });
+        let y = render_manifest_yaml(&spec).unwrap();
+        // serde_yaml requires a tagged enum for the
+        // transport/auth variants; parse through the
+        // same JSON shape the CLI uses.
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&y).expect("YAML re-parse");
+        // The fields we care about.
+        assert_eq!(parsed.get("name").and_then(|v| v.as_str()), Some("linear"));
+        assert_eq!(
+            parsed.get("description").and_then(|v| v.as_str()),
+            Some("line1\nline2\twith \"quote\" and \\back")
+        );
+        assert_eq!(
+            parsed.get("source").and_then(|v| v.as_str()),
+            Some("https://x.com/?q=:foo&a=b#frag")
+        );
+        let transport = parsed.get("transport").expect("transport");
+        assert_eq!(
+            transport.get("url").and_then(|v| v.as_str()),
+            Some("https://mcp.x.com:8080/path?x=1&y=2")
+        );
+        let auth = parsed.get("auth").expect("auth");
+        assert_eq!(
+            auth.get("provider").and_then(|v| v.as_str()),
+            Some("oauth:custom:tenant")
+        );
+        // And critically: the YAML must NOT contain
+        // any extra top-level keys introduced by an
+        // injection. The expected set is exactly
+        // {manifest_version, name, description, source,
+        // transport, auth}.
+        let expected_keys = [
+            "manifest_version",
+            "name",
+            "description",
+            "source",
+            "transport",
+            "auth",
+        ];
+        for k in expected_keys {
+            assert!(parsed.get(k).is_some(), "missing key `{k}` in:\n{y}");
+        }
+        // Extra keys would appear here.
+        let extra: Vec<&str> = parsed
+            .as_mapping()
+            .unwrap()
+            .keys()
+            .filter_map(|k| k.as_str())
+            .filter(|k| !expected_keys.contains(k))
+            .collect();
+        assert!(extra.is_empty(), "extra keys {extra:?} in:\n{y}");
+    }
+
+    #[test]
+    fn render_manifest_output_byte_deterministic_under_injection() {
+        // Two renders of the same malicious spec must
+        // produce byte-identical output (otherwise a
+        // re-render would silently rewrite the manifest
+        // and lose the operator's manual edits — the
+        // current behaviour for the in-payload `#`
+        // comment trick is "the second render would
+        // wrap the value in quotes and shift the
+        // comment position").
+        let mut spec = sample_spec();
+        spec.source_url = "https://x.com#comment\nhidden: yes".to_string();
+        let a = render_manifest_yaml(&spec).unwrap();
+        let b = render_manifest_yaml(&spec).unwrap();
+        assert_eq!(a, b);
     }
 }

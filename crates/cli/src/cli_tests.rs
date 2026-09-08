@@ -1208,10 +1208,12 @@ mod mcp_e2e {
         );
         let text = fs::read_to_string(&manifest).unwrap();
         assert!(text.contains("manifest_version: 1"));
-        assert!(text.contains("name: linear"));
+        // P1-MCP-01 (CWE-94): operator-controlled
+        // scalars are now double-quoted in the manifest.
+        assert!(text.contains("name: \"linear\""));
         assert!(text.contains("transport:"));
         assert!(text.contains("  type: http"));
-        assert!(text.contains("  url: https://mcp.linear.app/mcp"));
+        assert!(text.contains("  url: \"https://mcp.linear.app/mcp\""));
         assert!(text.contains("auth:"));
         assert!(text.contains("  type: oauth"));
 
