@@ -2352,6 +2352,84 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   reworded to remove the
   numbered parenthetical).
 
+- **P1-G-03 Repository
+  quotas (TZ #1 §7 / G-03,
+  CWE-400 Uncontrolled
+  Resource Consumption,
+  closes the CWE-400 attack
+  surface for the Git fetch
+  path).** The pre-fix
+  `clone_or_update` accepted
+  whatever the upstream
+  served — a 100 GiB monorepo,
+  a 10M-object fork, a 1M-file
+  monorepo, a 10K-deep
+  directory tree, a single
+  10 GiB binary blob. CWE-400:
+  a malicious or compromised
+  upstream could exhaust the
+  host's disk, memory, CPU,
+  and the parent scan
+  process's own budget. The
+  post-fix design enforces
+  five post-clone quotas on
+  every `clone_or_update`
+  call:
+  1. **`.git` directory total
+     size** (1 GiB default).
+  2. **Object count** (100K
+     default).
+  3. **Working-copy file count**
+     (50K default).
+  4. **Path depth** (32 default).
+  5. **Blob size** (100 MiB
+     default).
+  A 6th, separate quota —
+  the **fetch-timeout**
+  (5 minutes default) —
+  bounds the in-flight network
+  call. All caps are
+  operator-overridable via env
+  vars
+  (`AGENCY_GIT_MAX_GIT_SIZE_BYTES`,
+  `AGENCY_GIT_MAX_OBJECT_COUNT`,
+  `AGENCY_GIT_MAX_FILE_COUNT`,
+  `AGENCY_GIT_MAX_PATH_DEPTH`,
+  `AGENCY_GIT_MAX_BLOB_SIZE_BYTES`,
+  `AGENCY_GIT_FETCH_TIMEOUT_SECS`);
+  a `0` or non-numeric value
+  falls back to the default.
+  On quota violation, the
+  post-fix `check_repo_quotas`
+  returns a typed
+  `CoreError::ErrGitQuota {
+  kind: "..." }` AND does a
+  best-effort
+  `std::fs::remove_dir_all(dest)`
+  cleanup. The post-fix check
+  is applied to BOTH the
+  `fresh_clone` and
+  `update_existing` paths. 4
+  new unit tests in
+  `git_fetcher.rs`:
+  `default_quotas_returns_sensible_caps`,
+  `parse_u64_env_honors_override_and_falls_back`,
+  `check_repo_quotas_rejects_oversized_git_dir`
+  (the CWE-400 defense with
+  `P1-G-03`-tagged error and
+  cleanup verification), and
+  `check_repo_quotas_skips_tree_walk_when_no_git_dir`
+  (regression-guard for the
+  "no `.git` means no quota
+  violation" fix). The git2
+  end-to-end test is covered
+  by the existing
+  `ingest_persist_real_agency_agents.rs`
+  integration test. **CWE-400
+  closed** for the Git fetch
+  path. No schema change; no
+  new dependency.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

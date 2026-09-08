@@ -79,6 +79,22 @@ pub enum CoreError {
     #[error("git remote URL changed: was `{old}`, now `{new}`; remove the working copy at `{new}`'s source_id directory and retry")]
     ErrGitRemoteChanged { old: String, new: String },
 
+    /// 2.11.0 (P1-G-03, TZ #1 §7 / G-03,
+    /// CWE-400 Uncontrolled Resource
+    /// Consumption): a repository
+    /// quota was exceeded. The
+    /// `kind` is a short,
+    /// machine-parseable identifier
+    /// of the quota that fired
+    /// (`git_size`, `object_count`,
+    /// `file_count`, `path_depth`,
+    /// `blob_size`, or a probe-error
+    /// message). The fetch was
+    /// aborted and the on-disk
+    /// working copy was removed.
+    #[error("git repository quota exceeded: {kind}")]
+    ErrGitQuota { kind: String },
+
     /// 2.11.0 (P1-D-01b, TZ #1 §10 / D-01,
     /// CWE-494): a deploy was approved
     /// against one version of a
