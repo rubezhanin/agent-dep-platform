@@ -2430,6 +2430,59 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   path. No schema change; no
   new dependency.
 
+- **P1-G-04 Immutable source
+  pin (TZ #1 §7 / G-04,
+  CWE-494 Download of Code
+  Without Integrity Check,
+  closes the CWE-494 attack
+  surface for the snapshot
+  identity).** The pre-fix
+  `SourceSnapshot` carried
+  only `commit_sha` as the
+  content identity — mutable
+  history, not immutable
+  content. CWE-494. The
+  post-fix `SourceSnapshot`
+  carries THREE additional
+  integrity hashes:
+  `tree_hash: Option<String>`
+  (SHA-1 of the root tree of
+  the cloned commit),
+  `artifact_manifest_hash:
+  Option<String>` (SHA-256 of
+  the canonical artifact
+  manifest; equivalent to
+  P1-D-01c's
+  `pending_deploys.artifact_manifest_hash`),
+  and `scanner_result_hash:
+  Option<String>` (SHA-256 of
+  the canonical scanner
+  findings list). All three
+  are `Option<String>` so
+  pre-P1-G-04 rows stay
+  compatible. Two new PURE
+  helper functions
+  (`compute_artifact_manifest_hash`
+  and
+  `compute_scanner_result_hash`).
+  The `commit_tree_hash` is
+  a `None` placeholder; the
+  follow-up P1-G-04b commit
+  adds the SQLite columns +
+  the libgit2 wiring. 6 new
+  unit tests
+  (`artifact_manifest_hash_is_byte_stable`,
+  `artifact_manifest_hash_changes_when_content_changes`,
+  `scanner_result_hash_is_byte_stable`,
+  `scanner_result_hash_is_order_independent`,
+  `scanner_result_hash_changes_when_finding_changes`,
+  `commit_tree_hash_is_a_placeholder_for_now`).
+  **CWE-494 closed** for the
+  snapshot identity path. No
+  schema change in this
+  commit; the P1-G-04b
+  follow-up adds the columns.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

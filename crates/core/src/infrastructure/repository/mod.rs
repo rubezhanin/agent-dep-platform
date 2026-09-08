@@ -480,6 +480,25 @@ impl IngestRepository {
                     id,
                     source_id,
                     commit_sha: commit,
+                    // 2.11.0 (P1-G-04): the
+                    // P1-G-04 integrity
+                    // hashes (tree_hash,
+                    // artifact_manifest_hash,
+                    // scanner_result_hash)
+                    // are not stored in the
+                    // SQLite `source_snapshots`
+                    // table yet (a follow-up
+                    // migration); the
+                    // SELECT-side hydrate
+                    // fills them with
+                    // `None` for the
+                    // existing rows. A
+                    // follow-up P1-G-04b
+                    // commit will add the
+                    // columns + backfill.
+                    tree_hash: None,
+                    artifact_manifest_hash: None,
+                    scanner_result_hash: None,
                     status,
                     agent_count: agent_count as u32,
                     division_count: division_count as u32,
@@ -552,6 +571,22 @@ impl IngestRepository {
                     id,
                     source_id,
                     commit_sha,
+                    // 2.11.0 (P1-G-04):
+                    // SELECT-side hydrate
+                    // fills the P1-G-04
+                    // integrity hashes
+                    // with `None` for
+                    // existing rows; a
+                    // follow-up P1-G-04b
+                    // migration will
+                    // add the columns +
+                    // backfill. See
+                    // `list_snapshots`
+                    // above for the
+                    // matching comment.
+                    tree_hash: None,
+                    artifact_manifest_hash: None,
+                    scanner_result_hash: None,
                     status,
                     agent_count: agent_count as u32,
                     division_count: division_count as u32,

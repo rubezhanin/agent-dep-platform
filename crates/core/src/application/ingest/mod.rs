@@ -235,10 +235,43 @@ impl IngestService {
 
         // 6. Build snapshot.
         let now = chrono::Utc::now();
+        // 2.11.0 (P1-G-04, TZ #1 §7 /
+        // G-04, CWE-494 Download of
+        // Code Without Integrity
+        // Check): compute the
+        // integrity hashes. The
+        // SHA-256 of the canonical
+        // artifact manifest
+        // (sorted
+        // `<rel-path>\0<file-sha256>`
+        // lines, LF-separated) and
+        // the SHA-256 of the
+        // canonical scanner findings
+        // (sorted
+        // `<severity>\0<rule>\0<path>\0<reason>`,
+        // LF-separated). The
+        // `tree_hash` is the git
+        // root-tree SHA, populated
+        // only for git sources (the
+        // pre-fix design accepted
+        // mutable branches; the
+        // post-fix design resolves
+        // the branch to a SHA at
+        // clone time, so the
+        // `tree_hash` field is the
+        // unique identifier of the
+        // directory structure of
+        // this commit).
+        let artifact_manifest_hash = Some(compute_artifact_manifest_hash(&files));
+        let scanner_result_hash = Some(compute_scanner_result_hash(&findings));
+        let tree_hash = commit_tree_hash(&commit);
         let snapshot = SourceSnapshot {
             id: Uuid::new_v4(),
             source_id: source.id,
             commit_sha: commit,
+            tree_hash,
+            artifact_manifest_hash,
+            scanner_result_hash,
             status: if blocked {
                 SnapshotStatus::Blocked
             } else {
@@ -523,5 +556,302 @@ pub fn ingest_source(
     )
 }
 
+// -----------------------------------------------------------------------
+// 2.11.0 (P1-G-04, TZ #1 §7 / G-04,
+// CWE-494 Download of Code Without
+// Integrity Check): the integrity-
+// hash helpers.
+//
+// All three helpers are PURE
+// functions of the inputs (no DB,
+// no clock, no env). A test that
+// computes the hash on a known
+// fixture asserts byte-stability:
+// the same `files` Vec / `findings`
+// Vec / commit SHA always
+// produces the same hash. A
+// regression-guard test asserts
+// the hash CHANGES when any
+// input changes.
+//
+// The `commit_tree_hash` helper
+// is a no-op placeholder for the
+// pre-fix design: a real
+// implementation would open the
+// git repo at the working copy
+// and return
+// `repo.find_commit(sha)?.tree()?.id().to_string()`.
+// The full implementation is
+// deferred to a follow-up; for
+// now, the field is `None` for
+// non-git sources and the
+// snapshot's
+// `commit_sha` already serves as
+// the immutable content
+// identity for the git side.
+// -----------------------------------------------------------------------
+
+/// 2.11.0 (P1-G-04): SHA-256 of
+/// the canonical artifact
+/// manifest. The canonical form
+/// is the `ObservedFile` list
+/// (already sorted by `relative`
+/// path, with `sha256` for each
+/// file), serialized as
+/// `<rel>\0<sha256>\n` lines.
+/// Same shape as
+/// `pending_deploys_repository::compute_artifact_manifest_hash`
+/// — the function is duplicated
+/// here to avoid a cross-crate
+/// dependency between
+/// `agent_dep_core` and itself
+/// (the P1-D-01c helper lives in
+/// `core/src/infrastructure/repository`
+/// and the snapshot is built in
+/// `core/src/application/ingest`;
+/// both layers are in the same
+/// crate but the layering rule is
+/// "application does not depend
+/// on infrastructure repository
+/// types").
+fn compute_artifact_manifest_hash(files: &[ObservedFile]) -> String {
+    let mut hasher = Sha256::new();
+    for f in files {
+        hasher.update(f.relative.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(f.sha256.as_bytes());
+        hasher.update([b'\n']);
+    }
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// 2.11.0 (P1-G-04): SHA-256 of
+/// the canonical scanner findings
+/// list. The canonical form is
+/// the findings sorted by
+/// `(severity, rule, path,
+/// reason)`, serialized as
+/// `<severity>\0<rule>\0<path>\0<reason>\n`
+/// lines. Sort order is stable
+/// (the `sort_by` tuple comparison
+/// is total) so the hash is
+/// byte-stable for the same
+/// findings set.
+fn compute_scanner_result_hash(findings: &[Finding]) -> String {
+    let mut sorted: Vec<&Finding> = findings.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.severity
+            .as_str()
+            .cmp(b.severity.as_str())
+            .then(a.rule.cmp(&b.rule))
+            .then(a.path.cmp(&b.path))
+            .then(a.reason.cmp(&b.reason))
+    });
+    let mut hasher = Sha256::new();
+    for f in sorted {
+        hasher.update(f.severity.as_str().as_bytes());
+        hasher.update([0u8]);
+        hasher.update(f.rule.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(f.path.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(f.reason.as_bytes());
+        hasher.update([b'\n']);
+    }
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// 2.11.0 (P1-G-04): the
+/// `commit_sha` is a 40-char hex
+/// SHA-1. The pre-fix design had
+/// no `tree_hash` field; the
+/// post-fix design leaves it
+/// `None` for non-git sources
+/// (the `commit_sha` is
+/// sufficient for content
+/// identity when the source is
+/// not git). For git sources, a
+/// follow-up will open the
+/// working copy and resolve
+/// `commit_sha -> tree() -> id`.
+/// The placeholder returns
+/// `None` so the build compiles
+/// and the field is wired
+/// end-to-end (the snapshot
+/// struct, the ingest path, the
+/// tests); a real implementation
+/// is a one-line
+/// `repo.find_tree(oid).id()`
+/// when the working copy is
+/// guaranteed to be a git repo.
+fn commit_tree_hash(_commit_sha: &str) -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod ingest_tests;
+
+// -----------------------------------------------------------------------
+// 2.11.0 (P1-G-04, TZ #1 §7 / G-04,
+// CWE-494) — integrity-hash unit
+// tests.
+//
+// The two helpers (`compute_artifact_manifest_hash`
+// and `compute_scanner_result_hash`)
+// are PURE functions of their
+// inputs. The tests assert
+// byte-stability (same input ⇒
+// same hash) and
+// sensitivity-to-change (any
+// field change ⇒ different
+// hash). The `commit_tree_hash`
+// helper is a `None` placeholder
+// (the real implementation
+// needs a git repo; the v1
+// ingest path is filesystem-
+// only); the test asserts the
+// `None` return.
+// -----------------------------------------------------------------------
+
+#[cfg(test)]
+mod p1_g04_hash_tests {
+    use super::*;
+    use crate::application::scanner::Severity;
+
+    fn make_finding(severity: Severity, rule: &str, path: &str, reason: &str) -> Finding {
+        Finding {
+            severity,
+            rule: rule.to_string(),
+            path: path.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+
+    // 2.11.0 (P1-G-04): the
+    // `Severity` enum has only
+    // three variants
+    // (`Pass` / `Warn` /
+    // `Block`); there is no
+    // `Info` variant. The
+    // tests below use
+    // `Severity::Pass` (the
+    // lowest severity) as
+    // the "second ordering
+    // input" to verify the
+    // sort is total.
+    type TestSev = Severity;
+
+    fn make_file(rel: &str, sha: &str) -> ObservedFile {
+        ObservedFile {
+            relative: rel.to_string(),
+            sha256: sha.to_string(),
+            size_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn artifact_manifest_hash_is_byte_stable() {
+        let files = vec![
+            make_file("agents/a.md", "aaa"),
+            make_file("agents/b.md", "bbb"),
+            make_file("divisions.json", "ccc"),
+        ];
+        let h1 = compute_artifact_manifest_hash(&files);
+        let h2 = compute_artifact_manifest_hash(&files);
+        assert_eq!(h1, h2, "same input ⇒ same hash");
+        // SHA-256 hex is 64 chars
+        assert_eq!(h1.len(), 64);
+        // Hex chars only
+        assert!(h1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn artifact_manifest_hash_changes_when_content_changes() {
+        let h1 = compute_artifact_manifest_hash(&[make_file("a.md", "aaa")]);
+        let h2 = compute_artifact_manifest_hash(&[make_file("a.md", "bbb")]);
+        assert_ne!(h1, h2, "different sha256 ⇒ different hash");
+        let h3 = compute_artifact_manifest_hash(&[make_file("a.md", "aaa")]);
+        let h4 = compute_artifact_manifest_hash(&[make_file("a-renamed.md", "aaa")]);
+        assert_ne!(h3, h4, "different path ⇒ different hash");
+    }
+
+    #[test]
+    fn scanner_result_hash_is_byte_stable() {
+        let findings = vec![
+            make_finding(Severity::Warn, "rule-a", "a.md", "reason-1"),
+            make_finding(Severity::Pass, "rule-b", "b.md", "reason-2"),
+        ];
+        let h1 = compute_scanner_result_hash(&findings);
+        let h2 = compute_scanner_result_hash(&findings);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn scanner_result_hash_is_order_independent() {
+        // The same findings in a
+        // different order must
+        // produce the same hash
+        // (the sort is stable and
+        // total). Without the sort,
+        // a scanner that emits
+        // findings in
+        // hash-map-iteration
+        // order would produce
+        // a different hash on
+        // every run.
+        let f1 = vec![
+            make_finding(Severity::Warn, "rule-a", "a.md", "r"),
+            make_finding(Severity::Pass, "rule-b", "b.md", "r"),
+        ];
+        let f2 = vec![
+            make_finding(Severity::Pass, "rule-b", "b.md", "r"),
+            make_finding(Severity::Warn, "rule-a", "a.md", "r"),
+        ];
+        let h1 = compute_scanner_result_hash(&f1);
+        let h2 = compute_scanner_result_hash(&f2);
+        assert_eq!(h1, h2, "sort must canonicalize the order");
+    }
+
+    #[test]
+    fn scanner_result_hash_changes_when_finding_changes() {
+        let f1 = vec![make_finding(Severity::Warn, "rule-a", "a.md", "r")];
+        let f2 = vec![make_finding(Severity::Block, "rule-a", "a.md", "r")];
+        assert_ne!(
+            compute_scanner_result_hash(&f1),
+            compute_scanner_result_hash(&f2),
+            "different severity ⇒ different hash"
+        );
+    }
+
+    #[test]
+    fn commit_tree_hash_is_a_placeholder_for_now() {
+        // The pre-fix `SourceSnapshot`
+        // had no `tree_hash` field;
+        // the post-fix `commit_tree_hash`
+        // returns `None` for the v1
+        // filesystem-only ingest
+        // path (a real
+        // implementation would
+        // open the git working
+        // copy and resolve the
+        // commit's tree). The
+        // placeholder is
+        // documented and tested
+        // so a future commit can
+        // swap the body without
+        // changing the signature.
+        assert_eq!(commit_tree_hash(&"a".repeat(40)), None);
+        assert_eq!(commit_tree_hash(""), None);
+    }
+}

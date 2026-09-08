@@ -90,6 +90,16 @@ impl IngestV2Service {
             id: Uuid::new_v4(),
             source_id: source.id,
             commit_sha: String::new(),
+            // 2.11.0 (P1-G-04): the
+            // v2 ingest path fills
+            // these below; the
+            // placeholder is `None`
+            // so the build compiles
+            // even before the
+            // populate step runs.
+            tree_hash: None,
+            artifact_manifest_hash: None,
+            scanner_result_hash: None,
             status: SnapshotStatus::Active,
             agent_count: 0,
             division_count: divisions.len() as u32,
