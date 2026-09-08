@@ -9,7 +9,6 @@
 //! alongside any plugins; their findings are
 //! merged at the CLI / server level.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -24,6 +23,124 @@ use walkdir::WalkDir;
 use crate::error::{CoreError, CoreResult};
 
 use super::{Finding, ScanPolicy, Scanner, Severity};
+
+/// 2.11.0 (P1-S-03, TZ #1 §9 / S-03,
+/// CWE-400 Uncontrolled Resource
+/// Consumption): the hard cap on a
+/// plugin's stdout AND stderr in
+/// bytes. The pre-fix design
+/// `read_to_end`-buffered the whole
+/// stdout with no upper bound; a
+/// plugin that wrote 100 GiB of
+/// garbage would allocate 100 GiB
+/// in the parent before the scan
+/// could even parse the response.
+/// The post-fix default is 16 MiB;
+/// the cap is applied via the
+/// `BytesLimitedReader` adapter
+/// below. CWE-400 closed.
+const DEFAULT_MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
+/// 2.11.0 (P1-S-03): a tiny `Read`
+/// adapter that wraps a `ChildStdout`
+/// (or `ChildStderr`) and stops
+/// accepting bytes after `cap`
+/// total bytes have been read. When
+/// the cap is hit, sets the shared
+/// `cap_hit` `AtomicBool` to
+/// `true` and returns `Ok(0)` on
+/// the NEXT read so
+/// `read_to_end` finishes. The
+/// main wait loop polls `cap_hit`
+/// on every iteration and kills
+/// the child as soon as it sees
+/// `true`. The cap is total bytes
+/// from the underlying reader
+/// (not just the bytes successfully
+/// delivered — `Read` does not
+/// report `Ok(0)` until the
+/// underlying reader is also
+/// exhausted, so the `remaining`
+/// counter is a faithful
+/// "total bytes consumed"
+/// counter for our purposes).
+struct BytesLimitedReader<R: std::io::Read> {
+    inner: R,
+    remaining: usize,
+    cap_hit: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    hit_set: bool,
+}
+
+impl<R: std::io::Read> BytesLimitedReader<R> {
+    fn new(inner: R, cap: usize, cap_hit: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self {
+            inner,
+            remaining: cap,
+            cap_hit,
+            hit_set: false,
+        }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for BytesLimitedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            // The cap was hit on a
+            // PREVIOUS read; from now
+            // on we return `Ok(0)`
+            // cleanly so
+            // `read_to_end` exits the
+            // loop. We only set the
+            // cap-hit flag once
+            // (the first time the cap
+            // was reached) — repeated
+            // `Ok(0)` after the cap
+            // is expected and must
+            // not flap the flag.
+            if !self.hit_set {
+                self.cap_hit
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                self.hit_set = true;
+            }
+            return Ok(0);
+        }
+        // Cap the read to the
+        // remaining budget so the
+        // underlying `Read` cannot
+        // ever deliver more than
+        // `remaining` bytes.
+        let take = buf.len().min(self.remaining);
+        let n = self.inner.read(&mut buf[..take])?;
+        // `n` is the number of
+        // bytes the underlying
+        // reader actually produced.
+        // Subtract from the
+        // budget; saturating_sub
+        // guards against a
+        // short-read edge case
+        // (the underlying reader
+        // delivered 0 bytes but
+        // `take` was >0 — the budget
+        // would otherwise
+        // underflow).
+        self.remaining = self.remaining.saturating_sub(n);
+        if self.remaining == 0 && n > 0 {
+            // The cap was just hit
+            // (we accepted the last
+            // byte of the budget on
+            // this read). Mark the
+            // flag so the main wait
+            // loop can kill the
+            // child before the next
+            // plugin write fills the
+            // pipe.
+            self.cap_hit
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.hit_set = true;
+        }
+        Ok(n)
+    }
+}
 
 /// 2.11.0 (P1-S-02, TZ #1 §9 / S-02,
 /// TZ #2 WP-1.2 / SEC-07,
@@ -69,14 +186,24 @@ fn default_timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
-/// Hard cap on plugin stdout in bytes.
+/// 2.11.0 (P1-S-03, TZ #1 §9 / S-03):
+/// the operator-overridable cap on
+/// a plugin's stdout AND stderr in
+/// bytes. The default is 16 MiB
+/// (`DEFAULT_MAX_OUTPUT_BYTES`).
 /// Operators can override via
 /// `AGENCY_PLUGIN_MAX_OUTPUT_BYTES`.
-fn default_max_output_bytes() -> usize {
+/// A `0` is treated as the default
+/// (some shells evaluate unset vars
+/// as `0`); a negative or
+/// non-numeric value is also
+/// treated as the default.
+fn max_output_bytes() -> usize {
     std::env::var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(256 * 1024 * 1024)
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_OUTPUT_BYTES)
 }
 
 /// JSON envelope sent to the plugin on stdin.
@@ -460,25 +587,109 @@ impl Scanner for PluginScanner {
         // for a 30s default
         // timeout (300 polls,
         // negligible CPU).
+        // 2.11.0 (P1-S-03, TZ #1 §9 /
+        // S-03, CWE-400): the cap
+        // and the cap-hit signals
+        // for stdout and stderr.
+        // The drain threads
+        // (spawned below) wrap
+        // the pipes in
+        // `BytesLimitedReader`,
+        // which sets the
+        // respective atomic on
+        // the first byte that
+        // hits the cap. The
+        // wait loop checks both
+        // atomics on every poll
+        // and kills the child
+        // (fail-closed) as soon
+        // as either fires.
+        let cap = max_output_bytes();
+        let stdout_cap_hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stderr_cap_hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stdout_thread = child.stdout.take().map(|s| {
+            let cap_hit = stdout_cap_hit.clone();
             std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let mut s = s;
-                let _ = s.read_to_end(&mut buf);
+                let mut buf: Vec<u8> = Vec::with_capacity(cap.min(64 * 1024));
+                let mut limited = BytesLimitedReader::new(s, cap, cap_hit);
+                let _ = std::io::Read::read_to_end(&mut limited, &mut buf);
                 buf
             })
         });
         let stderr_thread = child.stderr.take().map(|s| {
+            let cap_hit = stderr_cap_hit.clone();
             std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let mut s = s;
-                let _ = s.read_to_end(&mut buf);
+                let mut buf: Vec<u8> = Vec::with_capacity(cap.min(16 * 1024));
+                let mut limited = BytesLimitedReader::new(s, cap, cap_hit);
+                let _ = std::io::Read::read_to_end(&mut limited, &mut buf);
                 buf
             })
         });
         let timeout = default_timeout();
         let deadline = Instant::now() + timeout;
         let exit: Result<std::process::ExitStatus, std::io::Error> = loop {
+            // 2.11.0 (P1-S-03, CWE-400):
+            // cap-hit check BEFORE
+            // the wall-clock timeout
+            // check. Either signal
+            // kills the child; we
+            // surface a different
+            // synthetic finding
+            // depending on which
+            // fired. The atomic
+            // load uses `SeqCst` to
+            // be consistent with the
+            // `Store` in
+            // `BytesLimitedReader`.
+            if stdout_cap_hit.load(std::sync::atomic::Ordering::SeqCst)
+                || stderr_cap_hit.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                // 2.11.0 (P1-S-03):
+                // the cap-hit path.
+                // Kill the child,
+                // reap, emit a
+                // synthetic
+                // `plugin.<name>.output-cap-exceeded`
+                // finding. Same
+                // shape as the
+                // timeout path
+                // (P1-S-02) but a
+                // distinct rule so
+                // the operator can
+                // tell which guard
+                // fired.
+                let _ = child.kill();
+                let _ = child.wait();
+                let _stdout_bytes = stdout_thread
+                    .map(|t| t.join().unwrap_or_default())
+                    .unwrap_or_default();
+                let stderr_bytes = stderr_thread
+                    .map(|t| t.join().unwrap_or_default())
+                    .unwrap_or_default();
+                let stderr_lossy = String::from_utf8_lossy(&stderr_bytes);
+                let reason = format!(
+                    "plugin `{}` exceeded the stdout/stderr cap of {} bytes and was killed; \
+                     stderr tail: {}",
+                    self.name,
+                    cap,
+                    stderr_lossy.chars().take(512).collect::<String>()
+                );
+                tracing::warn!(
+                    plugin = %self.name,
+                    binary = %self.binary.display(),
+                    cap_bytes = cap,
+                    stdout_cap_hit = stdout_cap_hit.load(std::sync::atomic::Ordering::SeqCst),
+                    stderr_cap_hit = stderr_cap_hit.load(std::sync::atomic::Ordering::SeqCst),
+                    stderr = %stderr_lossy.chars().take(2048).collect::<String>(),
+                    "P1-S-03: plugin exceeded output cap; killed"
+                );
+                return Ok(vec![Finding {
+                    severity: Severity::Warn,
+                    rule: format!("plugin.{}.output-cap-exceeded", self.name),
+                    path: String::new(),
+                    reason,
+                }]);
+            }
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
                 Ok(None) => {
@@ -580,7 +791,7 @@ impl Scanner for PluginScanner {
                 ),
             }]);
         }
-        if output.stdout.len() > default_max_output_bytes() {
+        if output.stdout.len() > max_output_bytes() {
             return Ok(vec![Finding {
                 severity: Severity::Warn,
                 rule: format!("plugin.{}.output-too-large", self.name),

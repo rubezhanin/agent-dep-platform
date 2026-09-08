@@ -2107,6 +2107,115 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   isolation. No schema change;
   no new dependency.
 
+- **P1-S-03 Plugin stdout/stderr
+  cap (TZ #1 §9 / S-03, CWE-400
+  Uncontrolled Resource
+  Consumption, closes the
+  CWE-400 attack surface for
+  the plugin output path).**
+  The pre-fix `PluginScanner::scan`
+  drained the plugin's stdout
+  via `read_to_end` with no
+  upper bound. A plugin that
+  wrote 100 GiB of garbage
+  (or an infinite stream of
+  one byte at a time) would
+  allocate 100 GiB in the
+  parent before the scan could
+  even parse the response —
+  classic CWE-400
+  (uncontrolled resource
+  consumption). The pre-fix
+  `default_max_output_bytes`
+  was 256 MiB (the documented
+  cap was honored AFTER the
+  read, not DURING it; the
+  read could allocate up to
+  the OS pipe buffer before
+  the cap was checked). The
+  post-fix design caps the
+  read DURING the `read` call
+  via a new `BytesLimitedReader`
+  adapter (a tiny `Read`
+  wrapper that stops
+  accepting bytes after
+  `cap` total bytes have been
+  consumed, then sets a
+  shared `AtomicBool`
+  cap-hit signal and returns
+  `Ok(0)` on the next read so
+  `read_to_end` exits cleanly).
+  The main wait loop checks
+  the cap-hit signal on every
+  poll and, if set, kills the
+  child (SIGKILL on Unix,
+  TerminateProcess on Windows),
+  reaps, joins the drain
+  threads, and emits a
+  synthetic
+  `plugin.<name>.output-cap-exceeded`
+  finding with severity
+  `Warn` so the operator sees
+  the failure in the SARIF /
+  text output. The cap
+  default is 16 MiB (per the
+  TZ spec range of 16-32 MiB);
+  the operator can override
+  via `AGENCY_PLUGIN_MAX_OUTPUT_BYTES`.
+  A `0` is treated as the
+  default (some shells expand
+  unset vars as `0`); a
+  negative or non-numeric
+  value is also treated as
+  the default. The cap is
+  applied to BOTH stdout and
+  stderr (a misbehaving plugin
+  must not be able to OOM the
+  parent through stderr
+  either; the synthetic
+  finding reason only uses
+  the first 512 chars of
+  stderr, but the parent
+  must not allocate beyond
+  the cap). 2 new unit tests
+  in `plugin_tests.rs`:
+  `output_cap_kills_plugin_that_writes_more_than_cap`
+  (a 64 KiB plugin is killed
+  at the 1 KiB cap; the test
+  asserts elapsed < 5s, the
+  synthetic finding has
+  rule
+  `plugin.oversized.output-cap-exceeded`,
+  severity `Warn`, and the
+  reason mentions both the
+  cap size and the kill) and
+  `output_below_cap_completes_normally`
+  (a 50-byte plugin exits
+  under the 64 KiB cap and
+  the scanner returns the
+  plugin's real findings —
+  regression-guard against a
+  naive "always fail if any
+  output exists" bug). The
+  `BytesLimitedReader` is a
+  generic `Read` adapter (no
+  plugin-specific code) and
+  the atomic load uses
+  `SeqCst` ordering to pair
+  with the `Store` in the
+  reader. **CWE-400 closed**
+  for the plugin output path.
+  The pre-existing pre-fix
+  flake
+  `oidc::tests::oidc_mock_default_is_false_in_277`
+  still appears in the
+  full-workspace parallel run
+  (an `AGENCY_OIDC_MOCK` env-
+  var race between parallel
+  test threads); passes in
+  isolation. No schema change;
+  no new dependency.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

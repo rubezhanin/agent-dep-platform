@@ -884,3 +884,177 @@ EOF
     assert_eq!(findings[0].reason, "quick");
     std::env::remove_var("AGENCY_PLUGIN_TIMEOUT_SECS");
 }
+
+// -----------------------------------------------------------------------
+// 2.11.0 (P1-S-03, TZ #1 §9 / S-03,
+// CWE-400 Uncontrolled Resource
+// Consumption) — output cap tests.
+//
+// The cap is the last-line defense
+// against a plugin that writes a
+// 100 GiB JSON envelope (or
+// infinite garbage) to stdout. The
+// pre-fix design buffered the whole
+// stdout via `read_to_end` with no
+// upper bound; a 100 GiB writer
+// would allocate 100 GiB in the
+// parent before the scan could
+// even parse the response.
+// CWE-400.
+//
+// The post-fix `BytesLimitedReader`
+// caps the read at
+// `AGENCY_PLUGIN_MAX_OUTPUT_BYTES`
+// (default 16 MiB) and signals
+// the main wait loop via an
+// `AtomicBool`. The loop kills
+// the child as soon as the
+// signal fires (fail-closed).
+//
+// The two tests below set the
+// cap to a tiny value (1 KiB)
+// so the test exercises the
+// cap-hit path without writing
+// 16 MiB on disk.
+// -----------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn output_cap_kills_plugin_that_writes_more_than_cap() {
+    use std::time::Duration;
+    // 1 KiB cap. The plugin
+    // writes 64 KiB (a JSON
+    // blob padded with 60 KiB
+    // of garbage after the
+    // closing `}`) so the cap
+    // is guaranteed to be hit.
+    // The timeout is set to
+    // 10s (generous) so the
+    // cap-hit path fires
+    // first; the timeout path
+    // would only fire if the
+    // cap-hit path is broken.
+    std::env::set_var("AGENCY_PLUGIN_TIMEOUT_SECS", "10");
+    std::env::set_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES", "1024");
+    let (dir, root) = fresh_dir();
+    // A plugin that writes 64
+    // KiB of stdout — well
+    // above the 1 KiB cap. The
+    // first 1 KiB is a valid
+    // JSON opening; the rest
+    // is padding that the
+    // BytesLimitedReader
+    // will reject at the cap
+    // boundary.
+    let script = dir.path().join("oversized_plugin.sh");
+    let payload = "x".repeat(63 * 1024);
+    fs::write(
+        &script,
+        format!(
+            r#"#!/bin/sh
+cat <<'EOF'
+{{"findings":[{{"severity":"INFO","rule":"x","path":"a","reason":"x"}}],"_padding":"{payload}"}}
+EOF
+"#
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+    }
+    let scanner = PluginScanner::new("oversized", &script);
+    let start = std::time::Instant::now();
+    let findings = scanner
+        .scan(&root, &ScanPolicy::mvp_default())
+        .expect("scan must return Ok with a synthetic finding, not Err");
+    let elapsed = start.elapsed();
+    // The scanner must return
+    // well before the 10s
+    // wall-clock timeout. The
+    // cap-hit path is the
+    // fast path (the plugin
+    // writes 64 KiB at full
+    // speed, the parent reads
+    // 1 KiB, then the cap
+    // fires and the parent
+    // kills the child — all
+    // within a few ms).
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "scan took {elapsed:?}; cap-hit path did not fire"
+    );
+    // The synthetic
+    // `output-cap-exceeded`
+    // finding is the ONLY
+    // result. The plugin's
+    // real JSON is never
+    // parsed (the cap fires
+    // before the closing
+    // `}}` is delivered).
+    assert_eq!(findings.len(), 1, "got: {findings:?}");
+    assert_eq!(findings[0].rule, "plugin.oversized.output-cap-exceeded");
+    assert_eq!(findings[0].severity, Severity::Warn);
+    assert!(
+        findings[0].reason.contains("1024 bytes"),
+        "reason should mention the cap size: {}",
+        findings[0].reason
+    );
+    assert!(
+        findings[0].reason.contains("killed"),
+        "reason should mention the kill: {}",
+        findings[0].reason
+    );
+    std::env::remove_var("AGENCY_PLUGIN_TIMEOUT_SECS");
+    std::env::remove_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES");
+}
+
+#[cfg(unix)]
+#[test]
+fn output_below_cap_completes_normally() {
+    // The cap is set to 64
+    // KiB; the plugin writes
+    // ~50 bytes of valid JSON.
+    // The scanner must return
+    // the plugin's real
+    // finding, NOT a
+    // `output-cap-exceeded`
+    // synthetic finding. This
+    // is the regression-guard
+    // for the cap logic: a
+    // naive "always fail if
+    // any output exists"
+    // implementation would
+    // kill every plugin.
+    std::env::set_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES", "65536");
+    let (dir, root) = fresh_dir();
+    fs::write(root.join("a.md"), "harmless").unwrap();
+    let script = dir.path().join("small_plugin.sh");
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+cat <<'EOF'
+{"findings":[{"severity":"INFO","rule":"custom.small","path":"a.md","reason":"tiny"}]}
+EOF
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+    }
+    let scanner = PluginScanner::new("small", &script);
+    let findings = scanner
+        .scan(&root, &ScanPolicy::mvp_default())
+        .expect("scan must return Ok");
+    assert_eq!(findings.len(), 1, "got: {findings:?}");
+    assert_eq!(findings[0].rule, "plugin.small.custom.small");
+    assert_eq!(findings[0].reason, "tiny");
+    std::env::remove_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES");
+}
