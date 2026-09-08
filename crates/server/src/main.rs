@@ -23,6 +23,15 @@ use agent_dep_server::{parse_bind, parse_port};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
+    // P1-CLI-01 (TZ #2 WP-4.1 / SEC-11, CWE-15):
+    // warn if the operator has set CLI-only env
+    // vars (AGENCY_DATA_DIR / AGENCY_HERMES_HOME
+    // / AGENCY_CAS_ROOT) in the same shell that
+    // runs the server. The server ignores them
+    // (it has its own AGENCY_SERVER_DATA_DIR) but
+    // the warning prevents a silent inheritance
+    // misconfiguration.
+    agent_dep_server::env_validate::warn_cli_only_envs();
     let args: Vec<String> = std::env::args().collect();
     let bind = parse_bind(&args);
     let port = parse_port(&args);

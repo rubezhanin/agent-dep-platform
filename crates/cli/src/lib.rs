@@ -10,6 +10,7 @@
 pub mod cli_def;
 pub mod commands;
 pub mod data_dir;
+pub mod env_validate;
 pub mod output;
 
 #[cfg(test)]

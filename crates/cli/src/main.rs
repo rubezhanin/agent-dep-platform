@@ -10,6 +10,7 @@ use agent_dep_cli::cli_def::{Cli, Command};
 use agent_dep_cli::commands::{
     catalog, completion, deploy, hermes, lock, mcp, rollback, serve, status, system,
 };
+use agent_dep_cli::env_validate::{warn_server_only_envs, CliEnv};
 use clap::Parser;
 use std::process::ExitCode;
 
@@ -24,6 +25,26 @@ async fn main() -> ExitCode {
             e.exit();
         }
     };
+    // P1-CLI-01 (TZ #2 WP-4.1 / SEC-11, CWE-15):
+    // validate the three CLI-owned env vars
+    // (AGENCY_DATA_DIR / AGENCY_HERMES_HOME /
+    // AGENCY_CAS_ROOT) before dispatching. A bad
+    // value here would silently misroute the
+    // catalog / deploy / ingest steps; a `..`
+    // segment would be a path-traversal
+    // confusion vector. Fail fast with a clear
+    // message naming the offending env var.
+    if let Err(e) = CliEnv::parse() {
+        eprintln!("error: {e}");
+        return ExitCode::from(2);
+    }
+    // P1-CLI-01: warn if the operator has set
+    // server-only env vars (e.g. AGENCY_OIDC_*) in
+    // the same shell that runs the CLI. The CLI
+    // ignores them; the warning prevents the
+    // "I set this, why didn't the CLI pick it
+    // up" support ticket.
+    warn_server_only_envs();
     match dispatch(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

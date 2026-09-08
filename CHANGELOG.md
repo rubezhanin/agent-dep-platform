@@ -2849,6 +2849,159 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   the same data
   structure.
 
+- **P1-CLI-01 Server-CLI
+  env decoupling +
+  clap-validate each
+  env input (TZ #2
+  WP-4.1 / SEC-11,
+  CWE-15 External
+  Control of System
+  or Configuration
+  Setting).** The
+  pre-fix CLI read
+  `AGENCY_DATA_DIR`,
+  `AGENCY_HERMES_HOME`,
+  `AGENCY_CAS_ROOT` as
+  raw strings; the
+  pre-fix server read
+  `AGENCY_SERVER_DATA_DIR`
+  + `AGENCY_OIDC_*` +
+  `AGENCY_VAULT_*` +
+  `AGENCY_BIND_IP` /
+  `AGENCY_COOKIE_SECURE`
+  + `AGENCY_DATA_DIR`.
+  Both processes
+  inherit the parent
+  shell env, so an
+  operator running
+  `agency` from the
+  same shell that
+  hosts `agency-server`
+  could (1) silently
+  misconfigure the
+  CLI by setting a
+  server-only env
+  var (the CLI
+  ignored it, the
+  operator thought
+  the CLI picked it
+  up), or (2)
+  redirect the server
+  at the CLI's
+  per-user data dir
+  via `AGENCY_DATA_DIR`.
+  **Exploit scenario
+  (pre-fix):** an
+  operator who sets
+  `AGENCY_OIDC_ISSUER`
+  in their interactive
+  shell (to point the
+  server at the
+  staging IdP for a
+  quick test) and
+  then runs
+  `agency catalog scan
+  --format json` from
+  the same shell gets
+  a clean scan output
+  with no warning
+  that the server
+  is now misconfigured.
+  Later the server
+  starts up pointed
+  at staging and
+  validates tokens
+  against the wrong
+  IdP. CWE-15: an
+  external input
+  (the env) controlled
+  the configuration
+  of a system the
+  operator did not
+  intend to configure.
+  Post-fix, two new
+  modules:
+  `agent_dep_cli::env_validate`
+  (with a typed
+  `CliEnv { data_dir,
+  hermes_home, cas_root }`
+  struct + validation
+  for empty / NUL /
+  `..` parent-dir
+  segment on each of
+  the three CLI-owned
+  envs) and
+  `agent_dep_server::env_validate`
+  (with a
+  `warn_cli_only_envs`
+  function for the
+  symmetric server
+  warning). The CLI
+  `main()` calls
+  `CliEnv::parse()`
+  after clap parses
+  argv and
+  `warn_server_only_envs()`
+  to print a
+  one-line `eprintln!`
+  for each server-only
+  env var the
+  operator has set;
+  the server `main()`
+  calls
+  `warn_cli_only_envs()`
+  for the three
+  CLI-only env vars.
+  Both warnings are
+  non-fatal (the
+  operator may have
+  set the other side
+  intentionally), but
+  the message names
+  the correct env to
+  use. 11 new unit
+  tests (9 in CLI
+  env_validate + 2 in
+  server env_validate):
+  parse defaults
+  when env unset /
+  explicit override /
+  empty rejection /
+  NUL rejection (Unix
+  only — Windows
+  `set_var` rejects
+  NUL at the WinAPI
+  level, so the
+  check is dead code
+  there but the
+  production check
+  still runs on Unix) /
+  `..` rejection /
+  hermes_home empty /
+  cas_root empty /
+  warn does not panic
+  + warn list includes
+  known OIDC / vault /
+  bind vars /
+  server warn list
+  includes all three
+  CLI envs. 652 tests
+  pass, clippy clean,
+  fmt clean on the
+  touched files.
+  **CWE-15 closed** for
+  the CLI-server env
+  cross-contamination
+  attack surface. No
+  residual risk on
+  Linux; on Windows
+  the NUL check is
+  unreachable (the
+  OS rejects NUL at
+  the set_var call)
+  but every other
+  check still applies.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added
