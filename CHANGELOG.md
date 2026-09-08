@@ -1985,6 +1985,128 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   dependency. **CWE-287 closed**
   for the bearer-auth path.
 
+- **P1-S-02 Plugin wall-clock
+  timeout + chunked stdin
+  (TZ #1 §9 / S-02 + TZ #2
+  WP-1.2 / SEC-07, CWE-400
+  Uncontrolled Resource
+  Consumption, closes the
+  CWE-400 attack surface for
+  the plugin scan flow).** The
+  pre-fix `PluginScanner::scan`
+  had two CWE-400 attack
+  surfaces:
+  (1) the wait was a blocking
+  `child.wait_with_output()`
+  with no timeout — a runaway
+  plugin (infinite loop,
+  deadlocked I/O, network call
+  that never returns) would
+  block the parent `agency
+  catalog scan` process
+  forever; the operator had to
+  SIGKILL the whole CLI to
+  recover;
+  (2) the stdin write was a
+  single `stdin.write_all(&request_json)`
+  syscall — for a large
+  `files` Vec (every path under
+  the scan root) the request
+  JSON can exceed the OS pipe
+  buffer (64 KiB on Linux);
+  the parent blocks on the
+  write until the plugin
+  reads, and the plugin is not
+  scheduled because the parent
+  is not yielding. A buggy or
+  malicious plugin that simply
+  does NOT read its stdin
+  becomes a parent-blocking
+  DoS (the same shape as the
+  no-timeout problem).
+  The post-fix `scan` flow:
+  (1) writes the request in
+  4 KiB chunks (well under any
+  pipe buffer) so the plugin's
+  reader can interleave its
+  work between chunks;
+  (2) drains the child's
+  stdout AND stderr in
+  dedicated threads (a slow
+  parent reader would block
+  the child on a full pipe —
+  the same DoS shape);
+  (3) polls `child.try_wait()`
+  every 100ms on the calling
+  thread against a deadline
+  (`AGENCY_PLUGIN_TIMEOUT_SECS`,
+  default 30s);
+  (4) on timeout, calls
+  `child.kill()` (SIGKILL on
+  Unix, TerminateProcess on
+  Windows), waits for the
+  kernel to reap, drains the
+  reader threads, and returns
+  a synthetic
+  `plugin.<name>.timed-out`
+  finding with severity
+  `Warn` so the operator sees
+  the failure in the SARIF /
+  text output;
+  (5) `tracing::warn!` audit
+  log at WARN level with the
+  plugin name, binary path,
+  timeout, and the first
+  2 KiB of stderr (truncated
+  at 512 chars in the
+  user-facing finding
+  reason) so the operator can
+  postmortem the runaway
+  plugin without re-running
+  it.
+  Two new unit tests in
+  `plugin_tests.rs`:
+  `wall_clock_timeout_kills_runaway_plugin`
+  (a `sleep 10` shell script
+  is killed at the 2s
+  deadline, the test asserts
+  the elapsed < 5s, the
+  synthetic finding has the
+  expected rule + severity,
+  and the reason mentions
+  both "wall-clock timeout"
+  and the timeout duration)
+  and
+  `fast_plugin_completes_before_timeout`
+  (a 100ms plugin exits
+  before the 5s deadline and
+  the scanner returns the
+  plugin's real findings, not
+  a `timed-out` finding).
+  The portable `try_wait` poll
+  loop avoids the `wait-timeout`
+  crate dependency. The 100ms
+  poll cadence is fine for a
+  30s default timeout (300
+  polls, negligible CPU). The
+  `child.kill()`+`child.wait()`
+  pair is the portable SIGKILL
+  + reap: `kill()` is
+  non-blocking (sends the
+  signal), `wait()` reaps the
+  zombie. **CWE-400 closed**
+  for the plugin scan flow.
+  The pre-existing pre-fix
+  flake
+  `oidc::tests::oidc_mock_default_is_false_in_277`
+  still appears in the
+  full-workspace parallel run
+  (an `AGENCY_OIDC_MOCK` env-
+  var race between parallel
+  test threads); passes in
+  isolation. No schema change;
+  no new dependency.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

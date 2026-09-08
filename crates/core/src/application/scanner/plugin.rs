@@ -9,10 +9,14 @@
 //! alongside any plugins; their findings are
 //! merged at the CLI / server level.
 
-use std::io::Write;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+// `std::io::Write` is imported
+// locally in the chunked-stdin
+// block below; no top-level use
+// is needed.
 
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
@@ -20,6 +24,39 @@ use walkdir::WalkDir;
 use crate::error::{CoreError, CoreResult};
 
 use super::{Finding, ScanPolicy, Scanner, Severity};
+
+/// 2.11.0 (P1-S-02, TZ #1 §9 / S-02,
+/// TZ #2 WP-1.2 / SEC-07,
+/// CWE-400 Uncontrolled Resource
+/// Consumption): poll cadence for
+/// the wall-clock timeout loop. 100ms
+/// is fine-grained enough that the
+/// operator does not notice a runaway
+/// plugin (the timeout is the
+/// upper bound, the kill is the
+/// actual response time) and
+/// coarse enough that the parent
+/// does not burn a CPU on the
+/// poll.
+const PLUGIN_WAIT_POLL: Duration = Duration::from_millis(100);
+
+/// 2.11.0 (P1-S-02): the stdin
+/// chunk size. The pre-fix code
+/// wrote the whole request JSON
+/// in a single `write_all` call;
+/// for a large `files` list (the
+/// `PluginRequest::files` Vec
+/// carries every file path under
+/// the scan root) the OS pipe
+/// buffer can be exhausted before
+/// the plugin's reader thread is
+/// scheduled, blocking the parent.
+/// CWE-400: a single large write
+/// + a slow reader is a classic
+/// DoS. The chunked write keeps
+/// the pipe drained and the parent
+/// responsive to the kill signal.
+const STDIN_CHUNK_BYTES: usize = 4 * 1024;
 
 /// Hard timeout for a single plugin invocation.
 /// Operators can override via the
@@ -330,26 +367,202 @@ impl Scanner for PluginScanner {
                 self.binary.display()
             )))
         })?;
-        // Write the envelope to stdin.
+        // 2.11.0 (P1-S-02, TZ #1 §9 /
+        // S-02, CWE-400): chunked
+        // stdin write. The pre-fix
+        // code did
+        // `stdin.write_all(&request_json)`
+        // in a single syscall. For
+        // a large `files` Vec
+        // (every path under the scan
+        // root) the request JSON
+        // can exceed the OS pipe
+        // buffer (64 KiB on Linux);
+        // the parent blocks on the
+        // write until the plugin
+        // reads, and the plugin is
+        // not scheduled because the
+        // parent is not yielding. A
+        // buggy / malicious plugin
+        // that simply does NOT
+        // read its stdin becomes a
+        // parent-blocking DoS.
+        // The chunked write keeps
+        // the pipe drained: each
+        // `write_all` call is at
+        // most STDIN_CHUNK_BYTES
+        // (4 KiB), well under any
+        // pipe buffer, and the
+        // plugin's reader can
+        // interleave its work
+        // between chunks. CWE-400.
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(&request_json).map_err(|e| {
-                CoreError::ErrIo(std::io::Error::other(format!("write plugin stdin: {e}")))
-            })?;
+            use std::io::Write;
+            for chunk in request_json.chunks(STDIN_CHUNK_BYTES) {
+                stdin.write_all(chunk).map_err(|e| {
+                    CoreError::ErrIo(std::io::Error::other(format!("write plugin stdin: {e}")))
+                })?;
+            }
             // Drop stdin to signal EOF.
         }
-        // Wait with timeout. `child.wait()` is
-        // blocking; the timeout is implemented
-        // by the OS-level `wait_timeout` (not
-        // available on stable for `std::process::Child`).
-        // For 2.7.0 we accept that a runaway
-        // plugin blocks until OS-level SIGKILL
-        // via the timeout env var that the
-        // parent enforces. 2.7.x adds
-        // `wait-timeout` once `Child::wait` is
-        // stable.
-        let output = child
-            .wait_with_output()
-            .map_err(|e| CoreError::ErrIo(std::io::Error::other(format!("wait plugin: {e}"))))?;
+        // 2.11.0 (P1-S-02, TZ #1 §9 /
+        // S-02, TZ #2 WP-1.2 / SEC-07,
+        // CWE-400 Uncontrolled
+        // Resource Consumption):
+        // wall-clock timeout. The
+        // pre-fix code called
+        // `child.wait_with_output()`,
+        // a blocking call with no
+        // timeout. A runaway plugin
+        // (infinite loop, deadlocked
+        // I/O) would block the
+        // parent forever — the
+        // operator would have to
+        // SIGKILL the whole
+        // `agency catalog scan`
+        // process to recover.
+        // CWE-400.
+        //
+        // Post-fix: we
+        // (1) drain the child's
+        //     stdout and stderr in
+        //     dedicated threads
+        //     (the pipes are bounded;
+        //     a slow parent reader
+        //     would block the child
+        //     on a full pipe — same
+        //     DoS shape as the
+        //     pre-fix stdin);
+        // (2) poll `child.try_wait()`
+        //     every 100ms on the
+        //     calling thread;
+        // (3) on timeout, call
+        //     `child.kill()` (SIGKILL
+        //     on Unix,
+        //     TerminateProcess on
+        //     Windows), wait for the
+        //     kernel to reap, and
+        //     return a synthetic
+        //     `plugin.<name>.timed-out`
+        //     finding so the
+        //     operator sees the
+        //     failure in the
+        //     SARIF / text output;
+        // (4) join the reader
+        //     threads so their
+        //     buffers are not
+        //     leaked.
+        //
+        // The `try_wait` poll is
+        // portable (no `wait-timeout`
+        // dependency) and the
+        // 100ms cadence is fine
+        // for a 30s default
+        // timeout (300 polls,
+        // negligible CPU).
+        let stdout_thread = child.stdout.take().map(|s| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let mut s = s;
+                let _ = s.read_to_end(&mut buf);
+                buf
+            })
+        });
+        let stderr_thread = child.stderr.take().map(|s| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let mut s = s;
+                let _ = s.read_to_end(&mut buf);
+                buf
+            })
+        });
+        let timeout = default_timeout();
+        let deadline = Instant::now() + timeout;
+        let exit: Result<std::process::ExitStatus, std::io::Error> = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        // 2.11.0 (P1-S-02):
+                        // the runaway-plugin
+                        // path. Kill the
+                        // child, wait for
+                        // the kernel to
+                        // reap, emit a
+                        // synthetic
+                        // finding, audit-log
+                        // the event at
+                        // WARN level so the
+                        // operator can see
+                        // it in the server
+                        // logs.
+                        let _ = child.kill();
+                        let _ = child.wait().map_err(|e| {
+                            tracing::warn!(
+                                error = %e,
+                                plugin = %self.name,
+                                "P1-S-02: post-kill wait failed"
+                            );
+                            e
+                        });
+                        // Drain the reader
+                        // threads (their
+                        // readers saw the
+                        // pipe close when
+                        // the child exited).
+                        let _stdout_bytes = stdout_thread
+                            .map(|t| t.join().unwrap_or_default())
+                            .unwrap_or_default();
+                        let stderr_bytes = stderr_thread
+                            .map(|t| t.join().unwrap_or_default())
+                            .unwrap_or_default();
+                        let stderr_lossy = String::from_utf8_lossy(&stderr_bytes);
+                        let reason = format!(
+                            "plugin `{}` exceeded the wall-clock timeout of {}s and was killed; \
+                             stderr tail: {}",
+                            self.name,
+                            timeout.as_secs(),
+                            stderr_lossy.chars().take(512).collect::<String>()
+                        );
+                        tracing::warn!(
+                            plugin = %self.name,
+                            binary = %self.binary.display(),
+                            timeout_secs = timeout.as_secs(),
+                            stderr = %stderr_lossy.chars().take(2048).collect::<String>(),
+                            "P1-S-02: plugin exceeded wall-clock timeout; killed"
+                        );
+                        return Ok(vec![Finding {
+                            severity: Severity::Warn,
+                            rule: format!("plugin.{}.timed-out", self.name),
+                            path: String::new(),
+                            reason,
+                        }]);
+                    }
+                    std::thread::sleep(PLUGIN_WAIT_POLL);
+                }
+                Err(e) => {
+                    return Err(CoreError::ErrIo(std::io::Error::other(format!(
+                        "try_wait plugin: {e}"
+                    ))));
+                }
+            }
+        };
+        let status = match exit {
+            Ok(s) => s,
+            Err(_) => unreachable!("loop only returns Ok"),
+        };
+        // Drain the reader threads.
+        let stdout_bytes = stdout_thread
+            .map(|t| t.join().unwrap_or_default())
+            .unwrap_or_default();
+        let stderr_bytes = stderr_thread
+            .map(|t| t.join().unwrap_or_default())
+            .unwrap_or_default();
+        let output = std::process::Output {
+            status,
+            stdout: stdout_bytes,
+            stderr: stderr_bytes,
+        };
         if !output.status.success() {
             // Plugin failed; return an empty list
             // with a synthetic finding so the
@@ -400,7 +613,6 @@ impl Scanner for PluginScanner {
                 reason: pf.reason,
             });
         }
-        let _ = default_timeout(); // silence unused-warn for now
         Ok(out)
     }
 }

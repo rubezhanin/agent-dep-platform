@@ -729,3 +729,158 @@ fn canonical_bytes_strip_signature_and_signer_id() {
     );
     assert!(s.contains("plug"), "canonical must keep name: {s}");
 }
+
+// -----------------------------------------------------------------------
+// 2.11.0 (P1-S-02, TZ #1 §9 / S-02,
+// TZ #2 WP-1.2 / SEC-07,
+// CWE-400 Uncontrolled Resource
+// Consumption) — wall-clock timeout
+// tests.
+//
+// The wall-clock timeout is the
+// last-line defense against a
+// runaway plugin: an infinite
+// loop, a deadlock, or a
+// network call that never
+// returns would otherwise block
+// the parent `agency catalog
+// scan` process forever. The
+// post-fix `PluginScanner::scan`
+// polls `child.try_wait` every
+// 100ms against a deadline
+// (`AGENCY_PLUGIN_TIMEOUT_SECS`,
+// default 30s); on timeout, it
+// `child.kill()`s the plugin
+// (SIGKILL on Unix,
+// TerminateProcess on Windows),
+// waits for the kernel to reap,
+// and returns a synthetic
+// `plugin.<name>.timed-out`
+// finding so the operator sees
+// the failure in the SARIF /
+// text output. The two tests
+// below use a short timeout (2s)
+// and a 10s sleep so the test
+// finishes in ~3-4s end-to-end
+// even on a slow CI machine.
+// -----------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn wall_clock_timeout_kills_runaway_plugin() {
+    use std::time::Duration;
+    // Set a 2-second timeout for
+    // this test (the default is
+    // 30s; the test would take
+    // 30s+ otherwise). The env
+    // var is read by
+    // `default_timeout()` at
+    // scan time, so it must be
+    // set BEFORE the scan call.
+    // The previous test's env
+    // may have left a stale
+    // value; `set_var` is the
+    // only safe way to override
+    // for this test (the helper
+    // re-reads on every call).
+    std::env::set_var("AGENCY_PLUGIN_TIMEOUT_SECS", "2");
+    let (dir, root) = fresh_dir();
+    // A 10s-sleep script. The
+    // wall-clock timeout at 2s
+    // is well under the sleep
+    // duration, so the plugin
+    // is guaranteed to be killed
+    // before it exits
+    // naturally.
+    let script = dir.path().join("hanging_plugin.sh");
+    fs::write(&script, "#!/bin/sh\nsleep 10\necho '{\"findings\":[]}'\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+    }
+    let scanner = PluginScanner::new("hanging", &script);
+    let start = std::time::Instant::now();
+    let findings = scanner
+        .scan(&root, &ScanPolicy::mvp_default())
+        .expect("scan must return Ok with a synthetic finding, not Err");
+    let elapsed = start.elapsed();
+    // The scanner must return
+    // well before the script's
+    // 10s sleep would have
+    // completed. The deadline is
+    // 2s + the 100ms poll
+    // granularity, so we assert
+    // < 5s to leave headroom on
+    // a slow CI machine.
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "scan took {elapsed:?}; wall-clock timeout did not fire"
+    );
+    // The synthetic finding is
+    // the ONLY result. The
+    // rule prefix is
+    // `plugin.<name>.timed-out`.
+    assert_eq!(findings.len(), 1, "got: {findings:?}");
+    assert_eq!(findings[0].rule, "plugin.hanging.timed-out");
+    assert_eq!(findings[0].severity, Severity::Warn);
+    assert!(
+        findings[0].reason.contains("wall-clock timeout"),
+        "reason should mention timeout: {}",
+        findings[0].reason
+    );
+    assert!(
+        findings[0].reason.contains("2s"),
+        "reason should mention the timeout duration: {}",
+        findings[0].reason
+    );
+    // Clean up the env var so
+    // the next test inherits a
+    // known default.
+    std::env::remove_var("AGENCY_PLUGIN_TIMEOUT_SECS");
+}
+
+#[cfg(unix)]
+#[test]
+fn fast_plugin_completes_before_timeout() {
+    // The timeout is set to 5s
+    // (generous) and the plugin
+    // exits in < 100ms. The
+    // scanner must return the
+    // plugin's findings verbatim
+    // (no synthetic
+    // `timed-out` finding).
+    std::env::set_var("AGENCY_PLUGIN_TIMEOUT_SECS", "5");
+    let (dir, root) = fresh_dir();
+    fs::write(root.join("a.md"), "harmless").unwrap();
+    let script = dir.path().join("fast_plugin.sh");
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+cat <<'EOF'
+{"findings":[{"severity":"INFO","rule":"custom.fast","path":"a.md","reason":"quick"}]}
+EOF
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+    }
+    let scanner = PluginScanner::new("fast", &script);
+    let findings = scanner
+        .scan(&root, &ScanPolicy::mvp_default())
+        .expect("scan must return Ok");
+    // The plugin's real
+    // finding, NOT a
+    // `timed-out` finding.
+    assert_eq!(findings.len(), 1, "got: {findings:?}");
+    assert_eq!(findings[0].rule, "plugin.fast.custom.fast");
+    assert_eq!(findings[0].reason, "quick");
+    std::env::remove_var("AGENCY_PLUGIN_TIMEOUT_SECS");
+}
