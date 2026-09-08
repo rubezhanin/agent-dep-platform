@@ -121,3 +121,131 @@ fn ingest_local_missing_divisions_errors() {
     let result = svc.ingest_local(&source, None);
     assert!(result.is_err(), "missing divisions.json should fail ingest");
 }
+
+// -----------------------------------------------------------------------
+// 2.11.0 (P1-G-05, TZ #1 §7 / G-05,
+// CWE-345 Insufficient Verification
+// of Data Authenticity) — validation
+// gate tests.
+//
+// The pre-fix design flipped the
+// snapshot status to `Blocked` only
+// on scanner BLOCK findings. A
+// snapshot with a parse error
+// (malformed YAML, missing
+// required fields, duplicate
+// agent IDs) was still marked
+// `Active` because the rejection
+// was only surfaced in the
+// `IngestReport` for the operator
+// to notice. The post-fix design
+// treats a validation failure
+// as a hard gate: any rejected
+// agent flips the snapshot to
+// `Blocked` so the planner /
+// deployer / approval flow can
+// refuse it.
+// -----------------------------------------------------------------------
+
+#[test]
+fn p1_g05_validation_failure_flips_snapshot_to_blocked() {
+    // A catalog where one agent
+    // file has malformed YAML.
+    // The parse must fail,
+    // the rejected list must be
+    // non-empty, and the snapshot
+    // status must be `Blocked`
+    // (NOT `Active`).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    write_file(
+        &root.join("divisions.json"),
+        r#"{"divisions":[{"id":"core","display_order":0,"label":"Core"}]}"#,
+    );
+    let root = dir.path().to_path_buf();
+    write_file(
+        &root.join("divisions.json"),
+        r#"{"divisions":[{"id":"core","order":0,"label":"Core","description":"core"}]}"#,
+    );
+    let agents = root.join("agents").join("core");
+    std::fs::create_dir_all(&agents).unwrap();
+    // Bad: missing required
+    // `description` field in the
+    // frontmatter (this is the
+    // documented parse failure
+    // for the v1 ingest path).
+    write_file(&agents.join("broken.md"), "---\nname: broken\n---\nbody\n");
+    let source = Source::new(SourceKind::local(root.clone()));
+    let svc = IngestService::new();
+    let (result, _report) = svc
+        .ingest_local(&source, None)
+        .expect("ingest must return Ok with a Blocked snapshot");
+    let snap = &result.snapshot;
+    assert_eq!(
+        snap.status,
+        crate::domain::source::SnapshotStatus::Blocked,
+        "validation failure must flip status to Blocked (P1-G-05); \
+         pre-fix this snapshot was Active even though one agent \
+         failed to parse (CWE-345)"
+    );
+    // The audit note names the
+    // cause so the operator's
+    // log shows WHY the snapshot
+    // is blocked.
+    let note = snap.scan_note.as_deref().unwrap_or("");
+    assert!(
+        note.contains("validation"),
+        "scan_note should name the validation gate: {note}"
+    );
+    assert!(
+        note.contains("1 rejected"),
+        "scan_note should include the rejected count: {note}"
+    );
+    // The other pipeline steps
+    // (snapshot identity, file
+    // hash, etc.) must still run
+    // — the validation gate is
+    // about the FINAL status,
+    // not about skipping the
+    // rest of the pipeline.
+    assert!(!snap.commit_sha.is_empty());
+    assert!(snap.artifact_manifest_hash.is_some());
+}
+
+#[test]
+fn p1_g05_clean_validation_keeps_snapshot_active() {
+    // Regression-guard: the
+    // validation gate must NOT
+    // false-positive on a clean
+    // catalog. A source with a
+    // well-formed `divisions.json`
+    // and one well-formed agent
+    // must end up with
+    // `Active` status.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    write_file(
+        &root.join("divisions.json"),
+        r#"{"divisions":[{"id":"core","display_order":0,"label":"Core"}]}"#,
+    );
+    let agents = root.join("agents").join("core");
+    std::fs::create_dir_all(&agents).unwrap();
+    write_file(
+        &root.join("divisions.json"),
+        r#"{"divisions":[{"id":"core","order":0,"label":"Core","description":"core"}]}"#,
+    );
+    write_file(
+        &agents.join("ok.md"),
+        "---\nid: ok\nname: ok\ndivision: core\nrole: dev\ndescription: a valid agent\nversion: 1.0.0\n---\nbody\n",
+    );
+    let source = Source::new(SourceKind::local(root.clone()));
+    let svc = IngestService::new();
+    let (result, _report) = svc
+        .ingest_local(&source, None)
+        .expect("clean ingest must return Ok with an Active snapshot");
+    assert_eq!(
+        result.snapshot.status,
+        crate::domain::source::SnapshotStatus::Active,
+        "clean validation must NOT trip the P1-G-05 gate"
+    );
+}

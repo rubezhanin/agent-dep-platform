@@ -274,12 +274,14 @@ pub fn check_repo_quotas(dest: &Path, quotas: &RepoQuotas) -> CoreResult<()> {
 /// `.git` size quota.
 fn dir_size(path: &Path) -> u64 {
     let mut total = 0u64;
-    for entry in walkdir::WalkDir::new(path).follow_links(false) {
-        if let Ok(e) = entry {
-            if e.file_type().is_file() {
-                if let Ok(m) = e.metadata() {
-                    total = total.saturating_add(m.len());
-                }
+    for e in walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+    {
+        if e.file_type().is_file() {
+            if let Ok(m) = e.metadata() {
+                total = total.saturating_add(m.len());
             }
         }
     }

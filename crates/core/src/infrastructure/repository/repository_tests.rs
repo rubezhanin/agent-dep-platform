@@ -2,9 +2,15 @@
 //!
 //! All tests use a file-backed SQLite DB in a tempdir (not `:memory:`) so
 //! the migration, the writes, and the read-backs share the same database
-//! across pool acquires. The fixture builder creates a tiny catalog
-//! (one division, two valid agents, one broken agent) so `IngestService`
-//! can produce a realistic `IngestResult` we can persist.
+//! across pool acquires. The default fixture (`Fixture::new`) creates a
+//! catalog with a valid agent, a valid sensitive agent, and a third
+//! agent whose `id` does not match the file stem — that mismatch is the
+//! canonical "rejected" entry exercised by
+//! `record_snapshot_persists_divisions_agents_and_files` and by the
+//! P1-G-05 validation-gate tests. A second builder, `Fixture::clean`,
+//! omits the broken agent so the supersede tests can observe the
+//! `Active → Active → Superseded` happy path now that the validation
+//! gate flips rejected-bearing snapshots to `Blocked`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,64 +32,76 @@ struct Fixture {
     root: PathBuf,
 }
 
+const DIVISIONS_JSON: &str = r#"{
+    "_note": "fixture",
+    "divisions": [
+        {"id": "engineering", "order": 1, "label": "Engineering", "description": "Eng"}
+    ]
+}"#;
+
+const BE_MD: &str = "---\n\
+     id: be\n\
+     name: Backend Engineer\n\
+     division: engineering\n\
+     role: builds APIs\n\
+     description: backend\n\
+     tools: [claude-code, hermes]\n\
+     activation_phrases: [design an api, write a service]\n\
+     version: 1.0.0\n\
+     ---\n\
+     You are a backend engineer.\n";
+
+const FE_MD: &str = "---\n\
+     id: fe\n\
+     name: Frontend Engineer\n\
+     division: engineering\n\
+     role: builds UIs\n\
+     description: frontend\n\
+     sensitive: true\n\
+     version: 0.2.0\n\
+     ---\n\
+     You are a frontend engineer.\n";
+
+const BROKEN_MD: &str = "---\n\
+     id: actually-something-else\n\
+     name: Broken\n\
+     division: engineering\n\
+     role: nothing\n\
+     description: intentionally wrong\n\
+     version: 0.0.1\n\
+     ---\n\
+     Intentionally wrong; the `id` does not match the file stem.\n";
+
 impl Fixture {
+    /// Canonical fixture: 1 valid agent (be), 1 valid sensitive agent
+    /// (fe), 1 broken agent (broken.md — mismatching id). Used by
+    /// tests that explicitly exercise the rejected-vec / Blocked
+    /// status flow.
     fn new() -> Self {
+        let fx = Self::empty();
+        fs::write(fx.root.join("agents/engineering/be.md"), BE_MD).expect("write be.md");
+        fs::write(fx.root.join("agents/engineering/fe.md"), FE_MD).expect("write fe.md");
+        fs::write(fx.root.join("agents/engineering/broken.md"), BROKEN_MD)
+            .expect("write broken.md");
+        fx
+    }
+
+    /// Clean fixture: only `be.md` and `fe.md`, no rejected entries.
+    /// Used by supersede tests that need an `Active → Active →
+    /// Superseded` happy path now that the P1-G-05 validation gate
+    /// flips rejected-bearing snapshots to `Blocked`.
+    fn clean() -> Self {
+        let fx = Self::empty();
+        fs::write(fx.root.join("agents/engineering/be.md"), BE_MD).expect("write be.md");
+        fs::write(fx.root.join("agents/engineering/fe.md"), FE_MD).expect("write fe.md");
+        fx
+    }
+
+    fn empty() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
-        fs::write(
-            root.join("divisions.json"),
-            r#"{
-                "_note": "fixture",
-                "divisions": [
-                    {"id": "engineering", "order": 1, "label": "Engineering", "description": "Eng"}
-                ]
-            }"#,
-        )
-        .expect("write divisions");
+        fs::write(root.join("divisions.json"), DIVISIONS_JSON).expect("write divisions");
         fs::create_dir_all(root.join("agents/engineering")).expect("mkdir agents");
-        fs::write(
-            root.join("agents/engineering/be.md"),
-            "---\n\
-             id: be\n\
-             name: Backend Engineer\n\
-             division: engineering\n\
-             role: builds APIs\n\
-             description: backend\n\
-             tools: [claude-code, hermes]\n\
-             activation_phrases: [design an api, write a service]\n\
-             version: 1.0.0\n\
-             ---\n\
-             You are a backend engineer.\n",
-        )
-        .expect("write be.md");
-        fs::write(
-            root.join("agents/engineering/fe.md"),
-            "---\n\
-             id: fe\n\
-             name: Frontend Engineer\n\
-             division: engineering\n\
-             role: builds UIs\n\
-             description: frontend\n\
-             sensitive: true\n\
-             version: 0.2.0\n\
-             ---\n\
-             You are a frontend engineer.\n",
-        )
-        .expect("write fe.md");
-        // Bad agent: id mismatches file stem.
-        fs::write(
-            root.join("agents/engineering/broken.md"),
-            "---\n\
-             id: actually-something-else\n\
-             name: Broken\n\
-             division: engineering\n\
-             role: x\n\
-             description: x\n\
-             version: 1.0.0\n\
-             ---\n\
-             body\n",
-        )
-        .expect("write broken.md");
         Self { _dir: dir, root }
     }
 }
@@ -215,7 +233,11 @@ async fn record_snapshot_persists_divisions_agents_and_files() {
 async fn record_snapshot_supersedes_previous_active() {
     let (_dir, db) = make_db().await;
     let repo = IngestRepository::new(db.pool().clone());
-    let fx = Fixture::new();
+    // Use the clean fixture (no broken agent) so the first ingest is
+    // `Active` rather than `Blocked`. The validation gate (P1-G-05)
+    // flips rejected-bearing snapshots to `Blocked`, so the default
+    // fixture would never produce an `Active` snapshot to supersede.
+    let fx = Fixture::clean();
     let src = make_source(&fx.root);
     let source_id = repo.upsert_source(&src, false).await.expect("upsert");
 
@@ -272,7 +294,12 @@ async fn record_snapshot_supersedes_previous_active() {
 async fn record_snapshot_does_not_supersede_when_status_not_active() {
     let (_dir, db) = make_db().await;
     let repo = IngestRepository::new(db.pool().clone());
-    let fx = Fixture::new();
+    // Use the clean fixture (no broken agent) so the second ingest
+    // can land in `Active`. The default fixture's broken.md would
+    // make both ingests `Blocked` (P1-G-05 validation gate), and
+    // the supersede-vs-Blocked test would not exercise the
+    // `Blocked → Active` transition.
+    let fx = Fixture::clean();
     let src = make_source(&fx.root);
     let source_id = repo.upsert_source(&src, false).await.expect("upsert");
 

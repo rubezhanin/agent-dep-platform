@@ -225,8 +225,73 @@ impl IngestService {
             }
         }
         let blocked = findings_block > 0;
-        let scan_note = if findings.is_empty() {
+        // 2.11.0 (P1-G-05, TZ #1 §7 /
+        // G-05, CWE-345 Insufficient
+        // Verification of Data
+        // Authenticity): the
+        // validation gate. The
+        // pre-fix design only
+        // flipped the snapshot
+        // status to `Blocked` on
+        // scanner BLOCK findings;
+        // a snapshot with parse
+        // errors (malformed YAML,
+        // missing required
+        // fields, duplicate agent
+        // IDs) was still marked
+        // `Active` because the
+        // rejection was only
+        // surfaced in the
+        // `IngestReport` for the
+        // operator. The post-fix
+        // design treats a
+        // validation failure as
+        // a hard gate: any
+        // rejected agent flips
+        // the snapshot to
+        // `Blocked` so the
+        // planner / deployer /
+        // approval flow can
+        // refuse it. CWE-345:
+        // without the gate, an
+        // operator who ignored
+        // the IngestReport's
+        // `rejected` list would
+        // deploy a snapshot
+        // missing half its
+        // agents (the ones that
+        // failed to parse).
+        let validation_failed = !rejected.is_empty();
+        let blocked = blocked || validation_failed;
+        let scan_note = if findings.is_empty() && !validation_failed {
             None
+        } else if validation_failed && findings.is_empty() {
+            // Pure validation failure
+            // (no scanner findings).
+            // The audit note names
+            // the cause so the
+            // operator's log shows
+            // why the snapshot is
+            // blocked.
+            Some(format!(
+                "validation: {} rejected agent(s) ({}); scanner: 0 findings",
+                rejected.len(),
+                rejected
+                    .first()
+                    .map(|r| r.reason.as_str())
+                    .unwrap_or("unknown")
+            ))
+        } else if validation_failed {
+            // Both a scanner finding
+            // AND a validation
+            // failure.
+            Some(format!(
+                "scanner: {} BLOCK, {} WARN, {} PASS; validation: {} rejected",
+                findings_block,
+                findings_warn,
+                findings_pass,
+                rejected.len()
+            ))
         } else {
             Some(format!(
                 "{findings_block} BLOCK, {findings_warn} WARN, {findings_pass} PASS"
@@ -620,7 +685,7 @@ fn compute_artifact_manifest_hash(files: &[ObservedFile]) -> String {
         hasher.update(f.relative.as_bytes());
         hasher.update([0u8]);
         hasher.update(f.sha256.as_bytes());
-        hasher.update([b'\n']);
+        hasher.update(b"\n");
     }
     let digest = hasher.finalize();
     let mut out = String::with_capacity(64);
@@ -661,7 +726,7 @@ fn compute_scanner_result_hash(findings: &[Finding]) -> String {
         hasher.update(f.path.as_bytes());
         hasher.update([0u8]);
         hasher.update(f.reason.as_bytes());
-        hasher.update([b'\n']);
+        hasher.update(b"\n");
     }
     let digest = hasher.finalize();
     let mut out = String::with_capacity(64);
@@ -749,8 +814,6 @@ mod p1_g04_hash_tests {
     // the "second ordering
     // input" to verify the
     // sort is total.
-    type TestSev = Severity;
-
     fn make_file(rel: &str, sha: &str) -> ObservedFile {
         ObservedFile {
             relative: rel.to_string(),

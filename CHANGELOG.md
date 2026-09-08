@@ -2483,6 +2483,102 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   commit; the P1-G-04b
   follow-up adds the columns.
 
+- **P1-G-05 Source
+  activation ordering /
+  validation gate (TZ #1 §7
+  / G-05, CWE-345 Insufficient
+  Verification of Data
+  Authenticity, Appendix
+  A.4).** The pre-fix
+  `IngestService::ingest_local`
+  pipeline (Fetch → Validate
+  → Scan → Snapshot) only
+  flipped the snapshot status
+  to `Blocked` on scanner
+  BLOCK findings; a snapshot
+  with parse errors (malformed
+  YAML, missing required
+  fields, duplicate agent IDs)
+  was still marked `Active`
+  because the rejection was
+  only surfaced in the
+  `IngestReport` for the
+  operator. **Exploit
+  scenario (pre-fix):** an
+  operator who skimmed the
+  report and ignored the
+  `rejected: [...]` list would
+  deploy a snapshot that
+  silently lacks every agent
+  that failed to parse — the
+  catalog reports "20
+  divisions, 17 agents" but
+  the deployed Hermes runtime
+  sees 13 agents and refuses
+  half the activation
+  triggers. CWE-345: the
+  deployment decision was
+  driven by an `Active`
+  status that did not
+  actually correspond to a
+  fully-validated catalog.
+  Post-fix, the validation
+  gate is a hard
+  `validation_failed = !rejected.is_empty()`
+  that OR's into the existing
+  `blocked` boolean, so any
+  rejected agent flips the
+  snapshot to `Blocked`. The
+  audit `scan_note` now has
+  three explicit forms
+  (pure-validation /
+  scanner-only / both), each
+  with a clear `validation:
+  N rejected` annotation so
+  the operator's log names
+  the cause. The
+  `record_snapshot_supersedes_previous_active`
+  and
+  `record_snapshot_does_not_supersede_when_status_not_active`
+  tests in
+  `repository_tests.rs` were
+  refactored to use a new
+  `Fixture::clean()` helper
+  (omits the broken agent)
+  so they can still observe
+  the `Active → Active →
+  Superseded` happy path
+  now that rejected-bearing
+  snapshots are `Blocked`.
+  The default `Fixture::new()`
+  keeps the broken agent
+  (mismatching id) so
+  `record_snapshot_persists_divisions_agents_and_files`
+  still exercises the
+  rejected-vec / Blocked
+  status flow. 2 new unit
+  tests in
+  `ingest_tests.rs`:
+  `validation_failure_flips_snapshot_to_blocked`
+  and
+  `clean_validation_keeps_snapshot_active`.
+  **CWE-345 closed** for
+  the activation-ordering
+  attack surface. Three
+  pre-existing 1.98 clippy
+  drift fixes shipped in the
+  same commit (P1-G-04's
+  `[b'\n']` → `b"\n"` in
+  `compute_artifact_manifest_hash`
+  /
+  `compute_scanner_result_hash`,
+  and P1-G-03's `WalkDir`
+  `if let Ok(e) = entry` →
+  `.flatten()` in `dir_size`)
+  — required for the `-D
+  warnings` CI gate. No
+  schema change.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added
