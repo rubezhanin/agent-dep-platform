@@ -1539,6 +1539,204 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     that names the mismatched
     field.
 
+- **P1-D-02 Target fencing
+  (TZ #1 §10 / D-02, CWE-362
+  Concurrent Execution using
+  Shared Resource without Proper
+  Synchronization, closes the
+  CWE-362 attack surface for
+  the deployment flow).** The
+  pre-fix `pending_deploys`
+  flow had no protection against
+  two concurrent mutating
+  operations on the same
+  `target_id`. The realistic
+  threat: two operators
+  approve different deploys to
+  the same target at the same
+  time, or one operator races
+  the re-issue, and both rows
+  reach `mark_applied` before
+  the other is rejected. The
+  target filesystem ends up
+  in an inconsistent state
+  (half of deploy A's writes
+  and half of deploy B's
+  writes), and the audit log
+  shows two `applied` rows
+  that disagree on
+  `applied_at` by milliseconds.
+  CWE-362. The post-fix
+  invariant "один target —
+  одна активная mutating
+  operation" (TZ #1 §10 /
+  D-02) is enforced by THREE
+  layers: (1) a partial UNIQUE
+  index
+  `idx_pending_deploys_one_active_per_target
+  ON pending_deploys(target_id)
+  WHERE status IN ('pending',
+  'approved')` — the SQL-level
+  backstop that prevents two
+  non-terminal rows for the
+  same target. (2) The
+  application-layer
+  `request()` pre-check that
+  refuses a new deploy with
+  a typed `ErrTargetBusy
+  { target_id,
+  existing_deploy_id,
+  existing_status }` — the
+  operator gets the existing
+  row's id and status (the
+  constraint violation alone
+  would only give "UNIQUE
+  constraint failed: index
+  ..."). (3) The fence itself:
+  every successful
+  `mark_applied` atomically
+  bumps
+  `targets.deployment_version`
+  (a separate counter from
+  P1-D-01b's `targets.version`
+  config-drift counter). The
+  next `request()` captures
+  the current value as the
+  new row's `fence_token`; a
+  subsequent `mark_applied`
+  whose `fence_token` no
+  longer matches the current
+  `targets.deployment_version`
+  is rejected with a typed
+  `ErrStaleDeployment { kind:
+  "deployment_fence (another
+  apply landed first)" }` and
+  the row stays `approved`
+  (the operator must re-issue,
+  which captures a fresh
+  fence token). The CAS
+  `UPDATE targets SET
+  deployment_version = ?1
+  WHERE id = ?2 AND
+  deployment_version = ?3
+  RETURNING deployment_version`
+  is the fence commit; a
+  0-row-affected result means
+  a concurrent process bumped
+  the version between our
+  fence check and our commit
+  (impossible in the
+  single-process SQLite
+  server, but the CAS is the
+  right semantic). Three new
+  schema columns:
+  `targets.deployment_version`
+  (monotonic per target,
+  separate from `version`),
+  `pending_deploys.fence_token`
+  (captured at `request`
+  time), and
+  `pending_deploys.applied_deployment_version`
+  (recorded on every
+  successful apply, so the
+  audit log shows
+  "deploy A bumped 5→6,
+  deploy B bumped 6→7"). The
+  pre-P1-D-02 backfill case
+  (`fence_token IS NULL`) is
+  accepted as before — the
+  fence check is a no-op for
+  those rows; a follow-up
+  P1-D-02b commit will mark
+  them `rejected` once every
+  operator has had time to
+  re-issue. New typed error
+  variant `CoreError::ErrTargetBusy`
+  with structured 409
+  response code
+  `deploy.target_busy`. The
+  pre-existing
+  `ErrStaleDeployment` variant
+  is now mapped in
+  `error_response::from_core_error`
+  (was previously
+  `internal.unmapped`); the
+  new `kind: "deployment_fence
+  ..."` value lets the SPA
+  distinguish fence-mismatch
+  from P1-D-01b's
+  `target_config_version`
+  mismatch (different UX:
+  fence → "another apply
+  landed first, re-issue",
+  config → "target was
+  reconfigured, re-issue").
+  The `mark_applied` and
+  `request_deploy` HTTP
+  handlers now surface the
+  new structured error
+  responses via
+  `from_core_error` (was
+  `from_any_error`, which
+  returned 500 for both
+  cases). 6 new unit tests
+  in
+  `pending_deploys_repository_tests.rs`:
+  `request_records_fence_token_from_current_deployment_version`,
+  `request_refuses_with_target_busy_when_pending_row_exists`,
+  `request_refuses_with_target_busy_when_approved_row_exists`,
+  `request_succeeds_after_rejection_terminates_the_lease`,
+  `mark_applied_bumps_deployment_version_and_records_post_increment`,
+  `mark_applied_rejects_with_stale_deployment_fence`
+  (the fence-race simulation
+  drops + recreates the
+  partial UNIQUE index to
+  inject a row with a stale
+  `fence_token`), and
+  `mark_applied_skips_fence_check_for_legacy_null_token`
+  (the pre-P1-D-02 backfill
+  case). Migration 024 adds
+  the three new columns, the
+  partial UNIQUE index, and a
+  helper index on
+  `targets.deployment_version`
+  for the rare
+  "find-targets-at-version-N"
+  admin query. Bump
+  schema_version 23 → 24.
+  Four test sites updated.
+  **CWE-362 closed** for the
+  target-deploy flow.
+  Residual risks tracked in
+  `docs/RISK_REGISTER.md`:
+  none new (the partial
+  UNIQUE index is per-row, so
+  two `POST /v1/deploys`
+  requests for the same
+  target on a multi-threaded
+  server can race the
+  pre-check; the constraint
+  violation maps to a typed
+  `ErrTargetBusy` with
+  `existing_deploy_id: -1`
+  and a generic
+  "pending or approved"
+  status, which is a soft
+  degradation that the
+  operator can disambiguate
+  by listing `/v1/deploys`).
+  Pre-existing P1-F-07 test
+  debt (7 ignored tests)
+  unchanged. CWE + Exploit
+  scenario documented in
+  the commit body and the
+  inline module docs of
+  `pending_deploys_repository.rs`
+  (the `ErrTargetBusy` doc
+  + the `request` and
+  `mark_applied` inline
+  comments).
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

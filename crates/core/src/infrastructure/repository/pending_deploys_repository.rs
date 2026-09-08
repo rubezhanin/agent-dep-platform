@@ -155,6 +155,39 @@ pub struct PendingDeployRow {
     /// between request and apply
     /// trips the freshness check.
     pub artifact_manifest_hash: Option<String>,
+    /// 2.11.0 (P1-D-02, TZ #1 §10 /
+    /// D-02, CWE-362): the value of
+    /// `targets.deployment_version`
+    /// at `request` time. The
+    /// `mark_applied` fence check
+    /// re-reads the current
+    /// `targets.deployment_version`
+    /// and refuses to apply the
+    /// deploy on a mismatch
+    /// (a concurrent
+    /// `mark_applied` on a different
+    /// row for the same target would
+    /// have bumped the counter and
+    /// invalidated this row's
+    /// lease). `None` for pre-P1-D-02
+    /// rows (the migration backfills
+    /// `NULL`); the fence check is a
+    /// no-op for those rows.
+    pub fence_token: Option<i64>,
+    /// 2.11.0 (P1-D-02): the new
+    /// `targets.deployment_version`
+    /// after a successful
+    /// `mark_applied`. NULL for
+    /// pending / approved / rejected
+    /// rows. The pair
+    /// `(fence_token, applied_deployment_version)`
+    /// in the audit log lets a
+    /// future operator see "my
+    /// deploy A was the one that
+    /// bumped from 5 to 6; deploy B
+    /// (which followed) bumped from
+    /// 6 to 7".
+    pub applied_deployment_version: Option<i64>,
     pub approved_by: Option<i64>,
     pub approved_at: Option<String>,
     pub rejection_reason: Option<String>,
@@ -230,6 +263,56 @@ impl PendingDeployRepository {
     /// activated as soon as the
     /// caller starts passing a
     /// `Some(...)` source_snapshot_id.
+    ///
+    /// 2.11.0 (P1-D-02, TZ #1 §10 /
+    /// D-02, CWE-362): the
+    /// `request` flow also enforces
+    /// the "один target — одна
+    /// активная mutating operation"
+    /// invariant. If a non-terminal
+    /// (`pending` or `approved`)
+    /// `pending_deploys` row already
+    /// exists for the same
+    /// `target_id`, the new INSERT
+    /// would either (a) violate the
+    /// partial UNIQUE index
+    /// `idx_pending_deploys_one_active_per_target`
+    /// or (b) shadow the existing
+    /// row. Either way the
+    /// application layer refuses
+    /// the request with a typed
+    /// `ErrTargetBusy` carrying the
+    /// existing row's id and status.
+    /// The operator must wait for
+    /// the existing deploy to reach
+    /// a terminal state (`applied`
+    /// or `rejected`) before issuing
+    /// another one to the same
+    /// target. The pre-check is
+    /// necessary to surface the
+    /// existing row's id in the
+    /// error response (a UNIQUE
+    /// constraint violation only
+    /// returns a generic SQL error
+    /// with the index name, not the
+    /// conflicting row's id).
+    ///
+    /// 2.11.0 (P1-D-02): the
+    /// `request` flow also captures
+    /// the current
+    /// `targets.deployment_version`
+    /// for the row's `target_id` as
+    /// the new row's `fence_token`.
+    /// A subsequent `mark_applied`
+    /// whose `fence_token` no longer
+    /// matches the current
+    /// `targets.deployment_version`
+    /// is rejected as a CWE-362
+    /// stale-lease event. Pre-P1-D-02
+    /// rows have `fence_token = NULL`
+    /// (the migration backfill); the
+    /// `mark_applied` fence check is
+    /// a no-op for those rows.
     #[allow(clippy::too_many_arguments)]
     pub async fn request(
         &self,
@@ -257,6 +340,7 @@ impl PendingDeployRepository {
         let mut artifact_manifest_hash: Option<String> = None;
         let policy_set_version: Option<String> = Some(DEFAULT_POLICY_SET_VERSION.to_string());
         let mut target_config_version: Option<i64> = None;
+        let mut fence_token: Option<i64> = None;
         if let Some(snapshot_id) = source_snapshot_id {
             // 1. commit_sha from
             //    source_snapshots.
@@ -287,11 +371,57 @@ impl PendingDeployRepository {
         if let Some(t) = target_id {
             // target_config_version =
             // current targets.version.
+            // (P1-D-01b)
             let row: Option<(i64,)> = sqlx::query_as("SELECT version FROM targets WHERE id = ?1")
                 .bind(t)
                 .fetch_optional(&self.pool)
                 .await?;
             target_config_version = row.map(|(v,)| v);
+            // deployment_version =
+            // current targets.deployment_version.
+            // (P1-D-02) This is the
+            // fence token the next
+            // mark_applied will
+            // re-verify; it must equal
+            // the value at apply time
+            // for the deploy to land.
+            let row: Option<(i64,)> =
+                sqlx::query_as("SELECT deployment_version FROM targets WHERE id = ?1")
+                    .bind(t)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            fence_token = row.map(|(v,)| v);
+            // 2.11.0 (P1-D-02, CWE-362):
+            // refuse the INSERT if a
+            // non-terminal row already
+            // exists for this target.
+            // The partial UNIQUE index
+            // is the SQL-level
+            // backstop; this pre-check
+            // exists so the operator
+            // gets a typed error with
+            // the existing row's id
+            // and status, instead of a
+            // raw "UNIQUE constraint
+            // failed: index
+            // idx_pending_deploys_one_active_per_target"
+            // from the constraint
+            // violation.
+            let existing: Option<(i64, String)> = sqlx::query_as(
+                "SELECT id, status FROM pending_deploys \
+                 WHERE target_id = ?1 AND status IN ('pending', 'approved') \
+                 ORDER BY id ASC LIMIT 1",
+            )
+            .bind(t)
+            .fetch_optional(&self.pool)
+            .await?;
+            if let Some((existing_id, existing_status)) = existing {
+                return Err(CoreError::ErrTargetBusy {
+                    target_id: t,
+                    existing_deploy_id: existing_id,
+                    existing_status,
+                });
+            }
         }
         let now: DateTime<Utc> = Utc::now();
         let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -300,9 +430,10 @@ impl PendingDeployRepository {
              (system_id, plan_summary, requested_by, requested_at, status, \
               environment, target_id, \
               source_snapshot_id, commit_sha, plan_hash, \
-              policy_set_version, artifact_manifest_hash, target_config_version) \
+              policy_set_version, artifact_manifest_hash, target_config_version, \
+              fence_token) \
              VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, \
-                     ?7, ?8, ?9, ?10, ?11, ?12) RETURNING id",
+                     ?7, ?8, ?9, ?10, ?11, ?12, ?13) RETURNING id",
         )
         .bind(system_id)
         .bind(plan_summary)
@@ -316,8 +447,37 @@ impl PendingDeployRepository {
         .bind(&policy_set_version)
         .bind(&artifact_manifest_hash)
         .bind(target_config_version)
+        .bind(fence_token)
         .fetch_one(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| match &e {
+            // 2.11.0 (P1-D-02): map the
+            // partial UNIQUE index
+            // violation to a typed
+            // `ErrTargetBusy`. The
+            // pre-check above catches
+            // 99% of cases (a clean
+            // SELECT-then-INSERT where
+            // no concurrent request
+            // slipped in between); the
+            // mapping here is the
+            // last-line backstop for
+            // the concurrent-INSERT
+            // race that the pre-check
+            // cannot fully eliminate.
+            sqlx::Error::Database(db)
+                if db
+                    .message()
+                    .contains("idx_pending_deploys_one_active_per_target") =>
+            {
+                CoreError::ErrTargetBusy {
+                    target_id: target_id.unwrap_or(-1),
+                    existing_deploy_id: -1,
+                    existing_status: "pending or approved".to_string(),
+                }
+            }
+            _ => CoreError::ErrSqlx(e),
+        })?;
         Ok(PendingDeployRow {
             id: row.0,
             system_id: system_id.to_string(),
@@ -333,6 +493,8 @@ impl PendingDeployRepository {
             plan_hash,
             policy_set_version,
             artifact_manifest_hash,
+            fence_token,
+            applied_deployment_version: None,
             approved_by: None,
             approved_at: None,
             rejection_reason: None,
@@ -347,6 +509,7 @@ impl PendingDeployRepository {
                     status, environment, target_id, target_config_version, \
                     source_snapshot_id, commit_sha, plan_hash, \
                     policy_set_version, artifact_manifest_hash, \
+                    fence_token, applied_deployment_version, \
                     approved_by, approved_at, \
                     rejection_reason, applied_at \
              FROM pending_deploys WHERE id = ?1",
@@ -373,6 +536,7 @@ impl PendingDeployRepository {
                         status, environment, target_id, target_config_version, \
                         source_snapshot_id, commit_sha, plan_hash, \
                         policy_set_version, artifact_manifest_hash, \
+                        fence_token, applied_deployment_version, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys ORDER BY id ASC LIMIT ?1",
@@ -387,6 +551,7 @@ impl PendingDeployRepository {
                         status, environment, target_id, target_config_version, \
                         source_snapshot_id, commit_sha, plan_hash, \
                         policy_set_version, artifact_manifest_hash, \
+                        fence_token, applied_deployment_version, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE status = ?1 \
@@ -403,6 +568,7 @@ impl PendingDeployRepository {
                         status, environment, target_id, target_config_version, \
                         source_snapshot_id, commit_sha, plan_hash, \
                         policy_set_version, artifact_manifest_hash, \
+                        fence_token, applied_deployment_version, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE environment = ?1 \
@@ -419,6 +585,7 @@ impl PendingDeployRepository {
                         status, environment, target_id, target_config_version, \
                         source_snapshot_id, commit_sha, plan_hash, \
                         policy_set_version, artifact_manifest_hash, \
+                        fence_token, applied_deployment_version, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE status = ?1 AND environment = ?2 \
@@ -697,6 +864,88 @@ impl PendingDeployRepository {
                     }
                 }
             }
+            // 2.11.0 (P1-D-02, TZ #1 §10 /
+            // D-02, CWE-362 Concurrent
+            // Execution using Shared
+            // Resource without Proper
+            // Synchronization): target
+            // fencing. The row carries a
+            // `fence_token` captured at
+            // `request` time as the
+            // current
+            // `targets.deployment_version`
+            // for the row's `target_id`.
+            // If a different `mark_applied`
+            // for the same target was
+            // committed in the meantime,
+            // `targets.deployment_version`
+            // would have been bumped; the
+            // captured fence token would
+            // no longer match. The
+            // check is a typed
+            // `ErrStaleDeployment` that
+            // carries the captured vs
+            // current values for the
+            // audit log, and the row
+            // stays in `approved` so the
+            // operator can re-issue the
+            // deploy (which captures a
+            // fresh fence token).
+            //
+            // Pre-P1-D-02 rows
+            // (`fence_token IS NULL`) skip
+            // the check — they predate the
+            // fencing machinery. A
+            // follow-up P1-D-02b commit
+            // will mark those rows
+            // `rejected` (the "one target
+            // — one active operation"
+            // invariant does not apply
+            // historically).
+            if r.status == Status::Approved {
+                if let Some(captured) = r.fence_token {
+                    if let Some(target_id) = r.target_id {
+                        let current: Option<i64> =
+                            sqlx::query_as("SELECT deployment_version FROM targets WHERE id = ?1")
+                                .bind(target_id)
+                                .fetch_optional(&self.pool)
+                                .await?
+                                .map(|(v,): (i64,)| v);
+                        match current {
+                            Some(cur) if cur == captured => {
+                                // Fence matches:
+                                // no other apply
+                                // for this target
+                                // has bumped the
+                                // counter since
+                                // this row was
+                                // requested. Proceed
+                                // with the
+                                // transition.
+                            }
+                            Some(cur) => {
+                                return Err(CoreError::ErrStaleDeployment {
+                                    deploy_id: id,
+                                    target_id,
+                                    captured_version: captured,
+                                    current_version: cur,
+                                    kind: "deployment_fence (another apply landed first)"
+                                        .to_string(),
+                                });
+                            }
+                            None => {
+                                return Err(CoreError::ErrStaleDeployment {
+                                    deploy_id: id,
+                                    target_id,
+                                    captured_version: captured,
+                                    current_version: -1,
+                                    kind: "deployment_fence (target row missing)".to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
         let affected = sqlx::query(
             "UPDATE pending_deploys \
@@ -710,6 +959,69 @@ impl PendingDeployRepository {
         .rows_affected();
         if affected == 0 {
             return Ok(None);
+        }
+        // 2.11.0 (P1-D-02, CWE-362):
+        // the fence commit. The
+        // `pending_deploys` row is
+        // now `applied`; bump
+        // `targets.deployment_version`
+        // atomically so the next
+        // operator's `request` flow
+        // sees a fresh token. The
+        // CAS is
+        // `UPDATE ... WHERE id = ? AND
+        // deployment_version = ?`
+        // where the `expected` is the
+        // value the fence check above
+        // observed. A 0-row-affected
+        // result means a concurrent
+        // process bumped the version
+        // between our fence check and
+        // our commit — in the
+        // single-process server this
+        // is impossible (SQLite
+        // serializes writes per pool),
+        // but the CAS is the right
+        // semantic and keeps the
+        // invariant auditable.
+        let new_deployment_version: Option<i64> = if let Some(r) = row.as_ref() {
+            if r.status == Status::Approved {
+                if let Some(captured) = r.fence_token {
+                    if let Some(target_id) = r.target_id {
+                        let row: Option<(i64,)> = sqlx::query_as(
+                            "UPDATE targets \
+                             SET deployment_version = ?1 \
+                             WHERE id = ?2 AND deployment_version = ?3 \
+                             RETURNING deployment_version",
+                        )
+                        .bind(captured + 1)
+                        .bind(target_id)
+                        .bind(captured)
+                        .fetch_optional(&self.pool)
+                        .await?;
+                        row.map(|(v,)| v)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(v) = new_deployment_version {
+            sqlx::query(
+                "UPDATE pending_deploys \
+                 SET applied_deployment_version = ?1 \
+                 WHERE id = ?2",
+            )
+            .bind(v)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         }
         self.get(id).await
     }
@@ -739,6 +1051,7 @@ impl PendingDeployRepository {
                         status, environment, target_id, target_config_version, \
                         source_snapshot_id, commit_sha, plan_hash, \
                         policy_set_version, artifact_manifest_hash, \
+                        fence_token, applied_deployment_version, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE target_id IS NULL AND environment = ?1 \
@@ -754,6 +1067,7 @@ impl PendingDeployRepository {
                         status, environment, target_id, target_config_version, \
                         source_snapshot_id, commit_sha, plan_hash, \
                         policy_set_version, artifact_manifest_hash, \
+                        fence_token, applied_deployment_version, \
                         approved_by, approved_at, \
                         rejection_reason, applied_at \
                  FROM pending_deploys WHERE target_id IS NULL \
@@ -820,6 +1134,8 @@ struct PendingDeployRowRaw {
     plan_hash: Option<String>,
     policy_set_version: Option<String>,
     artifact_manifest_hash: Option<String>,
+    fence_token: Option<i64>,
+    applied_deployment_version: Option<i64>,
     approved_by: Option<i64>,
     approved_at: Option<String>,
     rejection_reason: Option<String>,
@@ -842,6 +1158,8 @@ fn decode_row(row: PendingDeployRowRaw) -> CoreResult<PendingDeployRow> {
         plan_hash: row.plan_hash,
         policy_set_version: row.policy_set_version,
         artifact_manifest_hash: row.artifact_manifest_hash,
+        fence_token: row.fence_token,
+        applied_deployment_version: row.applied_deployment_version,
         approved_by: row.approved_by,
         approved_at: row.approved_at,
         rejection_reason: row.rejection_reason,

@@ -270,6 +270,93 @@ impl TargetRepository {
             .await?;
         Ok(row.0)
     }
+
+    /// 2.11.0 (P1-D-02, TZ #1 §10 /
+    /// D-02, CWE-362): read the
+    /// current `deployment_version`
+    /// of a target. Returns `Ok(None)`
+    /// if the target does not exist.
+    /// Used by `PendingDeployRepository::mark_applied`
+    /// to read the post-increment
+    /// value and by `request` to
+    /// capture the fencing token at
+    /// request time.
+    ///
+    /// Distinct from `targets.version`
+    /// (P1-D-01b config-drift
+    /// counter). `version` bumps on
+    /// every `PUT /v1/targets/:id`;
+    /// `deployment_version` bumps on
+    /// every successful
+    /// `mark_applied`. The two
+    /// counters serve different
+    /// freshness checks.
+    pub async fn deployment_version(&self, id: i64) -> CoreResult<Option<i64>> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT deployment_version FROM targets WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(v,)| v))
+    }
+
+    /// 2.11.0 (P1-D-02): atomic
+    /// compare-and-swap increment of
+    /// `targets.deployment_version`.
+    /// Returns the **new** value on
+    /// success, or `Ok(None)` if the
+    /// CAS failed (someone else
+    /// bumped the version between
+    /// our SELECT and our UPDATE).
+    ///
+    /// The CAS is the only thing that
+    /// makes the fence commit atomic
+    /// against a concurrent apply:
+    /// `mark_applied` reads the
+    /// current version, runs the
+    /// `pending_deploys` UPDATE, and
+    /// then `increment_deployment_version`s
+    /// with the expected pre-increment
+    /// value. A second concurrent
+    /// `mark_applied` would race the
+    /// first through the same flow;
+    /// one of them sees the CAS
+    /// return 0 rows, and that one
+    /// is rejected.
+    ///
+    /// SQLite serializes writes per
+    /// pool, so in the single-process
+    /// server the race is impossible
+    /// at the SQL level — but the CAS
+    /// is the right semantic and
+    /// makes the check obvious to a
+    /// reviewer. The `expected`
+    /// argument is the pre-increment
+    /// value the caller observed; the
+    /// returned value is
+    /// `expected + 1` on success.
+    pub async fn increment_deployment_version(
+        &self,
+        id: i64,
+        expected: i64,
+    ) -> CoreResult<Option<i64>> {
+        let affected = sqlx::query(
+            "UPDATE targets \
+             SET deployment_version = ?1 \
+             WHERE id = ?2 AND deployment_version = ?3",
+        )
+        .bind(expected + 1)
+        .bind(id)
+        .bind(expected)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if affected == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(expected + 1))
+        }
+    }
 }
 
 type TargetRowTuple = (

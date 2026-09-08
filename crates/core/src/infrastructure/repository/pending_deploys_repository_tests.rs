@@ -422,3 +422,456 @@ async fn mark_applied_rejects_stale_commit_sha() {
     assert_eq!(after.status, Status::Approved);
     assert!(after.applied_at.is_none());
 }
+
+// -----------------------------------------------------------------------
+// 2.11.0 (P1-D-02, TZ #1 §10 / D-02,
+// CWE-362 Concurrent Execution using
+// Shared Resource without Proper
+// Synchronization) — target fencing
+// tests.
+//
+// The "один target — одна активная
+// mutating operation" invariant is
+// enforced by a partial UNIQUE index
+// on `pending_deploys(target_id) WHERE
+// status IN ('pending', 'approved')`
+// and a typed `ErrTargetBusy` at the
+// application layer. The fence itself
+// is the row's `fence_token`, captured
+// at `request` time as the current
+// `targets.deployment_version`; a
+// `mark_applied` whose `fence_token`
+// no longer matches the current value
+// is rejected as a stale-lease event
+// (a typed `ErrStaleDeployment` with
+// `kind: "deployment_fence ..."`).
+// -----------------------------------------------------------------------
+
+/// 2.11.0 (P1-D-02): a fresh
+/// `request` records the current
+/// `targets.deployment_version` as
+/// the new row's `fence_token`. The
+/// floor is `0` for a target that
+/// has never been applied to.
+#[tokio::test]
+async fn request_records_fence_token_from_current_deployment_version() {
+    let (_dir, pool, pd, _users, targets) = fresh_db_with_pool().await;
+    let op = UserRepository::new(pool.clone())
+        .create("op", Role::Operator)
+        .await
+        .expect("op");
+    let t = make_target(&targets, "a", Environment::Dev).await;
+    let row = pd
+        .request("a", "{}", op.user.id, Environment::Dev, Some(t), None)
+        .await
+        .expect("request");
+    // A fresh target has
+    // `deployment_version = 0`
+    // (the migration floor).
+    assert_eq!(row.fence_token, Some(0));
+    assert!(row.applied_deployment_version.is_none());
+    // The recorded fence equals
+    // the current target
+    // deployment_version.
+    let v: (i64,) = sqlx::query_as("SELECT deployment_version FROM targets WHERE id = ?1")
+        .bind(t)
+        .fetch_one(&pool)
+        .await
+        .expect("version");
+    assert_eq!(v.0, 0);
+    assert_eq!(Some(v.0), row.fence_token);
+}
+
+/// 2.11.0 (P1-D-02, CWE-362):
+/// the second `request` for the
+/// same `target_id` while a
+/// `pending` row already exists is
+/// refused with a typed
+/// `ErrTargetBusy` carrying the
+/// existing row's id and status.
+/// The operator must wait for the
+/// existing deploy to reach a
+/// terminal state.
+#[tokio::test]
+async fn request_refuses_with_target_busy_when_pending_row_exists() {
+    let (_dir, pool, pd, users, targets) = fresh_db_with_pool().await;
+    let op = users.create("op", Role::Operator).await.expect("op");
+    let t = make_target(&targets, "a", Environment::Dev).await;
+    let r1 = pd
+        .request("a", "{}", op.user.id, Environment::Dev, Some(t), None)
+        .await
+        .expect("r1");
+    // The second request for the
+    // same target must be
+    // refused.
+    let err = pd
+        .request("a2", "{}", op.user.id, Environment::Dev, Some(t), None)
+        .await
+        .expect_err("must be ErrTargetBusy");
+    match err {
+        CoreError::ErrTargetBusy {
+            target_id,
+            existing_deploy_id,
+            existing_status,
+        } => {
+            assert_eq!(target_id, t);
+            assert_eq!(existing_deploy_id, r1.id);
+            assert_eq!(existing_status, "pending");
+        }
+        other => panic!("expected ErrTargetBusy, got {other:?}"),
+    }
+    // Touch the pool so the
+    // unused-warning doesn't
+    // fire (the pool IS used by
+    // the repos; we just don't
+    // reach into it directly in
+    // this test).
+    let _: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM pending_deploys")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+}
+
+/// 2.11.0 (P1-D-02): an
+/// `approved` row still counts as
+/// an "active mutating operation"
+/// for the target. A fresh
+/// `request` for the same target
+/// is refused as long as the
+/// existing row is non-terminal.
+#[tokio::test]
+async fn request_refuses_with_target_busy_when_approved_row_exists() {
+    let (_dir, _pool, pd, users, targets) = fresh_db_with_pool().await;
+    let op = users.create("op", Role::Operator).await.expect("op");
+    let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let t = make_target(&targets, "a", Environment::Dev).await;
+    let r1 = pd
+        .request("a", "{}", op.user.id, Environment::Dev, Some(t), None)
+        .await
+        .expect("r1");
+    pd.approve(r1.id, admin.user.id)
+        .await
+        .expect("approve")
+        .expect("ok");
+    // A second request for the
+    // same target — even with the
+    // first one already approved —
+    // is refused.
+    let err = pd
+        .request("a2", "{}", op.user.id, Environment::Dev, Some(t), None)
+        .await
+        .expect_err("must be ErrTargetBusy");
+    match err {
+        CoreError::ErrTargetBusy {
+            existing_deploy_id,
+            existing_status,
+            ..
+        } => {
+            assert_eq!(existing_deploy_id, r1.id);
+            assert_eq!(existing_status, "approved");
+        }
+        other => panic!("expected ErrTargetBusy, got {other:?}"),
+    }
+}
+
+/// 2.11.0 (P1-D-02): once a row
+/// is `rejected` (terminal), a
+/// fresh `request` for the same
+/// target succeeds and captures
+/// the current
+/// `deployment_version` as the
+/// new fence token.
+#[tokio::test]
+async fn request_succeeds_after_rejection_terminates_the_lease() {
+    let (_dir, _pool, pd, users, targets) = fresh_db_with_pool().await;
+    let op = users.create("op", Role::Operator).await.expect("op");
+    let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let t = make_target(&targets, "a", Environment::Dev).await;
+    let r1 = pd
+        .request("a", "{}", op.user.id, Environment::Dev, Some(t), None)
+        .await
+        .expect("r1");
+    pd.reject(r1.id, admin.user.id, Some("superseded"))
+        .await
+        .expect("reject")
+        .expect("ok");
+    // The first row is now
+    // `rejected` (terminal); a
+    // fresh request for the same
+    // target must succeed.
+    let r2 = pd
+        .request("a2", "{}", op.user.id, Environment::Dev, Some(t), None)
+        .await
+        .expect("r2 must succeed");
+    assert_eq!(r2.fence_token, Some(0));
+}
+
+/// 2.11.0 (P1-D-02, CWE-362):
+/// `mark_applied` bumps
+/// `targets.deployment_version`
+/// on success and records the
+/// new value in
+/// `pending_deploys.applied_deployment_version`.
+/// The next `request` for the
+/// same target then captures the
+/// bumped value as the new fence
+/// token.
+#[tokio::test]
+async fn mark_applied_bumps_deployment_version_and_records_post_increment() {
+    let (_dir, pool, pd, users, targets) = fresh_db_with_pool().await;
+    let op = users.create("op", Role::Operator).await.expect("op");
+    let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let t = make_target(&targets, "a", Environment::Dev).await;
+    let r1 = pd
+        .request("a", "{}", op.user.id, Environment::Dev, Some(t), None)
+        .await
+        .expect("r1");
+    assert_eq!(r1.fence_token, Some(0));
+    pd.approve(r1.id, admin.user.id)
+        .await
+        .expect("approve")
+        .expect("ok");
+    let applied = pd.mark_applied(r1.id).await.expect("apply").expect("ok");
+    // The apply committed;
+    // deployment_version went
+    // from 0 to 1.
+    assert_eq!(applied.applied_deployment_version, Some(1));
+    // The next request for the
+    // same target captures the
+    // new version as the fence
+    // token. (We have to wait
+    // for the previous apply to
+    // terminate the lease, which
+    // it just did — the row
+    // is `applied`, terminal.)
+    let r2 = pd
+        .request("a2", "{}", op.user.id, Environment::Dev, Some(t), None)
+        .await
+        .expect("r2 after apply");
+    assert_eq!(r2.fence_token, Some(1));
+    // And `targets.deployment_version`
+    // is now 1.
+    let v: (i64,) = sqlx::query_as("SELECT deployment_version FROM targets WHERE id = ?1")
+        .bind(t)
+        .fetch_one(&pool)
+        .await
+        .expect("v");
+    assert_eq!(v.0, 1);
+}
+
+/// 2.11.0 (P1-D-02, CWE-362): the
+/// fenced-lease path. After a
+/// successful `mark_applied` bumps
+/// `targets.deployment_version`, a
+/// second approved row for the
+/// same target with a stale
+/// `fence_token` is rejected at
+/// `mark_applied` time with a typed
+/// `ErrStaleDeployment { kind:
+/// "deployment_fence ..." }`.
+///
+/// The partial UNIQUE index would
+/// normally prevent a second
+/// non-terminal row for the same
+/// target, so we simulate the
+/// race by dropping the index,
+/// inserting a hand-crafted
+/// `pending` row with a stale
+/// `fence_token = 0`, and
+/// re-creating the index. This
+/// is the only test path that
+/// exercises the fence check
+/// itself (the busy check at
+/// `request` time is the
+/// front-line protection in
+/// production).
+#[tokio::test]
+async fn mark_applied_rejects_with_stale_deployment_fence() {
+    let (_dir, pool, pd, users, targets) = fresh_db_with_pool().await;
+    let op = users.create("op", Role::Operator).await.expect("op");
+    let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let t = make_target(&targets, "a", Environment::Dev).await;
+    // 1) first deploy: bumps
+    // deployment_version 0 -> 1.
+    let r1 = pd
+        .request("a", "{}", op.user.id, Environment::Dev, Some(t), None)
+        .await
+        .expect("r1");
+    pd.approve(r1.id, admin.user.id)
+        .await
+        .expect("approve")
+        .expect("ok");
+    pd.mark_applied(r1.id).await.expect("apply").expect("ok");
+    // 2) Inject the race row.
+    sqlx::query("DROP INDEX idx_pending_deploys_one_active_per_target")
+        .execute(&pool)
+        .await
+        .expect("drop idx for race sim");
+    let row2_id: i64 = sqlx::query_as::<_, (i64,)>(
+        "INSERT INTO pending_deploys \
+         (system_id, plan_summary, requested_by, requested_at, status, \
+          environment, target_id, fence_token) \
+         VALUES ('b', '{}', ?1, '2026-01-01T00:00:00.000Z', \
+                 'pending', 'dev', ?2, 0) RETURNING id",
+    )
+    .bind(op.user.id)
+    .bind(t)
+    .fetch_one(&pool)
+    .await
+    .expect("insert race row")
+    .0;
+    sqlx::query(
+        "CREATE UNIQUE INDEX idx_pending_deploys_one_active_per_target \
+         ON pending_deploys(target_id) \
+         WHERE status IN ('pending', 'approved')",
+    )
+    .execute(&pool)
+    .await
+    .expect("recreate idx");
+    // 3) Approve the
+    // simulated stale row and
+    // attempt the apply.
+    pd.approve(row2_id, admin.user.id)
+        .await
+        .expect("approve")
+        .expect("ok");
+    let err = pd
+        .mark_applied(row2_id)
+        .await
+        .expect_err("mark_applied must reject stale fence");
+    match err {
+        CoreError::ErrStaleDeployment {
+            kind,
+            captured_version,
+            current_version,
+            ..
+        } => {
+            assert!(kind.contains("deployment_fence"), "got: {kind}");
+            assert_eq!(captured_version, 0);
+            assert_eq!(current_version, 1);
+        }
+        other => panic!("expected ErrStaleDeployment, got {other:?}"),
+    }
+    // The row must stay
+    // `approved` (the apply
+    // was refused; the operator
+    // must re-issue).
+    let after = pd.get(row2_id).await.expect("get").expect("present");
+    assert_eq!(after.status, Status::Approved);
+    assert!(after.applied_at.is_none());
+    // The target's
+    // deployment_version is
+    // still 1 (the failed
+    // apply did not bump).
+    let v: (i64,) = sqlx::query_as("SELECT deployment_version FROM targets WHERE id = ?1")
+        .bind(t)
+        .fetch_one(&pool)
+        .await
+        .expect("v");
+    assert_eq!(v.0, 1);
+}
+
+/// 2.11.0 (P1-D-02): a
+/// `mark_applied` whose
+/// `fence_token IS NULL` (a
+/// pre-P1-D-02 backfill row) is
+/// not subject to the fence
+/// check. The fence commit is
+/// also a no-op (we don't know
+/// the pre-bump value, so we
+/// can't safely CAS-bump).
+/// The pre-P1-D-01 freshness
+/// checks still apply.
+#[tokio::test]
+async fn mark_applied_skips_fence_check_for_legacy_null_token() {
+    let (_dir, pool, pd, users, targets) = fresh_db_with_pool().await;
+    let op = users.create("op", Role::Operator).await.expect("op");
+    let admin = users.create("admin", Role::Admin).await.expect("admin");
+    let t = make_target(&targets, "a", Environment::Dev).await;
+    // Insert a `pending` row
+    // with `fence_token =
+    // NULL` (the migration
+    // backfill shape). We
+    // bypass the `request` API
+    // because that would write
+    // a non-NULL fence.
+    let legacy_id: i64 = sqlx::query_as::<_, (i64,)>(
+        "INSERT INTO pending_deploys \
+         (system_id, plan_summary, requested_by, requested_at, status, \
+          environment, target_id) \
+         VALUES ('legacy', '{}', ?1, '2026-01-01T00:00:00.000Z', \
+                 'pending', 'dev', ?2) RETURNING id",
+    )
+    .bind(op.user.id)
+    .bind(t)
+    .fetch_one(&pool)
+    .await
+    .expect("insert legacy")
+    .0;
+    pd.approve(legacy_id, admin.user.id)
+        .await
+        .expect("approve")
+        .expect("ok");
+    // Bump
+    // `targets.deployment_version`
+    // to 5 (simulate a long
+    // history of applies).
+    sqlx::query("UPDATE targets SET deployment_version = 5 WHERE id = ?1")
+        .bind(t)
+        .execute(&pool)
+        .await
+        .expect("bump");
+    // The legacy row's apply
+    // must succeed: no fence
+    // check, no fence bump
+    // (fence_token was NULL,
+    // so we don't know what
+    // the pre-bump value was).
+    let applied = pd
+        .mark_applied(legacy_id)
+        .await
+        .expect("apply")
+        .expect("ok");
+    // The legacy row's
+    // `applied_deployment_version`
+    // stays NULL (the fence
+    // commit was a no-op for
+    // NULL fence).
+    assert!(applied.applied_deployment_version.is_none());
+    // The target's
+    // deployment_version
+    // stays at 5 (no bump for
+    // legacy rows).
+    let v: (i64,) = sqlx::query_as("SELECT deployment_version FROM targets WHERE id = ?1")
+        .bind(t)
+        .fetch_one(&pool)
+        .await
+        .expect("v");
+    assert_eq!(v.0, 5);
+}
+
+// P1-D-02 helper: like `fresh_db()`
+// but also returns the underlying
+// `SqlitePool` for tests that
+// need to issue raw SQL (e.g.
+// DROP INDEX for the race
+// simulation, or a legacy
+// `fence_token IS NULL` insert
+// that bypasses `request`).
+async fn fresh_db_with_pool() -> (
+    tempfile::TempDir,
+    sqlx::SqlitePool,
+    PendingDeployRepository,
+    UserRepository,
+    TargetRepository,
+) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("approvals_p1d02.db");
+    let db = connect(&path).await.expect("connect");
+    db.migrate().await.expect("migrate");
+    let pool = db.pool().clone();
+    let pd = PendingDeployRepository::new(pool.clone());
+    let users = UserRepository::new(pool.clone());
+    let targets = TargetRepository::new(pool.clone());
+    (dir, pool, pd, users, targets)
+}

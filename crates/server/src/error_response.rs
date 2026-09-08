@@ -158,6 +158,77 @@ pub fn from_core_error(e: &CoreError) -> (StatusCode, Json<ErrorResponse>) {
         // Other variants land here. We log
         // the full error and return a
         // generic 500.
+        // 2.11.0 (P1-D-01b / P1-D-02,
+        // TZ #1 §10 / D-01, CWE-494
+        // and CWE-362): a
+        // `mark_applied` is refused
+        // because the underlying
+        // state has drifted since the
+        // deploy was approved. This
+        // is a 409 (the request was
+        // valid, but the server state
+        // is incompatible with the
+        // action). The `kind` field
+        // tells the client which
+        // specific drift fired
+        // (`target_config_version` or
+        // `deployment_fence`); the
+        // `hint` is a generic
+        // operator-facing message.
+        CoreError::ErrStaleDeployment {
+            kind,
+            deploy_id,
+            target_id,
+            captured_version,
+            current_version,
+        } => {
+            tracing::warn!(
+                error = %e,
+                deploy_id,
+                target_id,
+                captured_version,
+                current_version,
+                kind = %kind,
+                "stale_deployment"
+            );
+            (
+                StatusCode::CONFLICT,
+                "deploy.stale",
+                ErrorKind::Conflict,
+                "deploy is stale: the underlying state has changed since approval; re-issue required",
+            )
+        }
+        // 2.11.0 (P1-D-02, TZ #1 §10 /
+        // D-02, CWE-362): the operator
+        // tried to start a new
+        // mutating operation on a
+        // target that already has a
+        // non-terminal `pending` or
+        // `approved` row. The
+        // invariant "один target — одна
+        // активная mutating operation"
+        // holds; the operator must wait
+        // for the existing deploy to
+        // reach a terminal state. 409.
+        CoreError::ErrTargetBusy {
+            target_id,
+            existing_deploy_id,
+            existing_status,
+        } => {
+            tracing::warn!(
+                error = %e,
+                target_id,
+                existing_deploy_id,
+                existing_status = %existing_status,
+                "target_busy"
+            );
+            (
+                StatusCode::CONFLICT,
+                "deploy.target_busy",
+                ErrorKind::Conflict,
+                "target is busy with another active deploy; one target — one active mutating operation",
+            )
+        }
         other => {
             tracing::warn!(error = %other, "unmapped CoreError");
             (

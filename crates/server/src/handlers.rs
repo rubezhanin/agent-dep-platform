@@ -750,11 +750,38 @@ pub async fn request_deploy(
                             Some(&format!("persist: {e}")),
                         )
                         .await;
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        crate::error_response::from_any_error(&e),
-                    )
-                        .into_response()
+                    // 2.11.0 (P1-D-02, TZ #1
+                    // §10 / D-02, CWE-362):
+                    // the target already
+                    // has a non-terminal
+                    // `pending` or
+                    // `approved` row. 409
+                    // is the right status
+                    // (the request was
+                    // valid, but the
+                    // target's state
+                    // conflicts). The
+                    // `from_core_error`
+                    // mapping turns
+                    // `ErrTargetBusy` into
+                    // a typed
+                    // `"deploy.target_busy"`
+                    // response; other
+                    // errors fall through
+                    // to the 500 path.
+                    if let agent_dep_core::error::CoreError::ErrTargetBusy { .. } = &e {
+                        (
+                            StatusCode::CONFLICT,
+                            crate::error_response::from_core_error(&e).1,
+                        )
+                            .into_response()
+                    } else {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            crate::error_response::from_core_error(&e).1,
+                        )
+                            .into_response()
+                    }
                 }
             }
         }
@@ -1065,11 +1092,38 @@ pub async fn mark_applied(
                     Some(&format!("db error: {e}")),
                 )
                 .await;
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                crate::error_response::from_any_error(&e),
-            )
-                .into_response()
+            // 2.11.0 (P1-D-01b /
+            // P1-D-02, TZ #1 §10 /
+            // D-01 + D-02, CWE-494 +
+            // CWE-362): a stale
+            // deploy (drift between
+            // approval and apply on
+            // any
+            // `DeploymentIntent`
+            // field, or a fence
+            // mismatch because
+            // another apply landed
+            // for the same target)
+            // is a 409, not a 500.
+            // `from_core_error` maps
+            // `ErrStaleDeployment` to
+            // `(409, "deploy.stale")`.
+            // Other errors fall
+            // through to the generic
+            // 500 path.
+            if let agent_dep_core::error::CoreError::ErrStaleDeployment { .. } = &e {
+                (
+                    StatusCode::CONFLICT,
+                    crate::error_response::from_core_error(&e).1,
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    crate::error_response::from_core_error(&e).1,
+                )
+                    .into_response()
+            }
         }
     }
 }

@@ -105,9 +105,43 @@ pub enum CoreError {
         /// 2.11.0 (P1-D-01b): the
         /// field that mismatched.
         /// Currently always
-        /// `"target_config_version"`.
+        /// `"target_config_version"`
+        /// or `"deployment_fence"`
+        /// (P1-D-02).
         kind: String,
         captured_version: i64,
         current_version: i64,
+    },
+
+    /// 2.11.0 (P1-D-02, TZ #1 §10 /
+    /// D-02, CWE-362 Concurrent
+    /// Execution using Shared
+    /// Resource without Proper
+    /// Synchronization): the operator
+    /// tried to start a new mutating
+    /// operation on a target that
+    /// already has a non-terminal
+    /// (`pending` or `approved`)
+    /// `pending_deploys` row. The
+    /// invariant "один target — одна
+    /// активная mutating operation"
+    /// is enforced at the SQL level
+    /// by a partial UNIQUE index
+    /// (`idx_pending_deploys_one_active_per_target`),
+    /// and the application layer
+    /// surfaces the violation as a
+    /// typed `ErrTargetBusy` carrying
+    /// the existing row's id. The
+    /// operator must wait for the
+    /// existing deploy to reach a
+    /// terminal state (`applied` or
+    /// `rejected`) before issuing
+    /// another one to the same
+    /// target.
+    #[error("target {target_id} is busy with deploy {existing_deploy_id} (status: {existing_status}); one target — one active mutating operation (P1-D-02, CWE-362)")]
+    ErrTargetBusy {
+        target_id: i64,
+        existing_deploy_id: i64,
+        existing_status: String,
     },
 }
