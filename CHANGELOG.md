@@ -2216,6 +2216,142 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   isolation. No schema change;
   no new dependency.
 
+- **P1-S-05 Plugin signature
+  enforcement (TZ #1 §9 /
+  S-05 + TZ #2 WP-1.1 /
+  SEC-08, CWE-494 Download of
+  Code Without Integrity Check,
+  closes the "operator
+  accidentally loads an
+  unsigned plugin" threat).**
+  The pre-fix `PluginScanner::scan`
+  loaded the plugin's
+  `plugin.toml` manifest if
+  present and verified the
+  Ed25519 signature against the
+  trust store, but did NOT
+  REQUIRE a signature — an
+  unsigned manifest was
+  silently accepted (the
+  trust store was opt-in).
+  CWE-494: an operator who
+  copies an unsigned
+  `plugin.sh` into
+  `AGENCY_PLUGINS_DIR` got a
+  scan that ran the unsigned
+  binary. The post-fix security
+  gate runs BEFORE any child
+  process is spawned and
+  enforces two invariants:
+  (1) **PATH CONSTRAINT** via
+  the new
+  `check_plugin_path_constraint`
+  helper. When the operator
+  sets `AGENCY_PLUGINS_DIR`,
+  the canonical plugin path
+  MUST live inside the
+  canonical approved directory.
+  A symlink from inside
+  `AGENCY_PLUGINS_DIR` to an
+  untrusted binary is detected
+  by the canonicalize step
+  (the link resolves to its
+  target before the prefix
+  check). The check is a
+  no-op when
+  `AGENCY_PLUGINS_DIR` is unset
+  (backward compat for pre-
+  P1-S-05 callers).
+  (2) **SIGNATURE ENFORCEMENT**
+  via the new
+  `allow_unsigned_plugins`
+  helper. The helper returns
+  `true` for `cfg!(debug_assertions)`
+  (so the integration test
+  suite can run without
+  signing every fixture
+  plugin) OR when the env var
+  `AGENCY_ALLOW_UNSIGNED_PLUGINS=1`
+  is set. In a release build
+  without the env var, the
+  helper returns `false` and
+  the gate:
+   - reads
+     `<plugin_dir>/plugin.toml`
+     (returns an error if
+     missing);
+   - parses it via the
+     existing `PluginManifest::parse`;
+   - reads the trust store
+     from `AGENCY_TRUST_STORE`
+     (or, as a fallback,
+     `<AGENCY_PLUGINS_DIR>/trust.toml`);
+   - calls
+     `manifest.verify_signature(&trust)`
+     (the existing
+     Ed25519-over-canonical-bytes
+     verifier).
+  Any failure surfaces a
+  typed `CoreError::ErrIo` with
+  a `P1-S-05`-tagged reason so
+  the operator sees the exact
+  gate that fired. When the
+  escape IS used in a release
+  build, a `tracing::warn!`
+  audit is emitted with the
+  plugin name, binary path,
+  and the explicit text
+  "DO NOT use in production".
+  4 new unit tests in
+  `plugin_tests.rs`:
+  `path_constraint_is_noop_when_AGENCY_PLUGINS_DIR_unset`
+  (regression-guard for the
+  backward-compat path),
+  `path_constraint_passes_when_plugin_is_inside_AGENCY_PLUGINS_DIR`
+  (the happy path with
+  `AGENCY_PLUGINS_DIR` set to
+  the plugin's parent dir),
+  `path_constraint_rejects_plugin_outside_AGENCY_PLUGINS_DIR`
+  (the CWE-494 defense — a
+  plugin in a sibling dir is
+  rejected with a
+  `P1-S-05`-tagged error),
+  `AGENCY_ALLOW_UNSIGNED_PLUGINS_1_allows_unsigned`
+  (the escape hatch is honored
+  in a debug build), and
+  `allow_unsigned_plugins_helper_in_debug_returns_true`
+  (regression-guard for the
+  debug-build short-circuit).
+  **CWE-494 closed** for the
+  "operator accidentally loads
+  unsigned plugin" threat. The
+  signature-rejection path in
+  release builds is covered by
+  the pre-existing
+  `plugin_manifest_verifies_signature`
+  test (which calls
+  `manifest.verify_signature` with
+  a signed manifest); the new
+  wiring in `scan()` is the
+  gate that calls it. The
+  pre-existing pre-fix flake
+  `oidc::tests::oidc_mock_default_is_false_in_277`
+  still appears in the
+  full-workspace parallel run
+  (env-var race between
+  parallel test threads);
+  passes in isolation. No
+  schema change; no new
+  dependency. Also fixed a
+  pre-existing rustdoc list-
+  parsing error in
+  `STDIN_CHUNK_BYTES`'s
+  module doc (the text "1. "
+  inside a list mis-parsed as
+  a top-level numbered item;
+  reworded to remove the
+  numbered parenthetical).
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

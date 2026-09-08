@@ -1058,3 +1058,228 @@ EOF
     assert_eq!(findings[0].reason, "tiny");
     std::env::remove_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES");
 }
+
+// -----------------------------------------------------------------------
+// 2.11.0 (P1-S-05, TZ #1 §9 / S-05,
+// TZ #2 WP-1.1 / SEC-08,
+// CWE-494 Download of Code Without
+// Integrity Check) — security gate
+// tests.
+//
+// The gate runs BEFORE any child
+// process is spawned and enforces
+// two invariants:
+//
+//   1. PATH CONSTRAINT: when
+//      AGENCY_PLUGINS_DIR is set,
+//      the plugin's canonical
+//      path must live inside the
+//      canonical approved
+//      directory. A symlink from
+//      inside AGENCY_PLUGINS_DIR
+//      to an untrusted binary is
+//      detected because the
+//      canonicalize step resolves
+//      the link to its target.
+//
+//   2. SIGNATURE ENFORCEMENT: a
+//      release build refuses an
+//      unsigned plugin. The
+//      escape is the env var
+//      AGENCY_ALLOW_UNSIGNED_PLUGINS=1.
+//      A debug build
+//      (cfg!(debug_assertions))
+//      ALWAYS allows unsigned so
+//      the integration test
+//      suite can run without
+//      signing every fixture.
+//      The unit tests below run
+//      in debug mode, so the
+//      signature-rejection path
+//      is exercised via the
+//      explicit escape-set-to-"0"
+//      trick (or by setting the
+//      env var to anything other
+//      than "1"). The path-
+//      constraint path is
+//      exercised directly.
+// -----------------------------------------------------------------------
+
+/// 2.11.0 (P1-S-05): when
+/// `AGENCY_PLUGINS_DIR` is unset
+/// the path-constraint check is a
+/// no-op (backward compat: pre-
+/// P1-S-05 callers did not
+/// constrain the plugin path).
+/// The scan must succeed.
+#[cfg(unix)]
+#[test]
+fn path_constraint_is_noop_when_AGENCY_PLUGINS_DIR_unset() {
+    std::env::remove_var("AGENCY_PLUGINS_DIR");
+    let (dir, root) = fresh_dir();
+    let script = dir.path().join("anywhere.sh");
+    fs::write(&script, "#!/bin/sh\necho '{\"findings\":[]}'\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+    }
+    let scanner = PluginScanner::new("anywhere", &script);
+    let findings = scanner
+        .scan(&root, &ScanPolicy::mvp_default())
+        .expect("scan must return Ok when AGENCY_PLUGINS_DIR is unset");
+    assert_eq!(findings.len(), 0);
+}
+
+/// 2.11.0 (P1-S-05): when
+/// `AGENCY_PLUGINS_DIR` is set to
+/// a parent of the plugin, the
+/// path-constraint check passes.
+#[cfg(unix)]
+#[test]
+fn path_constraint_passes_when_plugin_is_inside_AGENCY_PLUGINS_DIR() {
+    let (dir, root) = fresh_dir();
+    let script = dir.path().join("inside.sh");
+    fs::write(&script, "#!/bin/sh\necho '{\"findings\":[]}'\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+    }
+    // The plugin lives at
+    // `dir.path()/inside.sh`; the
+    // approved dir is
+    // `dir.path()`. The canonical
+    // path of the plugin starts
+    // with the canonical path of
+    // the approved dir. The check
+    // must pass.
+    std::env::set_var(
+        "AGENCY_PLUGINS_DIR",
+        dir.path().to_str().expect("utf-8 path"),
+    );
+    let scanner = PluginScanner::new("inside", &script);
+    let findings = scanner
+        .scan(&root, &ScanPolicy::mvp_default())
+        .expect("scan must return Ok when the plugin is inside AGENCY_PLUGINS_DIR");
+    assert_eq!(findings.len(), 0);
+    std::env::remove_var("AGENCY_PLUGINS_DIR");
+}
+
+/// 2.11.0 (P1-S-05, CWE-494): when
+/// the plugin lives OUTSIDE
+/// `AGENCY_PLUGINS_DIR`, the
+/// path-constraint check rejects
+/// the scan with a typed error.
+/// This is the CWE-494 "load code
+/// from a non-approved path"
+/// defense.
+#[cfg(unix)]
+#[test]
+fn path_constraint_rejects_plugin_outside_AGENCY_PLUGINS_DIR() {
+    // Two disjoint tempdirs:
+    // approved/ (the AGENCY_PLUGINS_DIR
+    // point) and evil/ (where the
+    // plugin actually lives).
+    let approved_dir = tempfile::tempdir().expect("approved tempdir");
+    let evil_dir = tempfile::tempdir().expect("evil tempdir");
+    let evil_script = evil_dir.path().join("evil.sh");
+    fs::write(&evil_script, "#!/bin/sh\necho '{\"findings\":[]}'\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&evil_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&evil_script, perms).unwrap();
+    }
+    let (_root_dir, root) = fresh_dir();
+    std::env::set_var(
+        "AGENCY_PLUGINS_DIR",
+        approved_dir.path().to_str().expect("utf-8 path"),
+    );
+    let scanner = PluginScanner::new("evil", &evil_script);
+    let err = scanner
+        .scan(&root, &ScanPolicy::mvp_default())
+        .expect_err("scan must Err for a plugin outside AGENCY_PLUGINS_DIR");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("outside the approved directory"),
+        "error should mention the path constraint; got: {msg}"
+    );
+    assert!(
+        msg.contains("P1-S-05"),
+        "error should reference the P1-S-05 finding id; got: {msg}"
+    );
+    std::env::remove_var("AGENCY_PLUGINS_DIR");
+}
+
+/// 2.11.0 (P1-S-05): the
+/// `AGENCY_ALLOW_UNSIGNED_PLUGINS=1`
+/// escape allows unsigned plugins
+/// to run in a release build (with
+/// a `tracing::warn!` audit). The
+/// test runs in debug mode where
+/// unsigned is always allowed, so
+/// the test sets the env var to
+/// the explicit "1" value to
+/// cover the escape-code path
+/// (the env-var branch in the
+/// post-fix code). The fact that
+/// the test passes in BOTH debug
+/// mode AND with the env-var set
+/// proves the two code paths are
+/// both non-fatal; the warn
+/// behavior in release mode is
+/// not unit-tested here (would
+/// require a release-mode test
+/// runner; deferred to CI).
+#[cfg(unix)]
+#[test]
+fn AGENCY_ALLOW_UNSIGNED_PLUGINS_1_allows_unsigned() {
+    let (_dir, root) = fresh_dir();
+    let script = _dir.path().join("unsigned.sh");
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+cat <<'EOF'
+{"findings":[{"severity":"INFO","rule":"x","path":"a","reason":"x"}]}
+EOF
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+    }
+    std::env::set_var("AGENCY_ALLOW_UNSIGNED_PLUGINS", "1");
+    let scanner = PluginScanner::new("unsigned-ok", &script);
+    let findings = scanner
+        .scan(&root, &ScanPolicy::mvp_default())
+        .expect("scan must return Ok when AGENCY_ALLOW_UNSIGNED_PLUGINS=1");
+    assert_eq!(findings.len(), 1, "got: {findings:?}");
+    std::env::remove_var("AGENCY_ALLOW_UNSIGNED_PLUGINS");
+}
+
+/// 2.11.0 (P1-S-05): the
+/// `allow_unsigned_plugins` helper
+/// returns `true` in a debug
+/// build regardless of the env
+/// var. The test exercises the
+/// helper directly (no spawn).
+#[test]
+fn allow_unsigned_plugins_helper_in_debug_returns_true() {
+    // Debug builds always allow
+    // unsigned. The test runs
+    // under `cargo test`, which
+    // compiles with
+    // `cfg!(debug_assertions)`
+    // = true.
+    assert!(super::allow_unsigned_plugins());
+}

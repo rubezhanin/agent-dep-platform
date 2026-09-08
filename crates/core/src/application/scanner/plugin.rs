@@ -168,11 +168,13 @@ const PLUGIN_WAIT_POLL: Duration = Duration::from_millis(100);
 /// buffer can be exhausted before
 /// the plugin's reader thread is
 /// scheduled, blocking the parent.
-/// CWE-400: a single large write
-/// + a slow reader is a classic
-/// DoS. The chunked write keeps
-/// the pipe drained and the parent
-/// responsive to the kill signal.
+/// This is the classic CWE-400
+/// shape: a single large write
+/// plus a slow reader is a
+/// classic DoS. The chunked
+/// write keeps the pipe drained
+/// and the parent responsive to
+/// the kill signal.
 const STDIN_CHUNK_BYTES: usize = 4 * 1024;
 
 /// Hard timeout for a single plugin invocation.
@@ -184,6 +186,93 @@ fn default_timeout() -> Duration {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(30);
     Duration::from_secs(secs)
+}
+
+/// 2.11.0 (P1-S-05, TZ #1 §9 / S-05,
+/// TZ #2 WP-1.1 / SEC-08, CWE-494
+/// Download of Code Without
+/// Integrity Check): the
+/// "unsigned plugin is allowed"
+/// escape hatch. `true` means
+/// unsigned plugins may run
+/// (with a `tracing::warn!`); the
+/// only path that returns `true`
+/// is a debug build
+/// (`cfg!(debug_assertions)`) OR
+/// `AGENCY_ALLOW_UNSIGNED_PLUGINS=1`
+/// in the environment. The
+/// escape is for development /
+/// integration tests ONLY —
+/// production release builds
+/// must NOT set the env var, and
+/// a release build running with
+/// an unsigned plugin will
+/// refuse to spawn the child.
+/// CWE-494 closed for the
+/// "operator accidentally loads
+/// an unsigned plugin" threat.
+fn allow_unsigned_plugins() -> bool {
+    if cfg!(debug_assertions) {
+        return true;
+    }
+    matches!(
+        std::env::var("AGENCY_ALLOW_UNSIGNED_PLUGINS")
+            .ok()
+            .as_deref(),
+        Some("1")
+    )
+}
+
+/// 2.11.0 (P1-S-05, TZ #1 §9 / S-05,
+/// CWE-494): the path-constraint
+/// helper. When the operator sets
+/// `AGENCY_PLUGINS_DIR`, every
+/// plugin the scanner spawns MUST
+/// have a canonical path that
+/// lives inside the approved
+/// directory. The check is
+/// canonicalize-based so a
+/// symlink (e.g.
+/// `AGENCY_PLUGINS_DIR/ok -> /tmp/evil`)
+/// cannot smuggle a plugin from
+/// outside the approved tree —
+/// the canonicalization resolves
+/// the link and the comparison is
+/// a byte-exact prefix match
+/// against the canonical
+/// approved dir. When
+/// `AGENCY_PLUGINS_DIR` is unset,
+/// the check is a no-op
+/// (backward compat: pre-P1-S-05
+/// callers did not constrain the
+/// plugin path).
+fn check_plugin_path_constraint(binary: &Path) -> CoreResult<()> {
+    let approved_dir = match std::env::var("AGENCY_PLUGINS_DIR").ok() {
+        Some(s) if !s.is_empty() => std::path::PathBuf::from(s),
+        _ => return Ok(()), // no constraint configured
+    };
+    let approved_canon = approved_dir.canonicalize().map_err(|e| {
+        CoreError::ErrIo(std::io::Error::other(format!(
+            "AGENCY_PLUGINS_DIR `{}` could not be canonicalized: {e}",
+            approved_dir.display()
+        )))
+    })?;
+    let binary_canon = binary.canonicalize().map_err(|e| {
+        CoreError::ErrIo(std::io::Error::other(format!(
+            "plugin binary `{}` could not be canonicalized: {e}",
+            binary.display()
+        )))
+    })?;
+    if !binary_canon.starts_with(&approved_canon) {
+        return Err(CoreError::ErrIo(std::io::Error::other(format!(
+            "plugin binary `{}` is outside the approved directory `{}` \
+             (P1-S-05 path constraint; set AGENCY_ALLOW_UNSIGNED_PLUGINS=1 \
+             to skip signature checks, but NOT the path constraint)",
+            binary_canon.display(),
+            approved_canon.display()
+        ))));
+    }
+    Ok(())
 }
 
 /// 2.11.0 (P1-S-03, TZ #1 §9 / S-03):
@@ -337,6 +426,177 @@ impl Scanner for PluginScanner {
                 std::io::ErrorKind::NotFound,
                 format!("plugin binary not found: {}", self.binary.display()),
             )));
+        }
+        // 2.11.0 (P1-S-05, TZ #1 §9 / S-05,
+        // TZ #2 WP-1.1 / SEC-08, CWE-494
+        // Download of Code Without
+        // Integrity Check): the
+        // SECURITY GATE.
+        //
+        // Two checks run before any
+        // child process is spawned:
+        //
+        // (1) PATH CONSTRAINT. If
+        //     `AGENCY_PLUGINS_DIR` is
+        //     set, the canonical
+        //     binary path MUST live
+        //     inside the canonical
+        //     approved directory. A
+        //     symlink from inside
+        //     `AGENCY_PLUGINS_DIR`
+        //     pointing at an
+        //     untrusted binary
+        //     elsewhere is detected
+        //     by the canonicalize
+        //     step (the link resolves
+        //     to its target before
+        //     the prefix check). This
+        //     is the CWE-494 "load
+        //     code from a
+        //     non-approved path"
+        //     defense.
+        //
+        // (2) SIGNATURE ENFORCEMENT.
+        //     The pre-fix design
+        //     loaded the plugin's
+        //     `plugin.toml` manifest
+        //     if present and verified
+        //     the Ed25519 signature
+        //     against the trust
+        //     store, but did NOT
+        //     REQUIRE a signature —
+        //     an unsigned manifest
+        //     was silently accepted
+        //     (the trust store was
+        //     opt-in). CWE-494: an
+        //     operator who copies a
+        //     `plugin.sh` into
+        //     `AGENCY_PLUGINS_DIR`
+        //     without signing it
+        //     gets a scan that runs
+        //     the unsigned binary.
+        //     The post-fix gate
+        //     refuses an unsigned
+        //     plugin in a release
+        //     build, unless the
+        //     operator explicitly
+        //     opts in via
+        //     `AGENCY_ALLOW_UNSIGNED_PLUGINS=1`.
+        //     Debug builds
+        //     (cfg!(debug_assertions))
+        //     always allow unsigned
+        //     so the integration test
+        //     suite can run without
+        //     signing every fixture
+        //     plugin.
+        check_plugin_path_constraint(&self.binary)?;
+        if !allow_unsigned_plugins() {
+            // Production path.
+            // Locate the manifest
+            // next to the binary, parse
+            // it, and verify the
+            // signature against the
+            // trust store.
+            let manifest_path = self
+                .binary
+                .parent()
+                .map(|p| p.join("plugin.toml"))
+                .ok_or_else(|| {
+                    CoreError::ErrIo(std::io::Error::other(
+                        "plugin binary has no parent directory; \
+                         cannot locate plugin.toml for signature check",
+                    ))
+                })?;
+            if !manifest_path.is_file() {
+                return Err(CoreError::ErrIo(std::io::Error::other(format!(
+                    "plugin manifest `{}` is missing; \
+                     production builds (P1-S-05) require a signed plugin.toml",
+                    manifest_path.display()
+                ))));
+            }
+            let manifest_bytes = std::fs::read(&manifest_path).map_err(|e| {
+                CoreError::ErrIo(std::io::Error::other(format!(
+                    "read plugin manifest `{}`: {e}",
+                    manifest_path.display()
+                )))
+            })?;
+            let manifest = PluginManifest::parse(&manifest_bytes).map_err(|e| {
+                CoreError::ErrIo(std::io::Error::other(format!(
+                    "parse plugin manifest `{}`: {e}",
+                    manifest_path.display()
+                )))
+            })?;
+            // Load the trust store from
+            // the env-configured
+            // location. The trust
+            // store is at
+            // `AGENCY_TRUST_STORE`
+            // (TOML); default is
+            // `<AGENCY_PLUGINS_DIR>/trust.toml`
+            // when the dir is set.
+            let trust_path = std::env::var("AGENCY_TRUST_STORE")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var("AGENCY_PLUGINS_DIR")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .map(|p| std::path::PathBuf::from(p).join("trust.toml"))
+                });
+            let trust = match trust_path {
+                Some(p) if p.is_file() => {
+                    let bytes = std::fs::read(&p).map_err(|e| {
+                        CoreError::ErrIo(std::io::Error::other(format!(
+                            "read trust store `{}`: {e}",
+                            p.display()
+                        )))
+                    })?;
+                    super::trust_store::TrustStore::parse(&bytes).map_err(|e| {
+                        CoreError::ErrIo(std::io::Error::other(format!(
+                            "parse trust store `{}`: {e}",
+                            p.display()
+                        )))
+                    })?
+                }
+                _ => {
+                    return Err(CoreError::ErrIo(std::io::Error::other(
+                        "no trust store configured; production builds (P1-S-05) \
+                         require AGENCY_TRUST_STORE (TOML) with the signer's public key",
+                    )));
+                }
+            };
+            manifest.verify_signature(&trust).map_err(|e| {
+                tracing::warn!(
+                    plugin = %self.name,
+                    binary = %self.binary.display(),
+                    manifest = %manifest_path.display(),
+                    error = %e,
+                    "P1-S-05: plugin signature verification failed"
+                );
+                CoreError::ErrIo(std::io::Error::other(format!(
+                    "plugin `{}` signature verification failed: {e}",
+                    self.name
+                )))
+            })?;
+        } else if std::env::var("AGENCY_ALLOW_UNSIGNED_PLUGINS")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            // The escape was used in
+            // a release build. Warn
+            // loudly so the operator
+            // knows their plugin is
+            // running without a
+            // signature check.
+            tracing::warn!(
+                plugin = %self.name,
+                binary = %self.binary.display(),
+                "P1-S-05: AGENCY_ALLOW_UNSIGNED_PLUGINS=1 in a release build; \
+                 plugin is running WITHOUT signature verification. \
+                 This is for development ONLY; do NOT use in production."
+            );
         }
         // Build the file list (relative POSIX
         // paths). Mirrors the `RegexScanner`
