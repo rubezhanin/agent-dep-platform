@@ -51,6 +51,28 @@ pub struct AuthenticatedUser {
 #[derive(Debug, Clone)]
 pub struct CsrfContext(pub Option<String>);
 
+/// 2.11.0 (B1, audit CWE-798):
+/// `AGENCY_BEARER_FALLBACK=1` enables
+/// the legacy bearer path for pre-OIDC
+/// users (those with `token_expires_at
+/// IS NULL` because they were created
+/// in 2.0.0..2.7.7). Default OFF
+/// (`0`). When OFF, `require_bearer`
+/// rejects pre-OIDC bearer tokens
+/// with 401 + "WARN-AND-REJECT".
+///
+/// 2.12.0 (TZ-pinned): this helper
+/// returns `false` unconditionally —
+/// the entire `require_bearer` is
+/// removed.
+fn bearer_fallback_enabled() -> bool {
+    if let Ok(v) = std::env::var("AGENCY_BEARER_FALLBACK") {
+        matches!(v.as_str(), "1" | "true" | "yes" | "on")
+    } else {
+        false
+    }
+}
+
 pub async fn require_bearer(
     State(state): State<ServerState>,
     request: Request,
@@ -93,6 +115,47 @@ pub async fn require_bearer(
     }
     match state.users.find_by_token(&token).await {
         Ok(Some(user)) => {
+            // 2.11.0 (B1, audit CWE-798):
+            // if this user is a legacy
+            // bearer-only user (their
+            // `token_expires_at` is NULL
+            // because they were created
+            // in 2.0.0..2.7.7, before
+            // OIDC), AND the operator
+            // has not enabled the
+            // `AGENCY_BEARER_FALLBACK=1`
+            // escape hatch, REJECT the
+            // request with 401 +
+            // "WARN-AND-REJECT". The
+            // pre-fix code accepted these
+            // tokens forever (XSS in the
+            // Tauri panel → bearer
+            // exfiltrated from localStorage
+            // → permanent access). 2.12.0
+            // will remove the fallback
+            // entirely; for now the
+            // operator can opt back in
+            // during the 2.11.0
+            // transition window.
+            if user.token_expires_at.is_none() && !bearer_fallback_enabled() {
+                tracing::warn!(
+                    "2.11.0 (B1) REFUSED bearer token for pre-OIDC user `{}` \
+                     (id={}); set AGENCY_BEARER_FALLBACK=1 to re-enable during \
+                     the 2.12.0 migration. The `auth_log` already records this \
+                     attempt under `action = POST /v1/auth/login_rejected`.",
+                    user.name,
+                    user.id
+                );
+                return unauthorized(
+                    &state,
+                    &method,
+                    &path,
+                    "bearer auth disabled for pre-OIDC users; \
+                     complete OIDC migration or set \
+                     AGENCY_BEARER_FALLBACK=1 (deprecated 2.12.0)",
+                )
+                .await;
+            }
             // 2.7.8 (ADR-0036): enforce
             // local bearer expiry. OIDC
             // users get a non-NULL

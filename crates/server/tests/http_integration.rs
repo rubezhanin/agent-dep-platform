@@ -42,6 +42,28 @@ struct TestServer {
 }
 
 async fn boot() -> TestServer {
+    // 2.11.0 (B1, audit): the test
+    // harness enables the
+    // AGENCY_BEARER_FALLBACK env
+    // var so the existing
+    // test infrastructure (which
+    // uses the pre-OIDC admin
+    // token) keeps working. The
+    // dedicated CSRF / B1 tests
+    // unset the var locally to
+    // exercise the WARN-AND-REJECT
+    // path. Tests run single-
+    // threaded (--test-threads=1)
+    // so the env mutation is
+    // safe.
+    // SAFETY: set_var is marked
+    // unsafe because of libc
+    // thread-safety, but the
+    // http_integration suite is
+    // single-threaded.
+    unsafe {
+        std::env::set_var("AGENCY_BEARER_FALLBACK", "1");
+    }
     boot_with_legacy(None).await
 }
 
@@ -2496,6 +2518,79 @@ async fn csrf_safe_methods_do_not_require_token() {
         .await
         .expect("get");
     assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn bearer_pre_oidc_user_is_rejected_without_fallback_flag() {
+    // 2.11.0 (B1, audit CWE-798):
+    // boot() sets
+    // `AGENCY_BEARER_FALLBACK=1`
+    // for backward-compat. We boot
+    // first, then clear the env
+    // var (so the next request sees
+    // `false`), and finally make
+    // the request. The env var is
+    // read per-request in
+    // `bearer_fallback_enabled()`.
+    // SAFETY: see boot() for the
+    // thread-safety discussion.
+    let srv = boot().await;
+    unsafe {
+        std::env::remove_var("AGENCY_BEARER_FALLBACK");
+    }
+    // srv.admin_token is the
+    // pre-OIDC admin's bearer
+    // (token_expires_at IS NULL).
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/users", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(
+        resp.status(),
+        401,
+        "B1: pre-OIDC bearer must be REJECTED when fallback is OFF"
+    );
+    // 2.11.0 (B1): the WARN-AND-REJECT
+    // reasoning is in the audit
+    // row, not the 401 body. The
+    // body is intentionally
+    // generic to avoid leaking
+    // that the operator has the
+    // legacy fallback disabled.
+    // Read the audit row directly
+    // from the DB (the GET
+    // /v1/audit endpoint itself
+    // is also rejected by the
+    // same B1 check above, so a
+    // query bypass via
+    // `connect_helper` is the
+    // only way to verify the
+    // row landed).
+    let pool = connect_helper(&srv).await;
+    let row: (String, String) = sqlx::query_as(
+        "SELECT actor, details FROM audit_log \
+         WHERE action = 'GET /v1/users' AND outcome = 'error' \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit row");
+    assert_eq!(row.0, "anonymous", "B1: rejected actor must be anonymous");
+    let details: serde_json::Value = serde_json::from_str(&row.1).expect("details json");
+    assert!(
+        details["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("AGENCY_BEARER_FALLBACK"),
+        "B1: audit row must mention the fallback flag, got: {details}"
+    );
+    // Re-arm for the rest of the
+    // suite.
+    unsafe {
+        std::env::set_var("AGENCY_BEARER_FALLBACK", "1");
+    }
 }
 
 #[tokio::test]
