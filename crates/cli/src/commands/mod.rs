@@ -1,6 +1,7 @@
 pub mod catalog;
 pub mod completion;
 pub mod deploy;
+pub mod health;
 pub mod hermes;
 pub mod lock;
 pub mod mcp;

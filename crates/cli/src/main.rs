@@ -8,7 +8,7 @@
 
 use agent_dep_cli::cli_def::{Cli, Command};
 use agent_dep_cli::commands::{
-    catalog, completion, deploy, hermes, lock, mcp, rollback, serve, status, system,
+    catalog, completion, deploy, health, hermes, lock, mcp, rollback, serve, status, system,
 };
 use agent_dep_cli::env_validate::{warn_server_only_envs, CliEnv};
 use clap::Parser;
@@ -56,6 +56,23 @@ async fn main() -> ExitCode {
 
 async fn dispatch(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Command::Health { url, timeout_secs } => {
+            // 2.10.0 (D1, audit): health
+            // probe returns Ok(()) on
+            // success or Err(i32) with
+            // the exit code the caller
+            // should pass to
+            // `std::process::exit`. The
+            // exit code is the API
+            // contract for the
+            // healthcheck (docker-compose
+            // `interval: 30s` retries on
+            // any non-zero).
+            if let Err(code) = health::run(url, timeout_secs).await {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Command::Status => status::run().await.map_err(Into::into),
         Command::Catalog { action } => match action {
             agent_dep_cli::cli_def::CatalogAction::Update { path } => catalog::update(path).await,

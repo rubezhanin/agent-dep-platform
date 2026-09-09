@@ -114,15 +114,32 @@ services:
     networks:
       - agency
     healthcheck:
-      # distroless has no shell /
-      # wget — use caddy to probe
-      # the upstream instead (see
-      # `caddy` service). The
-      # healthcheck on this side
-      # only verifies the process
-      # is alive; the real check
-      # is "caddy can reach us".
-      test: ["CMD", "/usr/local/bin/agency-server", "--help"]
+      # 2.10.0 (D1, audit): the
+      # pre-fix
+      # `["agency-server", "--help"]`
+      # always exits 0 (a crashed
+      # server still reported
+      # healthy). Replaced with
+      # `agency health` which
+      # actually probes
+      # `GET /v1/health` and
+      # exits non-zero on any
+      # failure (timeout, non-2xx,
+      # missing `status` field).
+      # The `agency` CLI is the
+      # probe binary — it's a
+      # 3 MB static binary in
+      # the same distroless image,
+      # so the distroless
+      # constraint (no shell,
+      # no wget) is preserved.
+      test:
+        - "/usr/local/bin/agency"
+        - "health"
+        - "--url"
+        - "http://127.0.0.1:8080/v1/health"
+        - "--timeout-secs"
+        - "3"
       interval: 30s
       timeout: 5s
       retries: 3

@@ -16,6 +16,33 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// 2.10.0 (D1, audit): probe a
+    /// running `agency-server` via
+    /// `GET /v1/health`. Designed
+    /// for the docker-compose /
+    /// systemd `healthcheck` —
+    /// exits 0 if the server
+    /// returns 200, non-zero
+    /// otherwise. The pre-fix
+    /// docker-compose used
+    /// `["agency-server", "--help"]`
+    /// which always returns 0
+    /// (even if the server is
+    /// dead). `--url` accepts a
+    /// full URL to `/v1/health`
+    /// (e.g. `http://server:8080/v1/health`).
+    Health {
+        /// Full URL to the
+        /// `/v1/health` endpoint.
+        /// Default
+        /// `http://127.0.0.1:8080/v1/health`.
+        #[arg(long, default_value = "http://127.0.0.1:8080/v1/health")]
+        url: String,
+        /// Request timeout in
+        /// seconds. Default 3s.
+        #[arg(long, default_value_t = 3)]
+        timeout_secs: u64,
+    },
     /// Show current deployment status.
     Status,
     /// Ingest and inspect a local catalog (MVP-3).

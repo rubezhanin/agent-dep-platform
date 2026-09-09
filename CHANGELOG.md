@@ -326,6 +326,53 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     clippy clean,
     fmt clean.
 
+- **D1 `agency
+  health` probe +
+  docker-compose
+  fix (audit).**
+  Pre-fix
+  `docker-compose.yml`
+  agency-server
+  healthcheck:
+  `["agency-server",
+  "--help"]` —
+  ВСЕГДА exit 0
+  (clap help path).
+  Crashed server
+  reported
+  "healthy"
+  Docker-у.
+  Post-fix:
+  - Новый
+    `agency health`
+    CLI subcommand
+    (HTTP probe
+    через
+    `reqwest`)
+  - Аргументы:
+    `--url` +
+    `--timeout-secs`
+  - Exit 0 только
+    если HTTP 2xx
+    + JSON
+    `{"status":"ok"}`
+  - `docker-compose.yml`
+    обновлён:
+    `["agency",
+    "health",
+    "--url", ...]`
+  - 4 новых
+    unit теста
+    (loopback
+    HTTP server):
+    200 + ok →
+    success, 500
+    → fail, wrong
+    status →
+    fail,
+    connection
+    refused → fail
+
 - **C5 graceful
   shutdown (audit).**
   Pre-fix

@@ -30,6 +30,18 @@ serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
+# 2.10.0 (D1, audit): the
+# `agency health` subcommand
+# probes a running
+# `agency-server` via
+# `GET /v1/health`. Pre-fix
+# the docker-compose healthcheck
+# used
+# `["agency-server", "--help"]`
+# which always exits 0 (a
+# crashed server still
+# reported healthy).
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
