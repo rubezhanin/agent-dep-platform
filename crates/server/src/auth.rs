@@ -315,6 +315,25 @@ async fn unauthorized(state: &ServerState, method: &str, path: &str, reason: &st
     {
         tracing::warn!(error = %e, "audit record failed for 401");
     }
+    // 3.0.0 (C4, audit): bump
+    // the Prometheus
+    // `auth_rejections_total`
+    // counter. The `path`
+    // here is the raw URI
+    // path (the
+    // `require_session_or_bearer`
+    // middleware runs BEFORE
+    // the matched-path
+    // extension is available
+    // in some axum 0.7
+    // versions, so the
+    // label is the raw path
+    // — operators accepting
+    // a slightly higher
+    // cardinality are
+    // rewarded with a more
+    // specific signal).
+    state.metrics.inc_auth_rejection(method, path);
     (
         axum::http::StatusCode::UNAUTHORIZED,
         axum::Json(json!({"error": "unauthorized"})),
@@ -636,6 +655,22 @@ pub async fn check_role(state: ServerState, request: Request, next: Next) -> Res
     let method = request.method().to_string();
     let path = request.uri().path().to_string();
     let action = format!("{method} {path}");
+    // 3.0.0 (C4, audit): the
+    // matched-route template
+    // (or raw path fallback)
+    // for the Prometheus
+    // label. Same heuristic
+    // as the rate-limit
+    // middleware and the
+    // HTTP metrics
+    // middleware so all
+    // three label sets stay
+    // in agreement.
+    let route_label = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| path.clone());
     let user = request.extensions().get::<AuthenticatedUser>().cloned();
     match user {
         Some(u) if allowed.contains(&u.role) => next.run(request).await,
@@ -649,6 +684,21 @@ pub async fn check_role(state: ServerState, request: Request, next: Next) -> Res
                 .audit
                 .record_sync(&u.name, &action, None, AuditOutcome::Error, Some(&details))
                 .await;
+            // 3.0.0 (C4, audit):
+            // 403 = authenticated
+            // but not allowed. The
+            // counter is the same
+            // one a 401 bumps —
+            // operators alerting
+            // on
+            // `auth_rejections_total`
+            // can
+            // `sum without (status)`
+            // to roll them up, or
+            // split on the HTTP
+            // status from
+            // `http_requests_total`.
+            state.metrics.inc_auth_rejection(&method, &route_label);
             (
                 axum::http::StatusCode::FORBIDDEN,
                 axum::Json(json!({"error": "forbidden"})),
@@ -666,6 +716,21 @@ pub async fn check_role(state: ServerState, request: Request, next: Next) -> Res
                     Some(r#"{"reason":"no auth extension"}"#),
                 )
                 .await;
+            // 3.0.0 (C4, audit):
+            // 401 = no auth at
+            // all (anonymous
+            // reached a protected
+            // route). This should
+            // be rare on the SPA
+            // happy path (the SPA
+            // attaches the bearer
+            // header
+            // automatically); a
+            // non-zero value
+            // indicates a
+            // misconfigured client
+            // or a probing bot.
+            state.metrics.inc_auth_rejection(&method, &route_label);
             (
                 axum::http::StatusCode::UNAUTHORIZED,
                 axum::Json(json!({"error": "unauthorized"})),

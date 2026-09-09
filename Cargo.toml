@@ -99,6 +99,20 @@ signature = { version = "2", features = ["std"] }
 # without a heavy `getrandom` setup.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 git2 = { version = "0.20", features = ["vendored-libgit2"] }
+# 3.0.0 (C4, audit): Prometheus
+# exposition format for the
+# `/v1/metrics` endpoint. The
+# `prometheus` crate is the
+# canonical encoder — it gives
+# us `IntCounter`, `IntCounterVec`,
+# and `TextEncoder` for the
+# `text/plain; version=0.0.4`
+# rendering without pulling
+# the heavier
+# `metrics-exporter-prometheus`
+# or `axum-prometheus` adapter
+# crates.
+prometheus = { version = "0.13", default-features = false }
 
 [profile.release]
 opt-level = 3

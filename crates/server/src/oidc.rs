@@ -522,6 +522,12 @@ pub async fn callback_handler(
     let pending = match validate_state(&state.oidc_pending, &q.state).await {
         Ok(p) => p,
         Err(e) => {
+            // 3.0.0 (C4, audit):
+            // state validation
+            // failure is an
+            // error-path OIDC
+            // event.
+            state.metrics.inc_oidc_login("error");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": format!("{e}")})),
@@ -544,6 +550,13 @@ pub async fn callback_handler(
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("OIDC callback exchange_code: {e}");
+            // 3.0.0 (C4, audit):
+            // code-exchange
+            // failure (network,
+            // bad code, IdP 4xx)
+            // is an error-path
+            // OIDC event.
+            state.metrics.inc_oidc_login("error");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": format!("{e}")})),
@@ -585,6 +598,16 @@ pub async fn callback_handler(
                 Ok(pair) => pair,
                 Err(e) => {
                     tracing::warn!("OIDC callback session create: {e}");
+                    // 3.0.0 (C4, audit):
+                    // session creation
+                    // failed AFTER a
+                    // successful code
+                    // exchange + user
+                    // provisioning —
+                    // counted as an
+                    // error-path OIDC
+                    // event.
+                    state.metrics.inc_oidc_login("error");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({"error": format!("{e}")})),
@@ -594,6 +617,20 @@ pub async fn callback_handler(
             };
             let cookie =
                 crate::session_cookie::make_session_cookie_header(&sid, state.cookie_secure);
+            // 3.0.0 (C4, audit):
+            // success — session
+            // minted, cookie
+            // emitted. Bump the
+            // counter AFTER the
+            // `make_session_cookie_header`
+            // step but BEFORE the
+            // response is built
+            // so the metric
+            // reflects "sessions
+            // minted", not "code
+            // exchanges
+            // attempted".
+            state.metrics.inc_oidc_login("success");
             (
                 StatusCode::OK,
                 [(axum::http::header::SET_COOKIE, cookie)],
@@ -623,11 +660,22 @@ pub async fn callback_handler(
             )
                 .into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        )
-            .into_response(),
+        Err(e) => {
+            // 3.0.0 (C4, audit):
+            // user-provisioning
+            // failure (e.g. role
+            // mapping missing
+            // for the IdP's role
+            // claim) is an
+            // error-path OIDC
+            // event.
+            state.metrics.inc_oidc_login("error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("{e}")})),
+            )
+                .into_response()
+        }
     }
 }
 

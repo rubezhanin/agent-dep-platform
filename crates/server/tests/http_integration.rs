@@ -172,6 +172,16 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
         max_header_count: Arc::new(std::sync::atomic::AtomicU32::new(
             agent_dep_server::rate_limit::MAX_HEADER_COUNT,
         )),
+        // 3.0.0 (C4, audit):
+        // Prometheus metrics
+        // registry. A fresh
+        // registry per test
+        // instance keeps the
+        // `http_requests_total`
+        // / `audit_recorded_total`
+        // assertions
+        // deterministic.
+        metrics: agent_dep_server::metrics::Metrics::new(),
     };
     let app = router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -410,6 +420,16 @@ spec:
         max_header_count: Arc::new(std::sync::atomic::AtomicU32::new(
             agent_dep_server::rate_limit::MAX_HEADER_COUNT,
         )),
+        // 3.0.0 (C4, audit):
+        // Prometheus metrics
+        // registry. A fresh
+        // registry per test
+        // instance keeps the
+        // `http_requests_total`
+        // / `audit_recorded_total`
+        // assertions
+        // deterministic.
+        metrics: agent_dep_server::metrics::Metrics::new(),
     };
     let app = router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

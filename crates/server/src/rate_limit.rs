@@ -294,6 +294,14 @@ pub async fn rate_limit_middleware(
     let key = format!("{actor}:{source_ip}:{route}");
     let (allowed, retry_after) = state.rate_limiter.check(&key);
     if !allowed {
+        // 3.0.0 (C4, audit): bump
+        // the Prometheus counter
+        // BEFORE building the
+        // 429 response so the
+        // rejection is observable
+        // regardless of the
+        // response shape.
+        state.metrics.inc_rate_limit_rejection(&route);
         let method = request.method().to_string();
         let path = request.uri().path().to_string();
         let content_length = request

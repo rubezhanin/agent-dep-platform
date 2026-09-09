@@ -12,6 +12,7 @@ pub mod env_validate;
 pub mod error_response;
 pub mod handlers;
 pub mod idempotency;
+pub mod metrics;
 pub mod oidc;
 pub mod oidc_client;
 pub mod plan;
@@ -304,6 +305,25 @@ pub fn router(state: ServerState) -> Router {
         );
     Router::new()
         .route("/v1/health", get(handlers::health))
+        // 3.0.0 (C4, audit):
+        // Prometheus exposition
+        // endpoint. Public — the
+        // scraper doesn't carry a
+        // bearer token. The
+        // `text/plain; version=0.0.4`
+        // content type is what
+        // Prometheus / Grafana
+        // Agent / VictoriaMetrics
+        // accept. Operators are
+        // expected to gate access
+        // at the reverse-proxy /
+        // network layer (bind to
+        // 127.0.0.1, sidecar, or
+        // a separate
+        // `AGENCY_METRICS_BIND` —
+        // the latter is a 3.x
+        // follow-up).
+        .route("/v1/metrics", get(metrics::metrics_handler))
         .merge(oidc_routes)
         .merge(authed)
         .with_state(state.clone())
@@ -337,6 +357,20 @@ pub fn router(state: ServerState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit::rate_limit_middleware,
+        ))
+        // 3.0.0 (C4): the HTTP
+        // metrics middleware sits
+        // OUTERMOST so it sees the
+        // post-stack response
+        // status (a 401 from the
+        // auth layer, a 429 from
+        // the rate limiter, a 413
+        // from the body limit are
+        // all observable in
+        // `http_requests_total`).
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            metrics::http_metrics_middleware,
         ))
         .layer(TraceLayer::new_for_http())
 }
@@ -589,8 +623,9 @@ pub async fn boot_default_state() -> Result<ServerState> {
     // (`_flush_handle`), which meant
     // graceful shutdown couldn't
     // await the in-flight batch.
-    let audit_recorder = audit_recorder::AuditRecorder::debounced(
+    let audit_recorder = audit_recorder::AuditRecorder::debounced_with_metrics(
         audit,
+        metrics::Metrics::new(),
         audit_recorder::DEFAULT_FLUSH_INTERVAL,
         audit_recorder::DEFAULT_BATCH_SIZE,
         audit_recorder::DEFAULT_CHANNEL_CAPACITY,
@@ -750,6 +785,15 @@ pub async fn boot_default_state() -> Result<ServerState> {
         // value without a restart.
         max_body_bytes: Arc::new(AtomicU32::new(rate_limit::MAX_BODY_BYTES)),
         max_header_count: Arc::new(AtomicU32::new(rate_limit::MAX_HEADER_COUNT)),
+        // 3.0.0 (C4, audit):
+        // Prometheus metrics
+        // registry. Per-state
+        // (not global) so the
+        // production boot and
+        // the integration test
+        // harness each have
+        // isolated counters.
+        metrics: metrics::Metrics::new(),
     };
     // 2.7.10 (ADR-0038): background
     // GC of the `oidc_pending_state`

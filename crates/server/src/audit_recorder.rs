@@ -76,6 +76,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
+use crate::metrics::Metrics;
+
 /// Default flush cadence. 1 s is the upper bound on
 /// how long an audit event can sit in the queue
 /// before it lands on disk. Tuned so a polling
@@ -153,6 +155,20 @@ pub struct AuditRecorder {
     /// final batch to commit before
     /// exit.
     flush_handle: std::sync::Mutex<Option<JoinHandle<()>>>,
+    /// 3.0.0 (C4, audit): optional
+    /// Prometheus metrics hook.
+    /// `None` for the `direct()`
+    /// constructor (legacy +
+    /// tests that don't
+    /// care about the metrics
+    /// surface); `Some(...)` for
+    /// `with_metrics()` and the
+    /// production `debounced()`
+    /// path. The `Metrics` is
+    /// `Clone` (it wraps an
+    /// `Arc`), so holding a
+    /// clone here is cheap.
+    metrics: Option<Metrics>,
     /// 2.11.0 (B4, audit): simple
     /// in-process counter of
     /// `record_async` calls that
@@ -203,6 +219,33 @@ impl AuditRecorder {
             tx: None,
             flush_handle: std::sync::Mutex::new(None),
             dropped_to_sync_total: AtomicU64::new(0),
+            metrics: None,
+        })
+    }
+
+    /// 3.0.0 (C4, audit): same as
+    /// `direct` but with a
+    /// Prometheus `Metrics`
+    /// hook. Both `record_sync`
+    /// and `record_async` will
+    /// increment the
+    /// `audit_recorded_total`
+    /// counter, and the
+    /// `record_async` channel-full
+    /// branch will increment
+    /// `audit_dropped_to_sync_total`.
+    /// The integration test
+    /// harness uses this so
+    /// `/v1/metrics` assertions
+    /// see deterministic
+    /// counters.
+    pub fn direct_with_metrics(repo: AuditLogRepository, metrics: Metrics) -> Arc<Self> {
+        Arc::new(Self {
+            repo,
+            tx: None,
+            flush_handle: std::sync::Mutex::new(None),
+            dropped_to_sync_total: AtomicU64::new(0),
+            metrics: Some(metrics),
         })
     }
 
@@ -226,6 +269,32 @@ impl AuditRecorder {
             tx: Some(tx),
             flush_handle: std::sync::Mutex::new(Some(handle)),
             dropped_to_sync_total: AtomicU64::new(0),
+            metrics: None,
+        })
+    }
+
+    /// 3.0.0 (C4, audit): same
+    /// as `debounced` but with
+    /// a Prometheus `Metrics`
+    /// hook. Used by
+    /// `boot_default_state` in
+    /// the production path.
+    pub fn debounced_with_metrics(
+        repo: AuditLogRepository,
+        metrics: Metrics,
+        flush_interval: Duration,
+        batch_size: usize,
+        channel_capacity: usize,
+    ) -> Arc<Self> {
+        let (tx, rx) = mpsc::channel::<AuditEvent>(channel_capacity);
+        let repo_for_task = repo.clone();
+        let handle = tokio::spawn(flush_loop(rx, repo_for_task, flush_interval, batch_size));
+        Arc::new(Self {
+            repo,
+            tx: Some(tx),
+            flush_handle: std::sync::Mutex::new(Some(handle)),
+            dropped_to_sync_total: AtomicU64::new(0),
+            metrics: Some(metrics),
         })
     }
 
@@ -273,9 +342,25 @@ impl AuditRecorder {
         outcome: AuditOutcome,
         details: Option<&str>,
     ) -> agent_dep_core::error::CoreResult<i64> {
-        self.repo
+        let result = self
+            .repo
             .record(actor, action, target, outcome, details)
-            .await
+            .await;
+        // 3.0.0 (C4, audit):
+        // bump the Prometheus
+        // counter only on a
+        // successful INSERT — a
+        // failed record is
+        // surfaced via the
+        // tracing log + the
+        // caller's `CoreError`,
+        // not a phantom metric.
+        if result.is_ok() {
+            if let Some(metrics) = &self.metrics {
+                metrics.inc_audit_recorded();
+            }
+        }
+        result
     }
 
     /// Enqueue the event for batched flush. Falls
@@ -317,6 +402,34 @@ impl AuditRecorder {
                 // Production code that wants
                 // synchronous durability uses
                 // `record_sync` directly.
+                // 3.0.0 (C4, audit):
+                // optimistic counter
+                // bump — the event is
+                // enqueued for INSERT,
+                // the counter is the
+                // "enqueue" rate. The
+                // eventual flush task
+                // is best-effort; a
+                // failed batch is
+                // surfaced via the
+                // tracing log, not the
+                // metric. Operators
+                // who care about the
+                // post-flush failure
+                // rate should monitor
+                // the audit log row
+                // count over time
+                // (the
+                // `audit_recorded_total`
+                // delta over a window
+                // matches the
+                // `audit_log` table's
+                // row count delta
+                // unless a batch
+                // dropped silently).
+                if let Some(metrics) = &self.metrics {
+                    metrics.inc_audit_recorded();
+                }
                 let repo = self.repo.clone();
                 tokio::spawn(async move {
                     let _ = repo
@@ -364,6 +477,49 @@ impl AuditRecorder {
                     // "active back-
                     // pressure").
                     self.dropped_to_sync_total.fetch_add(1, Ordering::Relaxed);
+                    // 3.0.0 (C4, audit):
+                    // mirror the
+                    // back-pressure
+                    // event in
+                    // Prometheus so
+                    // operators can
+                    // alert on it
+                    // without scraping
+                    // the JSON
+                    // `/v1/audit/stats`
+                    // route.
+                    if let Some(metrics) = &self.metrics {
+                        metrics.inc_audit_dropped_to_sync();
+                    }
+                    // The row is still
+                    // being recorded
+                    // (synchronously, in
+                    // the spawn below)
+                    // — the
+                    // `audit_recorded_total`
+                    // counter for it is
+                    // incremented by
+                    // the `record_sync`
+                    // code path that
+                    // the spawn
+                    // delegates to via
+                    // `repo.record`.
+                    // We bump it
+                    // here too (the
+                    // `record_async`
+                    // happy path also
+                    // bumps it) so
+                    // that operators
+                    // see a single
+                    // monotonically
+                    // increasing line
+                    // for the audit
+                    // rate regardless
+                    // of which path the
+                    // row took.
+                    if let Some(metrics) = &self.metrics {
+                        metrics.inc_audit_recorded();
+                    }
                     let repo = self.repo.clone();
                     let action = action.to_string();
                     let actor = actor.to_string();
@@ -380,6 +536,20 @@ impl AuditRecorder {
                             )
                             .await;
                     });
+                } else if let Some(metrics) = &self.metrics {
+                    // Happy path: the
+                    // event landed in
+                    // the bounded
+                    // channel and will
+                    // be flushed by the
+                    // background task.
+                    // The
+                    // `audit_recorded_total`
+                    // counter reflects
+                    // the enqueue rate,
+                    // not the eventual
+                    // flush success.
+                    metrics.inc_audit_recorded();
                 }
             }
         }

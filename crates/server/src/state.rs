@@ -13,6 +13,7 @@ use agent_dep_core::infrastructure::repository::users_repository::UserRepository
 use agent_dep_core::infrastructure::sqlite::Db;
 
 use crate::audit_recorder::AuditRecorder;
+use crate::metrics::Metrics;
 use crate::oidc::OidcConfig;
 use crate::oidc_client::OidcClient;
 use crate::rate_limit::RateLimiter;
@@ -123,4 +124,16 @@ pub struct ServerState {
     /// 2.11.0 (P1-API-03): maximum request
     /// header count.
     pub max_header_count: Arc<AtomicU32>,
+    /// 3.0.0 (C4, audit):
+    /// Prometheus metrics
+    /// registry + counters. The
+    /// `/v1/metrics` handler
+    /// renders this in
+    /// `text/plain; version=0.0.4`
+    /// exposition format. The
+    /// `Arc` keeps the per-handler
+    /// `clone()` cheap; the
+    /// counters themselves are
+    /// already atomic.
+    pub metrics: Metrics,
 }

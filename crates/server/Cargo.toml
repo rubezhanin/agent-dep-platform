@@ -70,6 +70,18 @@ rsa = { workspace = true }
 p256 = { workspace = true }
 p384 = { workspace = true }
 signature = { workspace = true }
+# 3.0.0 (C4, audit):
+# `GET /v1/metrics` in
+# Prometheus exposition format.
+# `default-features = false` in
+# the workspace drops the
+# nightly-only `protobuf`
+# encoder; we only emit
+# `text/plain; version=0.0.4`,
+# which is what the Prometheus
+# scraper (and Grafana Agent /
+# VictoriaMetrics) accept.
+prometheus = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
