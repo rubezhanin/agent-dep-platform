@@ -163,6 +163,19 @@ pub fn router(state: ServerState) -> Router {
                 allow_operator,
             )),
         )
+        // 2.10.0 (B3, audit CWE-598):
+        // POST /v1/secrets/:name/reveal
+        // — Admin-only reveal with
+        // mandatory `reason` field.
+        // The old GET /v1/secrets/:name
+        // returns 410 Gone (see the
+        // handler body for the
+        // migration pointer).
+        .route(
+            "/v1/secrets/:name/reveal",
+            post(handlers::reveal_secret)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
         .route(
             "/v1/secrets",
             post(handlers::create_secret)

@@ -927,6 +927,16 @@ async fn viewer_lists_secrets_without_values() {
 
 #[tokio::test]
 async fn operator_reads_secret_value_200() {
+    // 2.10.0 (B3, audit CWE-598):
+    // GET /v1/secrets/:name is GONE
+    // (returns 410 Gone with a
+    // migration pointer). The
+    // reveal path is
+    // POST /v1/secrets/:name/reveal
+    // and requires Admin role +
+    // mandatory `reason` body field.
+    // Operator role is rejected at
+    // the middleware layer.
     let srv = boot().await;
     let _ = reqwest::Client::new()
         .post(format!("{}/v1/secrets", srv.base))
@@ -942,10 +952,153 @@ async fn operator_reads_secret_value_200() {
         .send()
         .await
         .expect("get");
+    assert_eq!(resp.status(), 410, "GET must be GONE in 2.10.0");
+    // POST /reveal with Operator role
+    // — middleware-layer rejection
+    // (403), not even reaching the
+    // handler.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/secrets/k/reveal", srv.base))
+        .bearer_auth(&op_token)
+        .json(&json!({ "reason": "operator probing" }))
+        .send()
+        .await
+        .expect("post reveal");
+    assert_eq!(resp.status(), 403, "Operator must NOT be allowed to reveal");
+}
+
+#[tokio::test]
+async fn admin_reveals_secret_value_200_with_no_cache_headers() {
+    // 2.10.0 (B3, audit CWE-598)
+    // happy path: Admin role +
+    // mandatory `reason` returns
+    // the value with
+    // `Cache-Control: no-store, no-cache, must-revalidate`
+    // + `Pragma: no-cache` headers.
+    let srv = boot().await;
+    let _ = reqwest::Client::new()
+        .post(format!("{}/v1/secrets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({ "name": "k", "value": "the-value" }))
+        .send()
+        .await
+        .expect("seed");
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/secrets/k/reveal", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({ "reason": "investigating a deploy failure" }))
+        .send()
+        .await
+        .expect("reveal");
     assert_eq!(resp.status(), 200);
+    // The no-cache headers MUST be
+    // present so HTTP caches and the
+    // browser back-button do not
+    // retain the plaintext. Read
+    // headers BEFORE consuming
+    // `resp` with `.json()`.
+    let headers = resp.headers();
+    let cache_control = headers
+        .get(axum::http::header::CACHE_CONTROL)
+        .expect("Cache-Control header")
+        .to_str()
+        .expect("ascii");
+    assert!(
+        cache_control.contains("no-store")
+            && cache_control.contains("no-cache")
+            && cache_control.contains("must-revalidate"),
+        "Cache-Control must include no-store + no-cache + must-revalidate, got: {cache_control}"
+    );
+    assert_eq!(
+        headers
+            .get(axum::http::header::PRAGMA)
+            .expect("Pragma header")
+            .to_str()
+            .expect("ascii"),
+        "no-cache"
+    );
+    // The plaintext value is in the
+    // body.
     let v: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(v["name"], "k");
     assert_eq!(v["value"], "the-value");
+    // 2.11.0 (P1-PERF-01): GET audit
+    // is debounced; sleep briefly so
+    // the reveal row is visible.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/audit?limit=50", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("get audit");
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let items = v["items"].as_array().expect("items");
+    let reveal_row = items
+        .iter()
+        .find(|r| r["action"] == "POST /v1/secrets/:name/reveal" && r["outcome"] == "ok")
+        .expect("reveal row must be in audit log");
+    let details: serde_json::Value =
+        serde_json::from_str(reveal_row["details"].as_str().unwrap_or("{}")).expect("details json");
+    assert_eq!(
+        details["reason"].as_str(),
+        Some("investigating a deploy failure"),
+        "audit row must include the operator-supplied reason"
+    );
+}
+
+#[tokio::test]
+async fn reveal_secret_without_reason_returns_400() {
+    // 2.10.0 (B3): the `reason` field
+    // is mandatory. A blank / missing
+    // reason means the audit row
+    // would have no human-readable
+    // answer to "why was this pulled",
+    // so we reject the request and
+    // audit the rejection.
+    let srv = boot().await;
+    let _ = reqwest::Client::new()
+        .post(format!("{}/v1/secrets", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({ "name": "k", "value": "v" }))
+        .send()
+        .await
+        .expect("seed");
+    // Whitespace-only reason is
+    // rejected (it would be useless
+    // in the audit row).
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/secrets/k/reveal", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({ "reason": "   " }))
+        .send()
+        .await
+        .expect("reveal empty reason");
+    assert_eq!(resp.status(), 400);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["code"], "schema.invalid");
+    // Audit row records the rejection
+    // (so a stuck / scripted client
+    // surfaces in the log).
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/audit?limit=50", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("get audit");
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let items = v["items"].as_array().expect("items");
+    let reject_row = items
+        .iter()
+        .find(|r| r["action"] == "POST /v1/secrets/:name/reveal" && r["outcome"] == "error")
+        .expect("rejection row must be in audit log");
+    let details: serde_json::Value =
+        serde_json::from_str(reject_row["details"].as_str().unwrap_or("{}")).expect("details json");
+    assert_eq!(
+        details["reason"].as_str(),
+        Some("missing reason in request body")
+    );
 }
 
 #[tokio::test]
@@ -965,15 +1118,27 @@ async fn admin_deletes_secret_204_and_audit_logs_access() {
         .await
         .expect("delete");
     assert_eq!(resp.status(), 204);
-    // After delete, GET returns 404.
+    // After delete, reveal returns 404
+    // (the secret is gone). 2.10.0
+    // (B3, audit CWE-598) replaced
+    // GET /v1/secrets/:name with
+    // POST /v1/secrets/:name/reveal.
     let resp = reqwest::Client::new()
-        .get(format!("{}/v1/secrets/k", srv.base))
+        .post(format!("{}/v1/secrets/k/reveal", srv.base))
         .bearer_auth(&srv.admin_token)
+        .json(&json!({ "reason": "post-delete sanity check" }))
         .send()
         .await
-        .expect("get after delete");
+        .expect("reveal after delete");
     assert_eq!(resp.status(), 404);
-    // The audit log records every step: create, delete, then the failed get.
+    // The audit log records every
+    // step: create, delete, then the
+    // failed reveal. 2.11.0 (P1-PERF-01):
+    // GET audit is debounced; the
+    // list_audit call itself is
+    // async, so we wait briefly for
+    // the drain.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let resp = reqwest::Client::new()
         .get(format!("{}/v1/audit?limit=200", srv.base))
         .bearer_auth(&srv.admin_token)
@@ -988,8 +1153,15 @@ async fn admin_deletes_secret_204_and_audit_logs_access() {
     let has_delete = items
         .iter()
         .any(|r| r["action"] == "DELETE /v1/secrets/:name" && r["outcome"] == "ok");
+    let has_failed_reveal = items
+        .iter()
+        .any(|r| r["action"] == "POST /v1/secrets/:name/reveal" && r["outcome"] == "error");
     assert!(has_create, "create must be in audit log: {items:?}");
     assert!(has_delete, "delete must be in audit log: {items:?}");
+    assert!(
+        has_failed_reveal,
+        "post-delete failed reveal must be in audit log: {items:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

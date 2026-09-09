@@ -1329,21 +1329,143 @@ pub async fn get_secret(
 ) -> impl IntoResponse {
     let action = "GET /v1/secrets/:name";
     let target = format!("secret:{name}");
+    // 2.10.0 (B3, audit CWE-598
+    // Information Exposure Through
+    // Query Strings in GET Request):
+    // GET /v1/secrets/:name is
+    // GONE. Pre-fix, this handler
+    // returned the plaintext value
+    // over a GET — the value landed
+    // in Caddy access logs, browser
+    // history, prefetch caches, and
+    // accidental curl retries. The
+    // new path is
+    // `POST /v1/secrets/:name/reveal`
+    // with a mandatory `reason` field
+    // in the body and an Admin role
+    // gate. The 410 Gone + `Link`
+    // header gives the operator a
+    // clear migration path; the
+    // audit row records the attempt
+    // (so a stuck client surfaces in
+    // the log instead of silently
+    // retrying forever).
+    let _ = state
+        .audit
+        .record_sync(
+            &user.name,
+            action,
+            Some(&target),
+            AuditOutcome::Error,
+            Some(r#"{"reason":"deprecated; use POST /v1/secrets/:name/reveal"}"#),
+        )
+        .await;
+    (
+        StatusCode::GONE,
+        [(
+            axum::http::header::LINK,
+            "</v1/secrets/:name/reveal>; rel=\"successor-version\"",
+        )],
+        Json(json!({
+            "code": "schema.gone",
+            "kind": "client",
+            "hint": "GET /v1/secrets/:name is removed in 2.10.0. \
+                     Use POST /v1/secrets/:name/reveal with body \
+                     {\"reason\": \"<why>\"} (Admin role required)."
+        })),
+    )
+        .into_response()
+}
+
+/// 2.10.0 (B3, audit CWE-598):
+/// reveal a secret's plaintext
+/// value. Admin role only. Body
+/// MUST include a non-empty
+/// `reason` string that is logged
+/// in the audit row. Response
+/// carries `Cache-Control:
+/// no-store, no-cache,
+/// must-revalidate` + `Pragma:
+/// no-cache` so HTTP caches and
+/// the browser back-button do not
+/// retain the plaintext.
+#[derive(Debug, Deserialize)]
+pub struct RevealSecretBody {
+    pub reason: String,
+}
+
+pub async fn reveal_secret(
+    State(state): State<ServerState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    AxPath(name): AxPath<String>,
+    Json(req): Json<RevealSecretBody>,
+) -> impl IntoResponse {
+    let action = "POST /v1/secrets/:name/reveal";
+    let target = format!("secret:{name}");
+    // Reject empty / whitespace-only
+    // reasons. The audit row is the
+    // long-term record of "why did
+    // an operator pull this secret?"
+    // — a blank reason defeats the
+    // purpose.
+    if req.reason.trim().is_empty() {
+        let _ = state
+            .audit
+            .record_sync(
+                &user.name,
+                action,
+                Some(&target),
+                AuditOutcome::Error,
+                Some(r#"{"reason":"missing reason in request body"}"#),
+            )
+            .await;
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "code": "schema.invalid",
+                "kind": "client",
+                "hint": "request body must include non-empty `reason` \
+                         explaining why the secret is being revealed"
+            })),
+        )
+            .into_response();
+    }
     match state.secrets.get_value(&name).await {
         Ok(value) => {
+            // Store the operator-supplied
+            // reason in the audit details
+            // so post-hoc "who pulled what
+            // and why" queries have a
+            // human-readable answer.
+            let details = json!({ "reason": req.reason }).to_string();
             let _ = state
                 .audit
-                .record_sync(&user.name, action, Some(&target), AuditOutcome::Ok, None)
+                .record_sync(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    Some(&details),
+                )
                 .await;
             (
                 StatusCode::OK,
+                [
+                    (
+                        axum::http::header::CACHE_CONTROL,
+                        "no-store, no-cache, must-revalidate, private",
+                    ),
+                    (axum::http::header::PRAGMA, "no-cache"),
+                    (axum::http::header::EXPIRES, "0"),
+                ],
                 Json(json!({ "name": value.name, "value": value.value })),
             )
                 .into_response()
         }
         Err(e) => {
-            // Do NOT include the value (or even the
-            // name) in the error response - surface
+            // Do NOT include the value
+            // (or even the name) in the
+            // error response — surface
             // only a generic 404.
             let _ = state
                 .audit

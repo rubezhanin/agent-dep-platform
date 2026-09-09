@@ -89,6 +89,74 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   clippy clean,
   fmt clean.
 
+- **B3
+  `GET /v1/secrets/:name`
+  → `POST /v1/secrets/:name/reveal`
+  (audit CWE-598).**
+  Pre-fix,
+  `GET /v1/secrets/:name`
+  с Operator
+  ролью возвращал
+  plaintext через
+  GET — Caddy
+  access log,
+  browser history,
+  HTTP caches,
+  curl retries.
+  Post-fix:
+  - `GET /v1/secrets/:name` →
+    **410 Gone**
+    + `Link` header
+    с successor
+    endpoint + audit
+    row Err
+    (`reason: deprecated; use POST /v1/secrets/:name/reveal`)
+  - `POST /v1/secrets/:name/reveal` —
+    новый endpoint:
+    Admin role
+    required
+    (Operator →
+    403 на
+    middleware) +
+    body `{reason: string}`
+    обязательное
+    non-empty +
+    response
+    `Cache-Control:
+    no-store, no-cache,
+    must-revalidate,
+    private` +
+    `Pragma: no-cache`
+    + `Expires: 0` +
+    audit row Ok с
+    `details.reason`
+  - 3 новых/обновлённых теста
+    в
+    `http_integration.rs`:
+    `admin_reveals_secret_value_200_with_no_cache_headers`
+    +
+    `reveal_secret_without_reason_returns_400`
+    +
+    обновлённый
+    `operator_reads_secret_value_200`
+    (GET 410 +
+    POST Operator
+    403) +
+    обновлённый
+    `admin_deletes_secret_204_and_audit_logs_access`
+    (post-delete
+    reveal 404 +
+    failed-reveal
+    audit row)
+  - 39/39
+    http_integration
+    зелёные,
+    clippy clean,
+    fmt clean.
+  CWE-598 closed
+  для /v1/secrets/:name
+  plaintext path.
+
 ### Security
 
 - **P1-F-02 OIDC discovery strict
