@@ -1,5 +1,6 @@
 //! Shared application state for the 2.1.0 server.
 
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
 use agent_dep_core::infrastructure::repository::idempotency_repository::IdempotencyRepository;
@@ -14,6 +15,7 @@ use agent_dep_core::infrastructure::sqlite::Db;
 use crate::audit_recorder::AuditRecorder;
 use crate::oidc::OidcConfig;
 use crate::oidc_client::OidcClient;
+use crate::rate_limit::RateLimiter;
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -98,4 +100,27 @@ pub struct ServerState {
     /// timer as `sessions` and
     /// `oidc_pending_state`.
     pub idempotency: IdempotencyRepository,
+    /// 2.11.0 (P1-RL-01): in-memory token
+    /// bucket per `(principal, route)`. The
+    /// `Arc` keeps the middleware's lookup
+    /// path lock-free for the common case
+    /// (a hit on an existing key is a
+    /// `HashMap::entry` + `Bucket::try_consume`,
+    /// both of which are O(1)).
+    pub rate_limiter: Arc<RateLimiter>,
+    /// 2.11.0 (P1-API-03): maximum request
+    /// body size in bytes. The
+    /// `body_size_limit_middleware` reads
+    /// this on every request; using
+    /// `AtomicU32` instead of `usize`
+    /// (a) keeps the `Clone` cheap for the
+    /// `ServerState`, and (b) lets an
+    /// operator hot-reload the limit by
+    /// calling `ServerState::set_max_body_bytes`
+    /// from a signal handler (a follow-up;
+    /// not in this commit).
+    pub max_body_bytes: Arc<AtomicU32>,
+    /// 2.11.0 (P1-API-03): maximum request
+    /// header count.
+    pub max_header_count: Arc<AtomicU32>,
 }

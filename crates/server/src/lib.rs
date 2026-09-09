@@ -15,12 +15,14 @@ pub mod idempotency;
 pub mod oidc;
 pub mod oidc_client;
 pub mod plan;
+pub mod rate_limit;
 pub mod session_cookie;
 pub mod state;
 pub mod vault_init;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
 use agent_dep_core::infrastructure::repository::audit_log_repository::AuditLogRepository;
@@ -238,7 +240,38 @@ pub fn router(state: ServerState) -> Router {
         .route("/v1/health", get(handlers::health))
         .merge(oidc_routes)
         .merge(authed)
-        .with_state(state)
+        .with_state(state.clone())
+        // 2.11.0 (P1-API-03): the
+        // body-size + header-count
+        // limits run first (cheap,
+        // O(1) header inspection).
+        // The body limit reads
+        // `Content-Length` and rejects
+        // before the handler reads
+        // any bytes; the header
+        // count limit catches
+        // header-smurfing attacks.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::body_size_limit_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::header_count_limit_middleware,
+        ))
+        // 2.11.0 (P1-RL-01): the rate
+        // limiter runs LAST so a
+        // rejection here is rare and
+        // the audit row is a true
+        // representation of the
+        // "client overran their
+        // budget" event (not "client
+        // sent a 100 MB body AND
+        // also overran").
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::rate_limit_middleware,
+        ))
         .layer(TraceLayer::new_for_http())
 }
 
@@ -623,6 +656,25 @@ pub async fn boot_default_state() -> Result<ServerState> {
         sessions,
         cookie_secure,
         idempotency,
+        // 2.11.0 (P1-RL-01): in-memory
+        // token bucket. `Arc::new`
+        // because the middlewares
+        // (registered on the router)
+        // hold the same reference.
+        rate_limiter: Arc::new(rate_limit::RateLimiter::new()),
+        // 2.11.0 (P1-API-03): body
+        // size + header count limits.
+        // The defaults are the module
+        // constants in `rate_limit`;
+        // operator overrides (via
+        // `AGENCY_MAX_BODY_BYTES` /
+        // `AGENCY_MAX_HEADER_COUNT`)
+        // are a follow-up — the
+        // `AtomicU32` lets a future
+        // SIGHUP handler flip the
+        // value without a restart.
+        max_body_bytes: Arc::new(AtomicU32::new(rate_limit::MAX_BODY_BYTES)),
+        max_header_count: Arc::new(AtomicU32::new(rate_limit::MAX_HEADER_COUNT)),
     };
     // 2.7.10 (ADR-0038): background
     // GC of the `oidc_pending_state`

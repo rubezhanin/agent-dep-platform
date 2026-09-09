@@ -134,6 +134,22 @@ async fn boot_with_legacy(legacy: Option<&str>) -> TestServer {
             agent_dep_core::infrastructure::repository::idempotency_repository::IdempotencyRepository::new(
                 db.pool().clone(),
             ),
+        // 2.11.0 (P1-RL-01, P1-API-03): the
+        // rate limiter + body / header
+        // limits. The integration tests
+        // use the defaults (100 req/s
+        // burst 200, 1 MiB body, 100
+        // headers); a future
+        // rate-limit test will swap in
+        // a `with_capacity_and_rate`
+        // builder.
+        rate_limiter: Arc::new(agent_dep_server::rate_limit::RateLimiter::new()),
+        max_body_bytes: Arc::new(std::sync::atomic::AtomicU32::new(
+            agent_dep_server::rate_limit::MAX_BODY_BYTES,
+        )),
+        max_header_count: Arc::new(std::sync::atomic::AtomicU32::new(
+            agent_dep_server::rate_limit::MAX_HEADER_COUNT,
+        )),
     };
     let app = router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -347,6 +363,22 @@ spec:
         // same `IdempotencyRepository`
         // is built here.
         idempotency: idempotency_for_state,
+        // 2.11.0 (P1-RL-01, P1-API-03): see
+        // the first ServerState
+        // construction in this file
+        // for the rationale; this
+        // second construction is the
+        // path for the `registered_admin`
+        // fixture used by the
+        // admin-level integration
+        // tests.
+        rate_limiter: Arc::new(agent_dep_server::rate_limit::RateLimiter::new()),
+        max_body_bytes: Arc::new(std::sync::atomic::AtomicU32::new(
+            agent_dep_server::rate_limit::MAX_BODY_BYTES,
+        )),
+        max_header_count: Arc::new(std::sync::atomic::AtomicU32::new(
+            agent_dep_server::rate_limit::MAX_HEADER_COUNT,
+        )),
     };
     let app = router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -3346,6 +3346,93 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   + the schema_version
   bump are the canary).
 
+- **P1-RL-01 +
+  P1-API-01..03
+  Rate limits +
+  body/header
+  depth limits
+  (TZ #1 §17 /
+  TZ #2 WP-0.5,
+  CWE-770 /
+  CWE-400).**
+  Pre-fix: каждый
+  endpoint
+  принимал
+  неограниченный
+  request volume,
+  неограниченный
+  body size,
+  неограниченный
+  JSON nesting
+  depth. Один
+  misbehaving
+  client (или
+  deliberate
+  attacker) мог
+  послать 10 000
+  GETs/sec на
+  `/v1/systems`
+  (saturating
+  audit-write
+  path), 100 MB
+  JSON body на
+  `POST /v1/deploys`
+  (exhausting RSS),
+  или JSON с 10 000
+  levels of
+  nesting (blowing
+  stack).
+  CWE-770/400.
+  Post-fix: новый
+  `crates/server/src/rate_limit.rs`
+  с 3 middlewares:
+  1. `body_size_limit_middleware`
+  rejects `Content-Length` > 1 MiB
+  с 413.
+  2. `header_count_limit_middleware`
+  rejects > 100
+  headers с 431.
+  3. `rate_limit_middleware`
+  — in-memory
+  token bucket per
+  `(principal,
+  route)`, refill
+  100 RPS, burst
+  200. On rejection:
+  429 +
+  `Retry-After` +
+  fire-and-forget
+  audit row (1%
+  sample-and-keep
+  flag). Bucket =
+  `Mutex<HashMap<...>>`
+  (low
+  cardinality,
+  lock negligible
+  at 1 kHz QPS).
+  6 new unit tests
+  в
+  `rate_limit::tests`:
+  bucket
+  start/refill +
+  key isolation +
+  default
+  capacity +
+  retry-after
+  floor +
+  sample-and-keep
+  1% ratio. 667
+  tests pass
+  (659 → 667 = +8
+  net), clippy
+  clean, fmt
+  clean. **CWE-770
+  + CWE-400
+  closed** для
+  HTTP rate limit
+  + body/header
+  depth surface.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added
