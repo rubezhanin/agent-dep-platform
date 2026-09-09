@@ -3155,6 +3155,197 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   perf win lands here
   first.
 
+- **P1-AUD-02 Audit
+  hash chain + HMAC
+  + WORM retention
+  (TZ #1 §16,
+  CWE-345 Insufficient
+  Verification of
+  Data Authenticity).**
+  Pre-fix: the
+  `audit_log` table
+  was append-only
+  by convention. An
+  attacker (or
+  misconfigured
+  backup-restore, or
+  curious operator
+  with DB access)
+  could DELETE a row
+  to hide a malicious
+  action, UPDATE a
+  row to flip the
+  outcome from "error"
+  to "ok", or INSERT
+  a forged row to
+  cover tracks.
+  CWE-345: the
+  operator had no way
+  to prove that what
+  they read was what
+  the server actually
+  wrote. **Exploit
+  scenario (pre-fix):**
+  an attacker with
+  file access to the
+  `agency.db` file
+  modifies the `outcome`
+  column on the
+  audit row for a
+  `POST /v1/deploys/:id/approve`
+  call from "ok" to
+  "error" — the
+  operator's incident
+  review shows the
+  approval failed,
+  the on-call engineer
+  spends hours
+  investigating a
+  non-event, and the
+  actual approval
+  (and the deployment
+  it kicked off) is
+  untraceable in the
+  log. Post-fix, three
+  schema + two trigger
+  additions in
+  migration 027:
+  1. `prev_hash` (TEXT)
+     — the `record_hash`
+     of the previous row
+     (or 64 zero chars
+     for the genesis
+     row). Chain anchors
+     every row to its
+     predecessor.
+  2. `record_hash` (TEXT)
+     — SHA-256 of
+     (sequence, prev_hash,
+     occurred_at, actor,
+     action, target,
+     outcome, details)
+     as 64-char hex.
+  3. `hmac` (TEXT) —
+     HMAC-SHA-256 of
+     the `record_hash`,
+     keyed with
+     `AGENCY_AUDIT_HMAC_KEY`
+     (32-byte hex, loaded
+     via the vault's
+     fail-closed path).
+  4. `audit_log_no_update`
+     BEFORE UPDATE
+     trigger — blocks
+     every UPDATE on
+     the table.
+  5. `audit_log_no_delete`
+     BEFORE DELETE
+     trigger — blocks
+     every DELETE.
+  The chain is
+  assembled in app
+  code (SQLite has no
+  built-in SHA-256)
+  inside a `BEGIN
+  IMMEDIATE`
+  transaction so the
+  predicted `id` is
+  stable against
+  concurrent writers.
+  New
+  `AuditLogRepository::with_hmac_key`
+  constructor takes
+  the 32-byte key;
+  the legacy
+  `new()` path
+  remains for tests
+  and dev fixtures
+  that do not need
+  the chain. The
+  `record()` method
+  computes `record_hash`
+  + `hmac` in app
+  code and INSERTs
+  all 9 columns in
+  one statement. New
+  `verify_chain()`
+  method walks the
+  table oldest-first,
+  recomputes each
+  row's `record_hash`
+  + `hmac`, and
+  returns the first
+  chain error (or
+  `Ok(())` on
+  success). New
+  `ChainError` enum
+  with 4 specific
+  variants
+  (`LegacyRowSkipped` /
+  `BrokenChain` /
+  `BadRecordHash` /
+  `BadHmac` /
+  `BadGenesis`) so the
+  operator can tell
+  at a glance which
+  row was tampered
+  with and what kind.
+  Server
+  `boot_default_state`
+  reads
+  `AGENCY_AUDIT_HMAC_KEY`
+  (hex-encoded 32
+  bytes); missing or
+  invalid falls back
+  to legacy mode with
+  a `tracing::warn!`.
+  5 new unit tests:
+  `worm_triggers_block_update_and_delete`
+  (WORM enforcement) /
+  `record_writes_chain_columns_with_hmac`
+  (every record sets
+  prev_hash + record_hash
+  + hmac) /
+  `verify_chain_accepts_a_well_formed_chain`
+  / `verify_chain_rejects_a_tampered_record_hash`
+  (drop trigger, tamper,
+  re-add trigger, verify
+  catches it) /
+  `with_hmac_key_rejects_short_keys`
+  (fail-closed on <32
+  bytes). 659 tests
+  pass (657 → 659
+  net; core went 410 →
+  415 with the 5 new
+  tests), clippy clean,
+  fmt clean on touched
+  files.
+  **CWE-345 closed**
+  for the audit-log
+  tampering attack
+  surface. The "immutable
+  export" half of
+  the plan is a
+  follow-up (the
+  `AuditLogRowFull`
+  struct is already
+  in place; a
+  `agency-server
+  audit-export
+  --to <path>` CLI
+  subcommand lands
+  in 2.11.x). No
+  residual risk on the
+  WORM path; the only
+  way to bypass the
+  WORM triggers is to
+  DROP them, which is
+  itself an auditable
+  schema change
+  (the trigger bodies
+  + the schema_version
+  bump are the canary).
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

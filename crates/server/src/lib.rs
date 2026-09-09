@@ -393,7 +393,69 @@ pub async fn boot_default_state() -> Result<ServerState> {
         );
         token
     };
-    let audit = AuditLogRepository::new(db.pool().clone());
+    let audit = match std::env::var("AGENCY_AUDIT_HMAC_KEY") {
+        Ok(hex_key) => {
+            // Production mode: enable the
+            // P1-AUD-02 hash chain + HMAC.
+            // The key is a hex-encoded
+            // 32-byte secret loaded from the
+            // operator's secret manager
+            // (same fail-closed pattern as
+            // AGENCY_VAULT_PASSPHRASE). An
+            // invalid hex string or wrong
+            // length falls back to the
+            // legacy `new()` constructor +
+            // a `tracing::warn!` so the
+            // operator notices.
+            let bytes = match hex::decode(hex_key.trim()) {
+                Ok(b) if b.len() >= 32 => b,
+                Ok(b) => {
+                    eprintln!(
+                        "warning: AGENCY_AUDIT_HMAC_KEY decoded to {} bytes; \
+                         the P1-AUD-02 chain requires >= 32 bytes; \
+                         falling back to legacy chain-less audit log",
+                        b.len()
+                    );
+                    vec![]
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: AGENCY_AUDIT_HMAC_KEY is not valid hex ({e}); \
+                         falling back to legacy chain-less audit log"
+                    );
+                    vec![]
+                }
+            };
+            if bytes.len() >= 32 {
+                match AuditLogRepository::with_hmac_key(db.pool().clone(), bytes) {
+                    Ok(repo) => repo,
+                    Err(e) => {
+                        eprintln!(
+                            "warning: AGENCY_AUDIT_HMAC_KEY rejected by the \
+                             chain constructor ({e}); falling back to \
+                             legacy chain-less audit log"
+                        );
+                        AuditLogRepository::new(db.pool().clone())
+                    }
+                }
+            } else {
+                AuditLogRepository::new(db.pool().clone())
+            }
+        }
+        Err(_) => {
+            // Dev / test mode: no HMAC key
+            // configured; the chain columns
+            // stay empty and every row is
+            // treated as legacy by
+            // `verify_chain`. Production
+            // deploys MUST set
+            // AGENCY_AUDIT_HMAC_KEY to a
+            // 32-byte hex string; the
+            // fail-closed path is documented
+            // in the operator README.
+            AuditLogRepository::new(db.pool().clone())
+        }
+    };
     // P1-PERF-01 (TZ #1 §19, CWE-400
     // adjacent): wrap the audit repo in a
     // debounced recorder. Successful GETs go

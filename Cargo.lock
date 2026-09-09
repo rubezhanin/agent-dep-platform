@@ -100,6 +100,7 @@ dependencies = [
  "ed25519-dalek",
  "git2",
  "hex",
+ "hmac",
  "libc",
  "once_cell",
  "proptest",
