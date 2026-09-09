@@ -161,7 +161,10 @@ async fn worm_triggers_block_update_and_delete() {
         "expected WORM error, got: {msg}"
     );
     // DELETE must also fail.
-    let res = repo.pool().execute("DELETE FROM audit_log WHERE id = 1").await;
+    let res = repo
+        .pool()
+        .execute("DELETE FROM audit_log WHERE id = 1")
+        .await;
     let err = res.expect_err("DELETE must be blocked by WORM trigger");
     let msg = format!("{err}");
     assert!(
@@ -183,14 +186,19 @@ async fn record_writes_chain_columns_with_hmac() {
     let db = connect(&path).await.expect("connect");
     db.migrate().await.expect("migrate");
     let key: Vec<u8> = (0..32u8).collect();
-    let repo =
-        AuditLogRepository::with_hmac_key(db.pool().clone(), key.clone()).expect("hmac key");
+    let repo = AuditLogRepository::with_hmac_key(db.pool().clone(), key.clone()).expect("hmac key");
     repo.record("alice", "GET /v1/systems", None, AuditOutcome::Ok, None)
         .await
         .expect("record a");
-    repo.record("alice", "POST /v1/deploys", Some("d-1"), AuditOutcome::Ok, None)
-        .await
-        .expect("record b");
+    repo.record(
+        "alice",
+        "POST /v1/deploys",
+        Some("d-1"),
+        AuditOutcome::Ok,
+        None,
+    )
+    .await
+    .expect("record b");
     // Both rows must have non-empty
     // prev_hash, record_hash, hmac.
     let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
@@ -206,7 +214,10 @@ async fn record_writes_chain_columns_with_hmac() {
     assert_ne!(rows[0].2, "", "row 1 record_hash must be set");
     assert_ne!(rows[0].3, "", "row 1 hmac must be set");
     // Row 2: prev_hash == row 1's record_hash.
-    assert_eq!(rows[1].1, rows[0].2, "row 2 prev_hash must equal row 1 record_hash");
+    assert_eq!(
+        rows[1].1, rows[0].2,
+        "row 2 prev_hash must equal row 1 record_hash"
+    );
     assert_ne!(rows[1].2, "", "row 2 record_hash must be set");
     assert_ne!(rows[1].3, "", "row 2 hmac must be set");
 }
@@ -218,8 +229,7 @@ async fn verify_chain_accepts_a_well_formed_chain() {
     let db = connect(&path).await.expect("connect");
     db.migrate().await.expect("migrate");
     let key: Vec<u8> = (0..32u8).collect();
-    let repo =
-        AuditLogRepository::with_hmac_key(db.pool().clone(), key.clone()).expect("hmac key");
+    let repo = AuditLogRepository::with_hmac_key(db.pool().clone(), key.clone()).expect("hmac key");
     for i in 0..5 {
         repo.record(
             "alice",
@@ -231,7 +241,9 @@ async fn verify_chain_accepts_a_well_formed_chain() {
         .await
         .expect("record");
     }
-    repo.verify_chain().await.expect("verify_chain must succeed on a clean chain");
+    repo.verify_chain()
+        .await
+        .expect("verify_chain must succeed on a clean chain");
 }
 
 #[tokio::test]
@@ -242,8 +254,7 @@ async fn verify_chain_rejects_a_tampered_record_hash() {
     let db = connect(&path).await.expect("connect");
     db.migrate().await.expect("migrate");
     let key: Vec<u8> = (0..32u8).collect();
-    let repo =
-        AuditLogRepository::with_hmac_key(db.pool().clone(), key.clone()).expect("hmac key");
+    let repo = AuditLogRepository::with_hmac_key(db.pool().clone(), key.clone()).expect("hmac key");
     repo.record("alice", "GET /v1/audit", None, AuditOutcome::Ok, None)
         .await
         .expect("record a");
@@ -274,7 +285,10 @@ async fn verify_chain_rejects_a_tampered_record_hash() {
         )
         .await
         .expect("re-add trigger");
-    let err = repo.verify_chain().await.expect_err("verify_chain must reject tamper");
+    let err = repo
+        .verify_chain()
+        .await
+        .expect_err("verify_chain must reject tamper");
     let msg = format!("{err}");
     // The tamper changed the details, so the
     // recomputed record_hash does not match.

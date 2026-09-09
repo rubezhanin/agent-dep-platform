@@ -336,15 +336,12 @@ impl AuditLogRepository {
         // `pool.begin()`. The transaction is
         // committed with `COMMIT` at the end.
         let mut tx = self.pool.acquire().await?;
-        sqlx::query("BEGIN IMMEDIATE")
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *tx).await?;
         // Step 2: predicted sequence id.
-        let (predicted_id,): (i64,) = sqlx::query_as(
-            "SELECT IFNULL(MAX(id), 0) + 1 FROM audit_log",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let (predicted_id,): (i64,) =
+            sqlx::query_as("SELECT IFNULL(MAX(id), 0) + 1 FROM audit_log")
+                .fetch_one(&mut *tx)
+                .await?;
         // Step 3: previous row's record_hash
         // (or genesis).
         let prev_hash: String = match sqlx::query_as::<_, (Option<String>,)>(
@@ -420,14 +417,24 @@ impl AuditLogRepository {
     /// admin basis, not on every read).
     #[allow(clippy::type_complexity)]
     pub async fn verify_chain(&self) -> CoreResult<()> {
-        let rows: Vec<(i64, String, String, String, Option<String>, String, Option<String>, String, String, String)> =
-            sqlx::query_as(
-                "SELECT id, occurred_at, actor, action, target, outcome, \
+        let rows: Vec<(
+            i64,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+        )> = sqlx::query_as(
+            "SELECT id, occurred_at, actor, action, target, outcome, \
                  details, prev_hash, record_hash, hmac \
                  FROM audit_log ORDER BY id ASC",
-            )
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .fetch_all(&self.pool)
+        .await?;
         let mut prev_hash = GENESIS_PREV_HASH.to_string();
         let mut first_non_legacy_seen = false;
         for (id, occurred_at, actor, action, target, outcome, details, ph, rh, hmac) in rows {
@@ -463,13 +470,19 @@ impl AuditLogRepository {
                     prev_hash: ph,
                     expected: prev_hash,
                 }
-                    .into());
+                .into());
             }
             // Recompute the record_hash from the
             // row contents and assert it matches.
             let expected_rh = compute_record_hash(
-                id, &ph, &occurred_at, &actor, &action,
-                target.as_deref(), &outcome, details.as_deref(),
+                id,
+                &ph,
+                &occurred_at,
+                &actor,
+                &action,
+                target.as_deref(),
+                &outcome,
+                details.as_deref(),
             );
             if expected_rh != rh {
                 return Err(ChainError::BadRecordHash {
@@ -594,8 +607,9 @@ pub fn compute_record_hash(
 /// shorter key produces a cryptographically
 /// valid HMAC but is rejected at the constructor.
 pub fn compute_hmac_hex(key: &[u8], record_hash: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(key)
-        .expect("HMAC accepts keys of any length; key is enforced >= 32 bytes at the repo constructor");
+    let mut mac = HmacSha256::new_from_slice(key).expect(
+        "HMAC accepts keys of any length; key is enforced >= 32 bytes at the repo constructor",
+    );
     mac.update(record_hash.as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }

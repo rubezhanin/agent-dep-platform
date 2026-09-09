@@ -228,10 +228,7 @@ async fn create_with_external_id_stores_token_hash_as_null() {
     // (sets it back to NULL, not
     // sha256("")).
     repo.invalidate_token(user.id).await.expect("invalidate");
-    let after = repo
-        .find_by_token("real-token")
-        .await
-        .expect("find");
+    let after = repo.find_by_token("real-token").await.expect("find");
     assert!(after.is_none());
     // And the canonical "no token" state
     // is recoverable: a fresh

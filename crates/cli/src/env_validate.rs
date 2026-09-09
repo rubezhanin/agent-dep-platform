@@ -267,8 +267,8 @@ mod tests {
 
     #[test]
     fn parse_uses_explicit_data_dir_override() {
-        let env = with_env("AGENCY_DATA_DIR", Some("X:/custom/agency"), CliEnv::parse)
-            .expect("parse");
+        let env =
+            with_env("AGENCY_DATA_DIR", Some("X:/custom/agency"), CliEnv::parse).expect("parse");
         assert_eq!(env.data_dir, PathBuf::from("X:/custom/agency"));
     }
 
@@ -276,7 +276,12 @@ mod tests {
     fn parse_rejects_empty_data_dir() {
         let err = with_env("AGENCY_DATA_DIR", Some("   "), CliEnv::parse)
             .expect_err("empty path must be rejected");
-        assert!(matches!(err, CliEnvError::EmptyPath { var: "AGENCY_DATA_DIR" }));
+        assert!(matches!(
+            err,
+            CliEnvError::EmptyPath {
+                var: "AGENCY_DATA_DIR"
+            }
+        ));
     }
 
     #[test]
@@ -305,14 +310,24 @@ mod tests {
     fn parse_rejects_empty_hermes_home() {
         let err = with_env("AGENCY_HERMES_HOME", Some(""), CliEnv::parse)
             .expect_err("empty must be rejected");
-        assert!(matches!(err, CliEnvError::EmptyPath { var: "AGENCY_HERMES_HOME" }));
+        assert!(matches!(
+            err,
+            CliEnvError::EmptyPath {
+                var: "AGENCY_HERMES_HOME"
+            }
+        ));
     }
 
     #[test]
     fn parse_rejects_empty_cas_root() {
         let err = with_env("AGENCY_CAS_ROOT", Some(""), CliEnv::parse)
             .expect_err("empty must be rejected");
-        assert!(matches!(err, CliEnvError::EmptyPath { var: "AGENCY_CAS_ROOT" }));
+        assert!(matches!(
+            err,
+            CliEnvError::EmptyPath {
+                var: "AGENCY_CAS_ROOT"
+            }
+        ));
     }
 
     #[test]

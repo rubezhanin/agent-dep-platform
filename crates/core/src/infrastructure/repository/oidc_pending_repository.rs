@@ -69,11 +69,7 @@ impl OidcPendingRepository {
     /// row. Returns `None` if the row
     /// does not exist OR is expired
     /// (older than `max_age_secs`).
-    pub async fn take(
-        &self,
-        state: &str,
-        max_age_secs: i64,
-    ) -> CoreResult<Option<PendingAuth>> {
+    pub async fn take(&self, state: &str, max_age_secs: i64) -> CoreResult<Option<PendingAuth>> {
         let now = chrono::Utc::now().timestamp();
         let min_created = now - max_age_secs;
         // Use a single transaction so

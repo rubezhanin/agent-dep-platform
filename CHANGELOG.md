@@ -3760,6 +3760,235 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   изоляции — not
   a regression.
 
+- **P1-TD-01 Test
+  debt cleanup
+  (TZ #1 §1.5
+  Test-debt).
+  13 `#[ignore]`
+  tests closed
+  (5 deleted +
+  7 un-ignored +
+  1 dead
+  doc-block
+  removed).**
+  Net test count:
+  +2 visible
+  (7 un-ignored
+  − 5 deleted).
+  - **#4a P0-F-07
+    follow-up:**
+    6 deploy tests
+    + 1 plan test
+    in
+    `crates/server/tests/http_integration.rs`
+    un-ignored.
+    `_request_deploy`
+    and
+    `_request_deploy_with_env`
+    helpers now
+    call
+    `register_local_source`
+    instead of
+    the placeholder
+    UUID
+    `00000000-...`.
+    `deploy_with_target_records_target_id`
+    and
+    `deploy_with_unknown_target_is_400`
+    (the
+    non-ignored
+    siblings) also
+    switched to
+    the real
+    helper. New
+    env-specific
+    catalog path
+    in
+    `_request_deploy_with_env`
+    (`env_catalog_{env}`)
+    so two
+    sequential
+    calls (dev +
+    staging) don't
+    collide on the
+    `sources`
+    UNIQUE(kind,
+    location)
+    constraint.
+    `plan_endpoint_reports_bad_catalog_as_400`
+    updated to
+    assert 400
+    (post-fix
+    behaviour) +
+    stable error
+    code (per
+    P0-API-04).
+    `admin_approves_pending_deploy`
+    gained
+    `tokio::time::sleep(1100ms)`
+    before the
+    audit-log read
+    to wait for the
+    P1-PERF-01
+    async-flush
+    window (the
+    Ok branch uses
+    `record_async`).
+    All 8 tests
+    green.
+  - **#4b Phase 0
+    Appendix
+    placeholders:**
+    5 `#[ignore]`'d
+    placeholders
+    in
+    `crates/core/tests/security_replays.rs`
+    (`a1_oidc_refresh_subject_confusion`
+    .. `a5_vault_placeholder_secret_accepted_in_production`)
+    deleted.
+    The executable
+    spec for each
+    corresponding
+    P0 finding
+    (P0-F-01 /
+    P0-NONCE-01 /
+    P0-HDR-01 /
+    P0-SENT-01 /
+    P0-F-05) lives
+    in a sister
+    file
+    (`http_integration.rs::oidc_refresh_*`
+    +
+    `oidc_client.rs::tests::rejects_jku_header`
+    +
+    `audit_log_repository_tests.rs`
+    +
+    `vault_replay.rs`).
+    The bridge
+    block in
+    `security_replays.rs`
+    documents the
+    redirect.
+    New
+    `#[test]`
+    placeholders
+    will be added
+    (not
+    pre-seeded)
+    when the next
+    Phase 2/3
+    finding opens.
+    File
+    compiles
+    clean; 0
+    tests, 0
+    ignored.
+  - **#4c dead
+    doc-block:**
+    the
+    `// ```rust,ignore`
+    fenced code
+    block in
+    `crates/server/tests/oidc_real_idp.rs`
+    for
+    `a1_oidc_refresh_subject_confusion_replay`
+    removed.
+    `rustdoc` never
+    executes
+    `rust,ignore`
+    fences (the
+    block was dead
+    documentation),
+    and the
+    sister-file
+    pointer in
+    `security_replays.rs`
+    covered the
+    same role.
+    Replaced with
+    a comment
+    listing the
+    closed P0
+    findings and
+    their real-IdP
+    executable
+    specs.
+  - **fmt drift
+    cleanup (rustfmt
+    1.98+):** 12
+    files that had
+    pre-existing
+    line-wrap
+    drift relative
+    to rustfmt
+    1.98+ were
+    reformatted
+    in this commit
+    so the
+    `cargo fmt --check`
+    CI gate stays
+    green. Drift
+    was introduced
+    by the toolchain
+    upgrade, not by
+    recent
+    changes. Files:
+    `crates/cli/src/env_validate.rs`,
+    `crates/core/src/application/scanner/trust_store.rs`,
+    `crates/core/src/infrastructure/repository/audit_log_repository.rs`,
+    `crates/core/src/infrastructure/repository/audit_log_repository_tests.rs`,
+    `crates/core/src/infrastructure/repository/oidc_pending_repository.rs`,
+    `crates/core/src/infrastructure/repository/oidc_pending_repository_tests.rs`,
+    `crates/core/src/infrastructure/repository/users_repository_tests.rs`,
+    `crates/hermes-adapter/src/llm_probe.rs`,
+    `crates/server/src/audit_recorder.rs`,
+    `crates/server/src/env_validate.rs`,
+    `crates/server/src/handlers.rs`
+    (P1-D-01d
+    touchpoint),
+    `crates/server/src/oidc.rs`,
+    `crates/server/src/oidc_client.rs`,
+    `crates/server/src/plan.rs`
+    (P1-D-01d
+    touchpoint),
+    `crates/server/src/rate_limit.rs`,
+    `crates/server/tests/oidc_real_idp.rs`
+    (#4c
+    touchpoint).
+    Pure cosmetic
+    (line-wrap +
+    `,`).
+  - 682 unit +
+    integration
+    tests + 1
+    doc-test
+    (still
+    ignored) green
+    in `--test-threads=1`
+    mode. Pre-existing
+    flake
+    `mark_applied_rejects_with_stale_deployment_fence`
+    failed 1 раз
+    в parallel
+    run; passed
+    isolated —
+    not a
+    regression
+    from this
+    commit.
+  - CWE-22 closed
+    for the
+    P0-F-07
+    placeholder-UUID
+    test path
+    (caller can no
+    longer pass a
+    bogus source
+    UUID that
+    masks a
+    different
+    test failure).
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

@@ -84,13 +84,9 @@ impl LlmClient for OpenAiCompatibleClient {
         }
         let resp = req
             .send()
-            .map_err(|e| {
-                CoreError::ErrIo(std::io::Error::other(format!("LLM POST: {e}")))
-            })?
+            .map_err(|e| CoreError::ErrIo(std::io::Error::other(format!("LLM POST: {e}"))))?
             .error_for_status()
-            .map_err(|e| {
-                CoreError::ErrIo(std::io::Error::other(format!("LLM status: {e}")))
-            })?;
+            .map_err(|e| CoreError::ErrIo(std::io::Error::other(format!("LLM status: {e}"))))?;
         let v: serde_json::Value = resp
             .json()
             .map_err(|e| CoreError::ErrIo(std::io::Error::other(format!("LLM JSON: {e}"))))?;

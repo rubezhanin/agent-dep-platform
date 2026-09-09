@@ -129,10 +129,7 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new() -> Self {
-        Self::with_capacity_and_rate(
-            f64::from(BURST_TOKENS),
-            f64::from(REQUESTS_PER_SECOND),
-        )
+        Self::with_capacity_and_rate(f64::from(BURST_TOKENS), f64::from(REQUESTS_PER_SECOND))
     }
 
     pub fn with_capacity_and_rate(capacity: f64, rate: f64) -> Self {
@@ -144,10 +141,7 @@ impl RateLimiter {
     }
 
     pub fn check(&self, key: &str) -> (bool, u32) {
-        let mut buckets = self
-            .buckets
-            .lock()
-            .expect("rate-limit mutex poisoned");
+        let mut buckets = self.buckets.lock().expect("rate-limit mutex poisoned");
         let bucket = buckets
             .entry(key.to_string())
             .or_insert_with(|| Bucket::new(self.capacity, self.rate));
@@ -366,9 +360,7 @@ mod tests {
 
     #[test]
     fn sample_kept_is_roughly_one_percent() {
-        let kept: u32 = (0..10_000)
-            .map(|_| u32::from(sample_kept()))
-            .sum();
+        let kept: u32 = (0..10_000).map(|_| u32::from(sample_kept())).sum();
         assert!(kept > 70 && kept < 130, "ratio: {kept}/10000");
     }
 }

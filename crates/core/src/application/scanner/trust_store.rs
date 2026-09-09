@@ -108,12 +108,11 @@ impl TrustStore {
                 signers: BTreeMap<String, PartialSigner>,
             },
         }
-        let parsed: Either = serde_json::from_slice(bytes).map_err(|e| {
-            CoreError::ErrSchemaInvalid {
+        let parsed: Either =
+            serde_json::from_slice(bytes).map_err(|e| CoreError::ErrSchemaInvalid {
                 path: "trust_store".to_string(),
                 reason: format!("parse: {e}"),
-            }
-        })?;
+            })?;
         let mut store = TrustStore::default();
         match parsed {
             Either::Array { signers } => {
@@ -138,10 +137,7 @@ impl TrustStore {
                     if !p.id.is_empty() && p.id != id {
                         return Err(CoreError::ErrSchemaInvalid {
                             path: "trust_store.signer.id".to_string(),
-                            reason: format!(
-                                "id mismatch: map key `{id}` vs object `{}`",
-                                p.id
-                            ),
+                            reason: format!("id mismatch: map key `{id}` vs object `{}`", p.id),
                         });
                     }
                     let s = TrustedSigner {
@@ -181,27 +177,24 @@ impl TrustStore {
         if key_bytes.len() != 32 {
             return Err(CoreError::ErrSchemaInvalid {
                 path: "trust_store.signer.public_key".to_string(),
-                reason: format!(
-                    "expected 32 bytes, got {}",
-                    key_bytes.len()
-                ),
+                reason: format!("expected 32 bytes, got {}", key_bytes.len()),
             });
         }
         // Construct the key once so
         // an off-curve / non-canonical
         // key fails at parse time, not
         // at every verify call.
-        let key_arr: [u8; 32] = key_bytes.as_slice().try_into().map_err(|_| {
-            CoreError::ErrSchemaInvalid {
-                path: "trust_store.signer.public_key".to_string(),
-                reason: format!("expected 32 bytes, got {}", key_bytes.len()),
-            }
-        })?;
-        VerifyingKey::from_bytes(&key_arr).map_err(|e| {
-            CoreError::ErrSchemaInvalid {
-                path: "trust_store.signer.public_key".to_string(),
-                reason: format!("invalid Ed25519 key: {e}"),
-            }
+        let key_arr: [u8; 32] =
+            key_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| CoreError::ErrSchemaInvalid {
+                    path: "trust_store.signer.public_key".to_string(),
+                    reason: format!("expected 32 bytes, got {}", key_bytes.len()),
+                })?;
+        VerifyingKey::from_bytes(&key_arr).map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "trust_store.signer.public_key".to_string(),
+            reason: format!("invalid Ed25519 key: {e}"),
         })?;
         Ok(())
     }
@@ -227,48 +220,44 @@ impl TrustStore {
     /// over `message` produced by
     /// the signer with id `signer_id`.
     /// Returns `Ok(())` on success.
-    pub fn verify(
-        &self,
-        signer_id: &str,
-        message: &[u8],
-        signature_b64: &str,
-    ) -> CoreResult<()> {
-        let signer = self.get(signer_id).ok_or_else(|| {
-            CoreError::ErrSchemaInvalid {
+    pub fn verify(&self, signer_id: &str, message: &[u8], signature_b64: &str) -> CoreResult<()> {
+        let signer = self
+            .get(signer_id)
+            .ok_or_else(|| CoreError::ErrSchemaInvalid {
                 path: "plugin.signature.signer_id".to_string(),
                 reason: format!("unknown signer `{signer_id}`"),
-            }
-        })?;
+            })?;
         let key_bytes = decode_public_key(&signer.public_key)?;
-        let key_arr: [u8; 32] = key_bytes.as_slice().try_into().map_err(|_| {
-            CoreError::ErrSchemaInvalid {
-                path: "trust_store.signer.public_key".to_string(),
-                reason: format!("expected 32 bytes, got {}", key_bytes.len()),
-            }
-        })?;
-        let key = VerifyingKey::from_bytes(&key_arr).map_err(|e| {
-            CoreError::ErrSchemaInvalid {
-                path: "trust_store.signer.public_key".to_string(),
-                reason: format!("invalid Ed25519 key: {e}"),
-            }
+        let key_arr: [u8; 32] =
+            key_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| CoreError::ErrSchemaInvalid {
+                    path: "trust_store.signer.public_key".to_string(),
+                    reason: format!("expected 32 bytes, got {}", key_bytes.len()),
+                })?;
+        let key = VerifyingKey::from_bytes(&key_arr).map_err(|e| CoreError::ErrSchemaInvalid {
+            path: "trust_store.signer.public_key".to_string(),
+            reason: format!("invalid Ed25519 key: {e}"),
         })?;
         let sig_bytes = decode_signature(signature_b64)?;
-        let sig_arr: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| {
-            CoreError::ErrSchemaInvalid {
-                path: "plugin.signature".to_string(),
-                reason: format!("expected 64 bytes, got {}", sig_bytes.len()),
-            }
-        })?;
+        let sig_arr: [u8; 64] =
+            sig_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| CoreError::ErrSchemaInvalid {
+                    path: "plugin.signature".to_string(),
+                    reason: format!("expected 64 bytes, got {}", sig_bytes.len()),
+                })?;
         let sig = Signature::from_bytes(&sig_arr);
-        key.verify(message, &sig).map_err(|e| {
-            CoreError::ErrSchemaInvalid {
+        key.verify(message, &sig)
+            .map_err(|e| CoreError::ErrSchemaInvalid {
                 path: "plugin.signature".to_string(),
                 reason: format!(
                     "signature verification failed (signer=`{}` label={:?}): {e}",
                     signer.id, signer.label
                 ),
-            }
-        })?;
+            })?;
         Ok(())
     }
 }
@@ -298,10 +287,7 @@ fn decode_signature(s: &str) -> CoreResult<Vec<u8>> {
     if bytes.len() != 64 {
         return Err(CoreError::ErrSchemaInvalid {
             path: "plugin.signature".to_string(),
-            reason: format!(
-                "expected 64 bytes, got {}",
-                bytes.len()
-            ),
+            reason: format!("expected 64 bytes, got {}", bytes.len()),
         });
     }
     Ok(bytes)
@@ -353,7 +339,10 @@ mod tests {
         .to_string();
         let ts = TrustStore::parse(json.as_bytes()).expect("parse");
         assert_eq!(ts.len(), 1);
-        assert_eq!(ts.get("acme").unwrap().label.as_deref(), Some("acme@example.com"));
+        assert_eq!(
+            ts.get("acme").unwrap().label.as_deref(),
+            Some("acme@example.com")
+        );
     }
 
     #[test]
@@ -369,14 +358,16 @@ mod tests {
         })
         .to_string();
         let ts = TrustStore::parse(json.as_bytes()).expect("parse");
-        assert_eq!(ts.get("acme").map(|s| s.id.clone()), Some("acme".to_string()));
+        assert_eq!(
+            ts.get("acme").map(|s| s.id.clone()),
+            Some("acme".to_string())
+        );
     }
 
     #[test]
     fn parse_rejects_malformed_key() {
         // 31 bytes — not a valid Ed25519 key.
-        let bad = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(vec![0u8; 31]);
+        let bad = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(vec![0u8; 31]);
         let json = serde_json::json!({
             "signers": [{
                 "id": "acme",
@@ -398,15 +389,15 @@ mod tests {
         }]);
         let msg = b"plugin manifest canonical bytes";
         let sig = sk.sign(msg);
-        let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(sig.to_bytes());
+        let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes());
         ts.verify(&id, msg, &sig_b64).expect("verify must pass");
     }
 
     #[test]
     fn verify_rejects_unknown_signer() {
         let ts = TrustStore::default();
-        let err = ts.verify("nobody", b"msg", "AAAA")
+        let err = ts
+            .verify("nobody", b"msg", "AAAA")
             .expect_err("must reject");
         assert!(format!("{err:?}").contains("unknown signer"));
     }
@@ -420,8 +411,7 @@ mod tests {
             label: None,
         }]);
         let sig = sk.sign(b"original message");
-        let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(sig.to_bytes());
+        let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes());
         let err = ts
             .verify(&id, b"tampered message", &sig_b64)
             .expect_err("must reject");
@@ -443,8 +433,7 @@ mod tests {
         let sk3 = SigningKey::generate(&mut rand::rngs::OsRng);
         let msg = b"some bytes";
         let sig = sk3.sign(msg);
-        let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(sig.to_bytes());
+        let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes());
         let err = ts
             .verify(&id, msg, &sig_b64)
             .expect_err("must reject (signer ID matches but key does not)");
@@ -460,11 +449,8 @@ mod tests {
             label: None,
         }]);
         // 63 bytes — too short.
-        let bad = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(vec![0u8; 63]);
-        let err = ts
-            .verify(&id, b"msg", &bad)
-            .expect_err("must reject");
+        let bad = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(vec![0u8; 63]);
+        let err = ts.verify(&id, b"msg", &bad).expect_err("must reject");
         assert!(format!("{err:?}").contains("expected 64 bytes"));
     }
 }

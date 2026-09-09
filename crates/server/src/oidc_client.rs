@@ -233,10 +233,7 @@ pub trait OidcClient: Send + Sync {
     /// `kind: "idp_revoke_failed"` and
     /// keeps the local revoke in any
     /// case — CWE-613 is local-first).
-    async fn revoke_refresh_token(
-        &self,
-        refresh_token: &str,
-    ) -> CoreResult<()>;
+    async fn revoke_refresh_token(&self, refresh_token: &str) -> CoreResult<()>;
 
     /// 2.7.8: downcast to `&dyn Any` so
     /// the framework can read
@@ -314,10 +311,7 @@ impl OidcClient for MockOidcClient {
         Ok(None)
     }
 
-    async fn revoke_refresh_token(
-        &self,
-        _refresh_token: &str,
-    ) -> CoreResult<()> {
+    async fn revoke_refresh_token(&self, _refresh_token: &str) -> CoreResult<()> {
         // 2.11.0 (P2-LOGOUT-01) mock:
         // accept any refresh_token. The
         // test harness only checks that
@@ -911,10 +905,7 @@ impl OidcClient for RealOidcClient {
         Ok(None)
     }
 
-    async fn revoke_refresh_token(
-        &self,
-        _refresh_token: &str,
-    ) -> CoreResult<()> {
+    async fn revoke_refresh_token(&self, _refresh_token: &str) -> CoreResult<()> {
         // 2.11.0 (P2-LOGOUT-01) real
         // implementation: POST to the
         // IdP's RFC 7009
@@ -947,7 +938,10 @@ impl OidcClient for RealOidcClient {
         let http = self.http.clone();
         let _ = http
             .post(&url)
-            .form(&[("token", _refresh_token), ("token_type_hint", "refresh_token")])
+            .form(&[
+                ("token", _refresh_token),
+                ("token_type_hint", "refresh_token"),
+            ])
             .send()
             .await;
         Ok(())

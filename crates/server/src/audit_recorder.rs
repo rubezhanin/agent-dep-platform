@@ -462,7 +462,13 @@ mod tests {
         let repo = AuditLogRepository::new(db.pool().clone());
         let rec = AuditRecorder::direct(repo);
         let id = rec
-            .record_sync("alice", "POST /v1/deploys", Some("d-1"), AuditOutcome::Ok, None)
+            .record_sync(
+                "alice",
+                "POST /v1/deploys",
+                Some("d-1"),
+                AuditOutcome::Ok,
+                None,
+            )
             .await
             .expect("record");
         assert!(id > 0);
@@ -496,12 +502,8 @@ mod tests {
     async fn debounced_flushes_in_one_batch() {
         let (db, _dir) = fresh_db().await;
         let repo = AuditLogRepository::new(db.pool().clone());
-        let (rec, handle) = AuditRecorder::debounced(
-            repo.clone(),
-            Duration::from_millis(50),
-            16,
-            64,
-        );
+        let (rec, handle) =
+            AuditRecorder::debounced(repo.clone(), Duration::from_millis(50), 16, 64);
         // Enqueue 10 events.
         for i in 0..10 {
             rec.record_async(
@@ -524,12 +526,8 @@ mod tests {
     async fn record_sync_still_works_when_debounced() {
         let (db, _dir) = fresh_db().await;
         let repo = AuditLogRepository::new(db.pool().clone());
-        let (rec, handle) = AuditRecorder::debounced(
-            repo.clone(),
-            Duration::from_millis(50),
-            16,
-            64,
-        );
+        let (rec, handle) =
+            AuditRecorder::debounced(repo.clone(), Duration::from_millis(50), 16, 64);
         // record_sync bypasses the channel.
         let id = rec
             .record_sync(

@@ -106,9 +106,8 @@ pub async fn compute_plan_from_source(
         Some(raw_snap_id) => {
             let snap_id = Uuid::parse_str(raw_snap_id)
                 .map_err(|e| anyhow!("invalid source_snapshot_id (not a UUID): {e}"))?;
-            let repo = agent_dep_core::infrastructure::repository::IngestRepository::new(
-                pool.clone(),
-            );
+            let repo =
+                agent_dep_core::infrastructure::repository::IngestRepository::new(pool.clone());
             let detail = repo
                 .get_snapshot_detail(snap_id)
                 .await
@@ -175,13 +174,7 @@ pub async fn compute_plan_from_source(
         .unwrap_or_else(Uuid::nil);
 
     let composed = agent_dep_core::application::compose::CompositionService::new()
-        .compose(
-            resolved_source_id,
-            compose_snapshot_id,
-            &agents,
-            &[],
-            &file,
-        )
+        .compose(resolved_source_id, compose_snapshot_id, &agents, &[], &file)
         .map_err(|e| anyhow::anyhow!("compose: {e}"))?;
     let writes = composed
         .resolved

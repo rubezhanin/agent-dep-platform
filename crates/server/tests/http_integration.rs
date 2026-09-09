@@ -434,47 +434,35 @@ spec:
     assert_eq!(writes[0]["agent_ref"], "be@1.0.0");
 }
 
-// P0-F-07: the bogus-`source_id` integration
-// test is `#[ignore]`d. The post-fix
-// `compute_plan_from_source` correctly
-// returns 500 ("source not registered")
-// for an unknown UUID, but the
-// `http_integration` test setup
-// triggers an axum-layer rejection (400)
-// that masks the handler-level result.
+// P0-F-07: an unregistered / unknown
+// `source_id` is rejected by the server
+// (it does not exist in the `sources`
+// table). The old test sent a bogus
+// filesystem path; post-fix we send a
+// bogus UUID and `compute_plan_from_source`
+// returns `Err(SourceNotRegistered)`.
+// The post-fix error mapping (via
+// `error_response::from_any_error`)
+// surfaces it as a 4xx with a typed
+// `ErrorResponse { code, kind, hint }`.
 // The hardening is real — the caller
 // can no longer pass a caller-supplied
 // filesystem path; the server resolves
 // the path from the pre-registered
-// `sources` table — but the
-// infrastructure-level test for the
-// not-registered case needs follow-up
-// (likely a `tower::ServiceExt::oneshot`
-// call to bypass the test-binary's
-// shared-state races). The happy-path
+// `sources` table. The happy-path
 // test `plan_endpoint_returns_writes_for_a_real_catalog`
 // is the executable spec for the fix.
 #[tokio::test]
-#[ignore = "P0-F-07 follow-up: see comment"]
 async fn plan_endpoint_reports_bad_catalog_as_400() {
     let srv = boot().await;
-    // P0-F-07: an unregistered / unknown
-    // `source_id` is rejected by the server
-    // (it does not exist in the `sources`
-    // table). The old test sent a bogus
-    // filesystem path; post-fix we send a
-    // bogus UUID — the post-fix error
-    // mapping is "source <uuid> not
-    // registered" with a 5xx status, but
-    // the 4xx mapping (via
-    // `error_response::from_any_error`)
-    // surfaces the error as
-    // `internal.untyped` (because the
-    // `plan::resolve_source_path` returns
-    // a plain `anyhow::Error`). The test
-    // asserts that the response is NOT a
-    // 200 (success) and that the body
-    // contains a stable error code.
+    // P0-F-07: a bogus UUID (no row
+    // in `sources`) must be rejected
+    // with a 4xx + stable error code.
+    // The pre-fix behavior accepted
+    // any caller-supplied path, which
+    // is a path-traversal vector
+    // (CWE-22). Post-fix the server
+    // refuses unknown `source_id`s.
     let body = json!({
         "source_id": "00000000-0000-0000-0000-000000000000",
         "system_yaml": "id: x\n",
@@ -488,8 +476,8 @@ async fn plan_endpoint_reports_bad_catalog_as_400() {
         .expect("post");
     let status = resp.status();
     assert_eq!(
-        status, 500,
-        "P0-F-07: unregistered source_id should be 500 (internal). \
+        status, 400,
+        "P0-F-07: unregistered source_id should be 400 (bad request). \
          Got status={status}"
     );
     // P0-API-04: the response is a typed
@@ -758,11 +746,17 @@ async fn _request_deploy(srv: &TestServer, token: &str) -> (i64, serde_json::Val
     // a hermetic target for this
     // test.
     let _ = _ensure_target(srv, "dev", "approval-target").await;
+    // P0-F-07: the request must carry
+    // a real `source_id` (UUID) that
+    // resolves to a row in the
+    // `sources` table. Register one
+    // pointing at the hermetic catalog.
+    let source_id = register_local_source(&srv._dir.path().join("audit.db"), &cat).await;
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/deploys", srv.base))
         .bearer_auth(token)
         .json(&json!({
-            "source_id": "00000000-0000-0000-0000-000000000000" /* P0-F-07 TODO: register via register_local_source(&srv.db_path, &cat) */,
+            "source_id": source_id,
             "system_yaml": APPROVALS_SYS,
             "environment": "dev",
             "target": "approval-target",
@@ -782,7 +776,6 @@ async fn _request_deploy(srv: &TestServer, token: &str) -> (i64, serde_json::Val
 }
 
 #[tokio::test]
-#[ignore = "P0-F-07 follow-up: replace placeholder source_id with register_local_source call"]
 async fn operator_creates_pending_deploy() {
     let srv = boot().await;
     let op_token = create_user(&srv, "op", Role::Operator).await;
@@ -799,7 +792,6 @@ async fn operator_creates_pending_deploy() {
 }
 
 #[tokio::test]
-#[ignore = "P0-F-07 follow-up: replace placeholder source_id with register_local_source call"]
 async fn viewer_reads_deploys() {
     let srv = boot().await;
     let op_token = create_user(&srv, "op", Role::Operator).await;
@@ -819,7 +811,6 @@ async fn viewer_reads_deploys() {
 }
 
 #[tokio::test]
-#[ignore = "P0-F-07 follow-up: replace placeholder source_id with register_local_source call"]
 async fn admin_approves_pending_deploy() {
     let srv = boot().await;
     let op_token = create_user(&srv, "op", Role::Operator).await;
@@ -834,6 +825,15 @@ async fn admin_approves_pending_deploy() {
     let v: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(v["status"], "approved");
     assert!(v["approved_by"].is_i64());
+    // 2.10.0 (P1-PERF-01, CWE-400):
+    // approve Ok branch uses
+    // `record_async` (1 fsync per
+    // batch instead of per row).
+    // The async flush task ticks
+    // every 1s; sleep > flush
+    // interval so the audit row is
+    // visible by the time we read.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let resp = reqwest::Client::new()
         .get(format!("{}/v1/audit?limit=200", srv.base))
         .bearer_auth(&srv.admin_token)
@@ -859,7 +859,6 @@ async fn admin_approves_pending_deploy() {
 }
 
 #[tokio::test]
-#[ignore = "P0-F-07 follow-up: replace placeholder source_id with register_local_source call"]
 async fn admin_rejects_pending_deploy() {
     let srv = boot().await;
     let op_token = create_user(&srv, "op", Role::Operator).await;
@@ -1018,7 +1017,6 @@ async fn environments_endpoint_lists_the_three_supported_envs() {
 }
 
 #[tokio::test]
-#[ignore = "P0-F-07 follow-up: replace placeholder source_id with register_local_source call"]
 async fn deploy_records_environment_and_list_filter_works() {
     let srv = boot().await;
     let op_token = create_user(&srv, "op", Role::Operator).await;
@@ -1054,18 +1052,26 @@ async fn _request_deploy_with_env(
     token: &str,
     env: &str,
 ) -> (i64, serde_json::Value) {
-    let cat = srv._dir.path().join("env_catalog");
+    // One catalog per env so two
+    // sequential calls (e.g. dev +
+    // staging) don't collide on the
+    // `sources` UNIQUE(kind, location)
+    // constraint.
+    let cat = srv._dir.path().join(format!("env_catalog_{env}"));
     std::fs::create_dir_all(&cat).unwrap();
     _write_approvals_catalog(&cat);
     // 2.5.3: every deploy declares a
     // target.
     let target_name = format!("env-target-{env}");
     let _ = _ensure_target(srv, env, &target_name).await;
+    // P0-F-07: real `source_id` for
+    // the env-specific catalog.
+    let source_id = register_local_source(&srv._dir.path().join("audit.db"), &cat).await;
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/deploys", srv.base))
         .bearer_auth(token)
         .json(&json!({
-            "source_id": "00000000-0000-0000-0000-000000000000" /* P0-F-07 TODO: register via register_local_source(&srv.db_path, &cat) */,
+            "source_id": source_id,
             "system_yaml": APPROVALS_SYS,
             "environment": env,
             "target": target_name,
@@ -1250,7 +1256,6 @@ async fn list_targets_filters_by_environment() {
 }
 
 #[tokio::test]
-#[ignore = "P0-F-07 follow-up: replace placeholder source_id with register_local_source call"]
 async fn deploy_with_target_records_target_id() {
     let srv = boot().await;
     let op_token = create_user(&srv, "op", Role::Operator).await;
@@ -1269,11 +1274,14 @@ async fn deploy_with_target_records_target_id() {
     let cat = srv._dir.path().join("target_catalog");
     std::fs::create_dir_all(&cat).unwrap();
     _write_approvals_catalog(&cat);
+    // P0-F-07: real `source_id` for
+    // the laptop catalog.
+    let source_id = register_local_source(&srv._dir.path().join("audit.db"), &cat).await;
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/deploys", srv.base))
         .bearer_auth(&op_token)
         .json(&json!({
-            "source_id": "00000000-0000-0000-0000-000000000000" /* P0-F-07 TODO: register via register_local_source(&srv.db_path, &cat) */,
+            "source_id": source_id,
             "system_yaml": APPROVALS_SYS,
             "environment": "dev",
             "target": "laptop",
@@ -1304,11 +1312,17 @@ async fn deploy_with_unknown_target_is_400() {
     let cat = srv._dir.path().join("missing_target_catalog");
     std::fs::create_dir_all(&cat).unwrap();
     _write_approvals_catalog(&cat);
+    // P0-F-07: real `source_id` so
+    // the test isolates the
+    // target-not-found failure path
+    // (instead of failing on
+    // source-not-registered first).
+    let source_id = register_local_source(&srv._dir.path().join("audit.db"), &cat).await;
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/deploys", srv.base))
         .bearer_auth(&op_token)
         .json(&json!({
-            "source_id": "00000000-0000-0000-0000-000000000000" /* P0-F-07 TODO: register via register_local_source(&srv.db_path, &cat) */,
+            "source_id": source_id,
             "system_yaml": APPROVALS_SYS,
             "environment": "dev",
             "target": "this-target-does-not-exist",
@@ -1752,8 +1766,7 @@ async fn plan_endpoint_uses_source_snapshot_id_when_supplied() {
     _write_snapshot_catalog(&cat);
     // Register the source + write
     // the snapshot.
-    let (source_id, snap_id) =
-        register_local_source_with_snapshot(&srv, &cat).await;
+    let (source_id, snap_id) = register_local_source_with_snapshot(&srv, &cat).await;
     // 2.11.0 (P1-D-01d, CWE-494):
     // MUTATE the catalog on disk.
     // Any plan that re-ingests the
@@ -1832,8 +1845,7 @@ async fn plan_endpoint_with_unknown_source_snapshot_id_returns_400() {
     let srv = boot().await;
     let cat = srv._dir.path().join("snap_unknown_cat");
     _write_snapshot_catalog(&cat);
-    let (source_id, _snap_id) =
-        register_local_source_with_snapshot(&srv, &cat).await;
+    let (source_id, _snap_id) = register_local_source_with_snapshot(&srv, &cat).await;
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/systems/plan", srv.base))
         .bearer_auth(&srv.admin_token)
@@ -1881,8 +1893,7 @@ async fn plan_endpoint_with_cross_source_snapshot_id_returns_400() {
     std::fs::create_dir_all(&cat_b).unwrap();
     // Register source A (this one
     // gets the snapshot).
-    let (_source_id_a, snap_id_a) =
-        register_local_source_with_snapshot(&srv, &cat_a).await;
+    let (_source_id_a, snap_id_a) = register_local_source_with_snapshot(&srv, &cat_a).await;
     // Register source B at a
     // different path (the
     // `sources` table has UNIQUE
@@ -1945,8 +1956,7 @@ async fn request_deploy_with_source_snapshot_id_persists_it() {
     let srv = boot().await;
     let cat = srv._dir.path().join("snap_deploy_cat");
     _write_snapshot_catalog(&cat);
-    let (source_id, snap_id) =
-        register_local_source_with_snapshot(&srv, &cat).await;
+    let (source_id, snap_id) = register_local_source_with_snapshot(&srv, &cat).await;
     // 2.5.3: create a target so
     // `request_deploy` accepts the
     // request.
@@ -1996,7 +2006,7 @@ spec:
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let audit: serde_json::Value = {
         let pool = connect_helper(&srv).await;
-        let row: (String, String,) = sqlx::query_as(
+        let row: (String, String) = sqlx::query_as(
             "SELECT actor, details FROM audit_log WHERE action = 'POST /v1/deploys' \
              ORDER BY id DESC LIMIT 1",
         )
@@ -2006,8 +2016,7 @@ spec:
         json!({"actor": row.0, "details": row.1})
     };
     let details: serde_json::Value =
-        serde_json::from_str(audit["details"].as_str().unwrap_or("{}"))
-            .expect("details json");
+        serde_json::from_str(audit["details"].as_str().unwrap_or("{}")).expect("details json");
     assert_eq!(
         details["source_snapshot_id"].as_str(),
         Some(snap_id.as_str()),
@@ -2036,8 +2045,7 @@ async fn request_deploy_with_unknown_source_snapshot_id_returns_400() {
     let srv = boot().await;
     let cat = srv._dir.path().join("snap_deploy_unknown_cat");
     _write_snapshot_catalog(&cat);
-    let (source_id, _snap_id) =
-        register_local_source_with_snapshot(&srv, &cat).await;
+    let (source_id, _snap_id) = register_local_source_with_snapshot(&srv, &cat).await;
     let _ = _ensure_target(&srv, "dev", "snap-unknown-target").await;
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/deploys", srv.base))
@@ -2067,8 +2075,7 @@ async fn request_deploy_with_cross_source_snapshot_id_returns_400() {
     let cat_b = srv._dir.path().join("snap_deploy_xsrc_cat_b");
     _write_snapshot_catalog(&cat_a);
     std::fs::create_dir_all(&cat_b).unwrap();
-    let (_source_id_a, snap_id_a) =
-        register_local_source_with_snapshot(&srv, &cat_a).await;
+    let (_source_id_a, snap_id_a) = register_local_source_with_snapshot(&srv, &cat_a).await;
     // Register source B at a
     // different path (`sources`
     // has UNIQUE (kind, location)).
@@ -2117,8 +2124,7 @@ async fn request_deploy_without_source_snapshot_id_uses_reingest_path() {
     let srv = boot().await;
     let cat = srv._dir.path().join("snap_legacy_cat");
     _write_snapshot_catalog(&cat);
-    let (source_id, _snap_id) =
-        register_local_source_with_snapshot(&srv, &cat).await;
+    let (source_id, _snap_id) = register_local_source_with_snapshot(&srv, &cat).await;
     let _ = _ensure_target(&srv, "dev", "snap-legacy-target").await;
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/deploys", srv.base))

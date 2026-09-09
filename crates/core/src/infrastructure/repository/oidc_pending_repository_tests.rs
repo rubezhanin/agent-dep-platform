@@ -31,9 +31,7 @@ async fn insert_then_take_round_trip() {
 async fn take_is_atomic_no_double_consume() {
     let (_dir, repo) = fresh_db().await;
     let now = chrono::Utc::now().timestamp();
-    repo.insert("state-2", "v", "n", now)
-        .await
-        .expect("insert");
+    repo.insert("state-2", "v", "n", now).await.expect("insert");
     let first = repo.take("state-2", 600).await.expect("first");
     assert!(first.is_some());
     let second = repo.take("state-2", 600).await.expect("second");
@@ -58,9 +56,7 @@ async fn gc_expired_removes_old_rows() {
     repo.insert("old", "v", "n", now - 1000)
         .await
         .expect("insert");
-    repo.insert("new", "v", "n", now)
-        .await
-        .expect("insert");
+    repo.insert("new", "v", "n", now).await.expect("insert");
     let n = repo.gc_expired(600).await.expect("gc");
     assert_eq!(n, 1, "must remove exactly the old row");
     let old = repo.take("old", 600).await.expect("take old");

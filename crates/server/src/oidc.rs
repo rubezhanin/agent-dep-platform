@@ -422,21 +422,23 @@ pub async fn provision_user_from_claims(
             path: "oidc.provision".to_string(),
             reason: format!("set expiry: {e}"),
         })?;
-    state.audit.record_async(            &user.name,
-            "oidc.login",
-            Some(&format!("user:{}", user.id)),
-            AuditOutcome::Ok,
-            // P0-AUD-01 (TZ #1 §16 / AUD-01):
-            // structured audit details via
-            // `serde_json::json!` instead of
-            // manual `format!("{{...}}")` JSON
-            // concatenation. Manual concatenation
-            // breaks if `sub` contains characters
-            // that need JSON-escaping (quotes,
-            // backslashes, control chars), and
-            // produces silently-malformed rows
-            // that fail downstream parsing.
-            Some(&serde_json::json!({"sub": sub}).to_string()),);
+    state.audit.record_async(
+        &user.name,
+        "oidc.login",
+        Some(&format!("user:{}", user.id)),
+        AuditOutcome::Ok,
+        // P0-AUD-01 (TZ #1 §16 / AUD-01):
+        // structured audit details via
+        // `serde_json::json!` instead of
+        // manual `format!("{{...}}")` JSON
+        // concatenation. Manual concatenation
+        // breaks if `sub` contains characters
+        // that need JSON-escaping (quotes,
+        // backslashes, control chars), and
+        // produces silently-malformed rows
+        // that fail downstream parsing.
+        Some(&serde_json::json!({"sub": sub}).to_string()),
+    );
     Ok(OidcCallbackResult {
         token,
         user: AuthenticatedUser {
@@ -783,17 +785,19 @@ pub async fn refresh_handler(
         return crate::error_response::from_any_error(&e).into_response();
     }
     // 4. Audit.
-    state.audit.record_async(            &user.name,
-            "oidc.refresh",
-            Some(&format!("user:{}", user.id)),
-            AuditOutcome::Ok,
-            // P0-AUD-01 (TZ #1 §16 / AUD-01):
-            // structured audit details via
-            // `serde_json::json!` instead of
-            // manual JSON concatenation. See
-            // the matching fix in `oidc.login`
-            // above for the full rationale.
-            Some(&serde_json::json!({"sub": refreshed.claims.sub}).to_string()),);
+    state.audit.record_async(
+        &user.name,
+        "oidc.refresh",
+        Some(&format!("user:{}", user.id)),
+        AuditOutcome::Ok,
+        // P0-AUD-01 (TZ #1 §16 / AUD-01):
+        // structured audit details via
+        // `serde_json::json!` instead of
+        // manual JSON concatenation. See
+        // the matching fix in `oidc.login`
+        // above for the full rationale.
+        Some(&serde_json::json!({"sub": refreshed.claims.sub}).to_string()),
+    );
     // 5. 2.11.0 (P1-F-03b, CWE-613): rotate
     //    the session. The old cookie id (if
     //    any) is revoked; a fresh session is
@@ -957,9 +961,9 @@ pub async fn logout_handler(
     let mut clear_cookie_header: Option<String> = None;
     if let Some(sid) = crate::session_cookie::parse_session_cookie(&headers) {
         if let Ok(true) = state.sessions.revoke(&sid).await {
-            clear_cookie_header = Some(
-                crate::session_cookie::clear_session_cookie_header(state.cookie_secure),
-            );
+            clear_cookie_header = Some(crate::session_cookie::clear_session_cookie_header(
+                state.cookie_secure,
+            ));
         }
     }
     // Step 3: invalidate the bearer
@@ -999,7 +1003,9 @@ pub async fn logout_handler(
     // IdP-revoke outcome so the
     // operator can spot
     // misconfigured IdP revokes.
-    let actor = bearer_user.clone().unwrap_or_else(|| "anonymous".to_string());
+    let actor = bearer_user
+        .clone()
+        .unwrap_or_else(|| "anonymous".to_string());
     let details = serde_json::json!({
         "refresh_token_provided": refresh_token.is_some(),
         "idp_revoke": idp_revoke_outcome,

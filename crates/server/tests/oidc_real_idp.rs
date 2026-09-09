@@ -63,8 +63,7 @@ impl TestIdpConfig {
             // production one). The test IdP is unreachable from
             // outside the test docker network.
             client_secret: "test-client-secret-do-not-use-in-prod".to_string(),
-            redirect_uri: "http://localhost:9999/v1/auth/oidc/callback"
-                .to_string(),
+            redirect_uri: "http://localhost:9999/v1/auth/oidc/callback".to_string(),
             jwks_url: "http://localhost:8081/realms/agency/protocol/openid-connect/certs"
                 .to_string(),
         }
@@ -221,10 +220,7 @@ impl TestKeycloak {
     ///
     /// **Phase 0:** stub. Real impl uses `reqwest` to POST to the
     /// token endpoint with `grant_type=password`.
-    pub async fn login(
-        &self,
-        _user: &TestUser,
-    ) -> Result<TestTokens, Box<dyn std::error::Error>> {
+    pub async fn login(&self, _user: &TestUser) -> Result<TestTokens, Box<dyn std::error::Error>> {
         if !self.is_real() {
             return Err("TestKeycloak is in skip-dummy mode; \
                         unset SKIP_REAL_IDP_TESTS and start a real Keycloak"
@@ -262,31 +258,18 @@ pub struct TestTokens {
 // Future seed scenarios (Phase 1 candidates)
 // ============================================================================
 //
-// These will be implemented when P0-F-01 / P0-F-02 / P0-F-03 /
-// P0-NONCE-01 / P0-HDR-01 close. They are the *executable
-// specification* of the fix — same pattern as
-// `crates/core/tests/security_replays.rs`.
+// P0-F-01 / P0-F-02 / P0-F-03 / P0-NONCE-01 / P0-HDR-01 have all closed
+// in 2.7.0..2.7.7 (the corresponding executable specs live in
+// `crates/server/src/oidc_client.rs::tests::rejects_jku_header` and
+// the http_integration.rs::oidc_refresh_* family). The original
+// `// ```rust,ignore` doc-block for `a1_oidc_refresh_subject_
+// confusion_replay` was removed in 2.11.0 (P1-TD-01) — the doc
+// block was dead documentation (rustdoc never executes `rust,ignore`
+// fences), and the sister-file pointer in
+// `crates/core/tests/security_replays.rs` covered the same role.
 //
-// ```rust,ignore
-// #[tokio::test]
-// #[ignore = "phase 1: P0-F-01 — TZ #1 §6 F-01 / Appendix A.1"]
-// async fn a1_oidc_refresh_subject_confusion_replay() {
-//     let kc = TestKeycloak::start().await.unwrap();
-//     if !kc.is_real() { return; } // skip-dummy
-//
-//     let alice = TestUser::alice();
-//     let bob = TestUser::bob();
-//     let alice_tokens = kc.login(&alice).await.unwrap();
-//     // Forge an ID token with alice's refresh token but bob's claims.
-//     let forged = kc.forge_id_token(&alice_tokens.refresh_token, &bob.claims).await.unwrap();
-//     let result = agency_server::oidc::refresh_handler(
-//         &alice_tokens.refresh_token,
-//         &forged,
-//         &kc.config,
-//     ).await;
-//     assert!(matches!(result, Err(oidc::TokenError::SubjectMismatch)));
-// }
-// ```
+// New real-IdP replay tests will be added (not pre-seeded) when the
+// next Phase 2 / 3 finding needs an end-to-end Keycloak harness.
 // ============================================================================
 
 // ============================================================================

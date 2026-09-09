@@ -26,11 +26,7 @@
 /// for its own config — if they are set, the operator
 /// has them in their shell and the server inherited
 /// them. Warn at boot.
-const CLI_ONLY_ENV: &[&str] = &[
-    "AGENCY_DATA_DIR",
-    "AGENCY_HERMES_HOME",
-    "AGENCY_CAS_ROOT",
-];
+const CLI_ONLY_ENV: &[&str] = &["AGENCY_DATA_DIR", "AGENCY_HERMES_HOME", "AGENCY_CAS_ROOT"];
 
 /// Scan the parent env for the set of known CLI-only
 /// env vars. For each one that is set, print a
