@@ -34,6 +34,25 @@ pub async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({"status": "ok"})))
 }
 
+/// 2.11.0 (B4, audit): in-process
+/// recorder metrics. Returns the
+/// `AuditRecorderStats` (currently
+/// just `dropped_to_sync_total`).
+/// Admin-only (auth + role guard
+/// wired in `lib.rs`). Designed
+/// for the C4 Prometheus
+/// follow-up — the response body
+/// is already the JSON shape that
+/// `metrics-exporter-prometheus`
+/// would render for a
+/// `Gauge`-style counter.
+pub async fn audit_stats(
+    State(state): State<ServerState>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
+    (StatusCode::OK, Json(state.audit.stats()))
+}
+
 pub async fn list_audit(
     State(state): State<ServerState>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -373,13 +392,28 @@ pub async fn list_users(
         Ok(rows) => {
             let views: Vec<UserView> = rows.iter().map(to_view).collect();
             let details = Some(json!({"count": views.len()}).to_string());
-            state.audit.record_async(
-                &user.name,
-                action,
-                None,
-                AuditOutcome::Ok,
-                details.as_deref(),
-            );
+            // 2.11.0 (B4, audit CWE-778):
+            // list_users exposes the
+            // user roster (names +
+            // roles + token hashes'
+            // metadata). On a crash
+            // inside the 1s async-flush
+            // window, an attacker who
+            // enumerated the user
+            // list would not be
+            // visible in the audit log.
+            // Use `record_sync` for
+            // durability.
+            let _ = state
+                .audit
+                .record_sync(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
             (StatusCode::OK, Json(views)).into_response()
         }
         Err(e) => {
@@ -1293,13 +1327,30 @@ pub async fn list_secrets(
     match state.secrets.list().await {
         Ok(rows) => {
             let details = Some(json!({"count": rows.len()}).to_string());
-            state.audit.record_async(
-                &user.name,
-                action,
-                None,
-                AuditOutcome::Ok,
-                details.as_deref(),
-            );
+            // 2.11.0 (B4, audit CWE-778):
+            // list_secrets is `GET` but
+            // exposes the *names* of all
+            // secrets in the vault
+            // (and the `count`). On a
+            // crash inside the 1s
+            // async-flush window, an
+            // attacker who exfiltrated
+            // the secret names would
+            // not be visible in the
+            // audit log. Use
+            // `record_sync` to
+            // guarantee durability
+            // before the 200 returns.
+            let _ = state
+                .audit
+                .record_sync(
+                    &user.name,
+                    action,
+                    None,
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
             (StatusCode::OK, Json(rows)).into_response()
         }
         Err(e) => {

@@ -63,6 +63,7 @@
 //! a request, so a queued-but-not-flushed GET
 //! would be a flake).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -152,6 +153,43 @@ pub struct AuditRecorder {
     /// final batch to commit before
     /// exit.
     flush_handle: std::sync::Mutex<Option<JoinHandle<()>>>,
+    /// 2.11.0 (B4, audit): simple
+    /// in-process counter of
+    /// `record_async` calls that
+    /// fell back to `record_sync`
+    /// because the channel was full
+    /// (the spawn-and-sync branch in
+    /// `record_async`). Exposed via
+    /// `AuditRecorder::stats()`. A
+    /// full Prometheus exporter
+    /// (C4) is a follow-up; the
+    /// counter is a thin wrapper
+    /// over an `AtomicU64` that
+    /// survives process restarts
+    /// only by being re-zeroed on
+    /// boot — operators alert on
+    /// non-zero post-boot.
+    dropped_to_sync_total: AtomicU64,
+}
+
+/// 2.11.0 (B4, audit): in-process
+/// metrics returned by
+/// `AuditRecorder::stats()`. Counter
+/// resets to 0 on process restart;
+/// operators alert on a non-zero
+/// post-boot value (= the channel
+/// has been under sustained
+/// back-pressure, indicating
+/// either a slow disk or a
+/// pathological audit-rate spike).
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct AuditRecorderStats {
+    /// Cumulative number of
+    /// `record_async` calls that
+    /// fell back to a synchronous
+    /// INSERT because the bounded
+    /// mpsc channel was full.
+    pub dropped_to_sync_total: u64,
 }
 
 impl AuditRecorder {
@@ -164,6 +202,7 @@ impl AuditRecorder {
             repo,
             tx: None,
             flush_handle: std::sync::Mutex::new(None),
+            dropped_to_sync_total: AtomicU64::new(0),
         })
     }
 
@@ -186,6 +225,7 @@ impl AuditRecorder {
             repo,
             tx: Some(tx),
             flush_handle: std::sync::Mutex::new(Some(handle)),
+            dropped_to_sync_total: AtomicU64::new(0),
         })
     }
 
@@ -307,6 +347,23 @@ impl AuditRecorder {
                         "audit channel full; falling back to synchronous INSERT \
                          (action={action}, actor={actor})"
                     );
+                    // 2.11.0 (B4, audit):
+                    // bump the
+                    // `agency_audit_queue_dropped_total`
+                    // counter so an
+                    // operator can
+                    // alert on a
+                    // sustained
+                    // non-zero value
+                    // (the counter
+                    // resets to 0 on
+                    // process restart,
+                    // so a non-zero
+                    // post-boot
+                    // value means
+                    // "active back-
+                    // pressure").
+                    self.dropped_to_sync_total.fetch_add(1, Ordering::Relaxed);
                     let repo = self.repo.clone();
                     let action = action.to_string();
                     let actor = actor.to_string();
@@ -325,6 +382,18 @@ impl AuditRecorder {
                     });
                 }
             }
+        }
+    }
+
+    /// 2.11.0 (B4, audit): read the
+    /// in-process counters. Currently a
+    /// single field
+    /// (`dropped_to_sync_total`); a
+    /// full Prometheus exposition
+    /// (C4) is a follow-up.
+    pub fn stats(&self) -> AuditRecorderStats {
+        AuditRecorderStats {
+            dropped_to_sync_total: self.dropped_to_sync_total.load(Ordering::Relaxed),
         }
     }
 

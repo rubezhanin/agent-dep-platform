@@ -74,6 +74,17 @@ pub fn router(state: ServerState) -> Router {
             get(handlers::list_audit)
                 .layer(middleware::from_fn_with_state(state.clone(), allow_viewer)),
         )
+        // 2.11.0 (B4, audit): in-process
+        // recorder metrics. Admin-only
+        // (the metrics are operator-
+        // facing; viewer would
+        // confuse them with audit
+        // rows).
+        .route(
+            "/v1/audit/stats",
+            get(handlers::audit_stats)
+                .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
+        )
         .route(
             "/v1/systems",
             get(handlers::list_systems)
