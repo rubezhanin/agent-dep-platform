@@ -11,6 +11,86 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **P1-AUD-FIX
+  audit
+  durability
+  for
+  mutations
+  (CWE-778
+  Insufficient
+  Logging of
+  Security-Critical
+  Events).**
+  P1-PERF-01
+  finish
+  (fe686a7)
+  Python-regex
+  over-converted
+  9 POST/PUT
+  mutation
+  handlers to
+  `record_async`
+  alongside the
+  9 GET handlers
+  (regex
+  matched
+  `AuditOutcome::Ok`
+  branches
+  without
+  checking HTTP
+  verb). All 9
+  reverted to
+  `record_sync(...).await`:
+  - POST
+    `/v1/systems/plan`
+    (`plan_system`)
+  - POST
+    `/v1/systems/rollback/:id`
+    (`rollback_operation`)
+  - POST
+    `/v1/users`
+    (`create_user`)
+  - POST
+    `/v1/deploys`
+    (`request_deploy`)
+  - POST
+    `/v1/deploys/:id/approve`
+    (`approve_deploy`)
+  - POST
+    `/v1/deploys/:id/reject`
+    (`reject_deploy`)
+  - POST
+    `/v1/secrets`
+    (`create_secret`)
+  - PUT
+    `/v1/secrets/:name`
+    (`update_secret`)
+  - POST
+    `/v1/targets`
+    (`create_target`)
+  10 GET
+  handlers
+  remain on
+  `record_async`
+  (legitimate
+  P1-PERF-01
+  win, CWE-400).
+  Test workarounds
+  removed:
+  `tokio::time::sleep(1100ms)`
+  in
+  `admin_approves_pending_deploy`
+  + `tokio::time::sleep(100ms)`
+  in
+  `request_deploy_with_source_snapshot_id_persists_it`.
+  37/37
+  http_integration
+  зелёные,
+  clippy clean,
+  fmt clean.
+
+### Security
+
 - **P1-F-02 OIDC discovery strict
   validation (TZ #1 §6 F-02, CWE-295 +
   CWE-300, Appendix A.7).** The pre-fix

@@ -825,15 +825,13 @@ async fn admin_approves_pending_deploy() {
     let v: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(v["status"], "approved");
     assert!(v["approved_by"].is_i64());
-    // 2.10.0 (P1-PERF-01, CWE-400):
-    // approve Ok branch uses
-    // `record_async` (1 fsync per
-    // batch instead of per row).
-    // The async flush task ticks
-    // every 1s; sleep > flush
-    // interval so the audit row is
-    // visible by the time we read.
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    // 2.10.0 (P1-AUD-FIX, CWE-778):
+    // approve Ok branch now uses
+    // `record_sync` (P1-PERF-01
+    // over-conversion fix). The
+    // audit row is durable before
+    // the 200 returns, so no sleep
+    // is needed before the read.
     let resp = reqwest::Client::new()
         .get(format!("{}/v1/audit?limit=200", srv.base))
         .bearer_auth(&srv.admin_token)
@@ -2000,10 +1998,12 @@ spec:
         "deploy view must include the resolved source_snapshot_id"
     );
     // Also: the audit row records
-    // it. The `record_async` path
-    // uses a spawned task, so wait
-    // briefly for the drain.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // it. 2.10.0 (P1-AUD-FIX,
+    // CWE-778) reverted
+    // `request_deploy` to
+    // `record_sync`, so the row is
+    // durable by the time the 201
+    // returns — no sleep needed.
     let audit: serde_json::Value = {
         let pool = connect_helper(&srv).await;
         let row: (String, String) = sqlx::query_as(

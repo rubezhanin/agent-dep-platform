@@ -239,13 +239,25 @@ pub async fn plan_system(
         Ok((_resolved_source_id, summary, _resolved_snap_id)) => {
             let target = format!("system:{}", summary.system_id);
             let details = Some(json!({"wrote": summary.writes.len()}).to_string());
-            state.audit.record_async(
-                &user.name,
-                &action,
-                Some(&target),
-                AuditOutcome::Ok,
-                details.as_deref(),
-            );
+            // 2.10.0 (P1-AUD-FIX, CWE-778):
+            // plan is a mutation (writes
+            // happen) — use `record_sync`
+            // to guarantee the audit row
+            // is durable before the 200
+            // returns. The pre-fix
+            // `record_async` could lose
+            // the row on a crash inside
+            // the 1s flush window.
+            let _ = state
+                .audit
+                .record_sync(
+                    &user.name,
+                    &action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
             (StatusCode::OK, Json(summary)).into_response()
         }
         Err(e) => {
@@ -286,13 +298,19 @@ pub async fn rollback_operation(
                 })
                 .to_string(),
             );
-            state.audit.record_async(
-                &user.name,
-                &action,
-                Some(&target),
-                AuditOutcome::Ok,
-                details.as_deref(),
-            );
+            // 2.10.0 (P1-AUD-FIX, CWE-778):
+            // rollback is a mutation
+            // (filesystem writes) — sync.
+            let _ = state
+                .audit
+                .record_sync(
+                    &user.name,
+                    &action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
             (StatusCode::OK, Json(summary)).into_response()
         }
         Err(e) => {
@@ -394,13 +412,19 @@ pub async fn create_user(
     match state.users.create(&req.name, req.role).await {
         Ok(created) => {
             let details = Some(json!({"role": created.user.role.as_str()}).to_string());
-            state.audit.record_async(
-                &user.name,
-                action,
-                Some(&target),
-                AuditOutcome::Ok,
-                details.as_deref(),
-            );
+            // 2.10.0 (P1-AUD-FIX, CWE-778):
+            // user creation is a
+            // mutation — sync.
+            let _ = state
+                .audit
+                .record_sync(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
             let view = to_view(&created.user);
             (
                 StatusCode::CREATED,
@@ -812,13 +836,20 @@ pub async fn request_deploy(
                         })
                         .to_string(),
                     );
-                    state.audit.record_async(
-                        &user.name,
-                        action,
-                        Some(&target),
-                        AuditOutcome::Ok,
-                        details.as_deref(),
-                    );
+                    // 2.10.0 (P1-AUD-FIX, CWE-778):
+                    // request_deploy is a
+                    // mutation (filesystem
+                    // writes) — sync.
+                    let _ = state
+                        .audit
+                        .record_sync(
+                            &user.name,
+                            action,
+                            Some(&target),
+                            AuditOutcome::Ok,
+                            details.as_deref(),
+                        )
+                        .await;
                     let view = deploy_view(&row);
                     (
                         StatusCode::CREATED,
@@ -1012,13 +1043,19 @@ pub async fn approve_deploy(
     match state.deploys.approve(id, user.id).await {
         Ok(Some(row)) => {
             let details = Some(json!({"status": "approved"}).to_string());
-            state.audit.record_async(
-                &user.name,
-                action,
-                Some(&target),
-                AuditOutcome::Ok,
-                details.as_deref(),
-            );
+            // 2.10.0 (P1-AUD-FIX, CWE-778):
+            // approve is a deploy state
+            // mutation — sync.
+            let _ = state
+                .audit
+                .record_sync(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
             (StatusCode::OK, Json(deploy_view(&row))).into_response()
         }
         Ok(None) => {
@@ -1084,13 +1121,19 @@ pub async fn reject_deploy(
                 })
                 .to_string(),
             );
-            state.audit.record_async(
-                &user.name,
-                action,
-                Some(&target),
-                AuditOutcome::Ok,
-                details.as_deref(),
-            );
+            // 2.10.0 (P1-AUD-FIX, CWE-778):
+            // reject is a deploy state
+            // mutation — sync.
+            let _ = state
+                .audit
+                .record_sync(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    details.as_deref(),
+                )
+                .await;
             (StatusCode::OK, Json(deploy_view(&row))).into_response()
         }
         Ok(None) => {
@@ -1326,13 +1369,19 @@ pub async fn create_secret(
     let target = format!("secret:{}", req.name);
     match state.secrets.create(&req.name, &req.value, user.id).await {
         Ok(row) => {
-            state.audit.record_async(
-                &user.name,
-                action,
-                Some(&target),
-                AuditOutcome::Ok,
-                Some(&format!("version={}", row.version)),
-            );
+            // 2.10.0 (P1-AUD-FIX, CWE-778):
+            // secret create is a vault
+            // mutation — sync.
+            let _ = state
+                .audit
+                .record_sync(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    Some(&format!("version={}", row.version)),
+                )
+                .await;
             (StatusCode::CREATED, Json(row)).into_response()
         }
         Err(e) => {
@@ -1365,13 +1414,19 @@ pub async fn update_secret(
     let target = format!("secret:{name}");
     match state.secrets.update(&name, &req.value, user.id).await {
         Ok(Some(row)) => {
-            state.audit.record_async(
-                &user.name,
-                action,
-                Some(&target),
-                AuditOutcome::Ok,
-                Some(&format!("version={}", row.version)),
-            );
+            // 2.10.0 (P1-AUD-FIX, CWE-778):
+            // secret update is a vault
+            // mutation — sync.
+            let _ = state
+                .audit
+                .record_sync(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    Some(&format!("version={}", row.version)),
+                )
+                .await;
             (StatusCode::OK, Json(row)).into_response()
         }
         Ok(None) => {
@@ -1614,13 +1669,19 @@ pub async fn create_target(
         .await
     {
         Ok(row) => {
-            state.audit.record_async(
-                &user.name,
-                action,
-                Some(&target),
-                AuditOutcome::Ok,
-                Some(&format!("id={}", row.id)),
-            );
+            // 2.10.0 (P1-AUD-FIX, CWE-778):
+            // target create is a fleet
+            // mutation — sync.
+            let _ = state
+                .audit
+                .record_sync(
+                    &user.name,
+                    action,
+                    Some(&target),
+                    AuditOutcome::Ok,
+                    Some(&format!("id={}", row.id)),
+                )
+                .await;
             (StatusCode::CREATED, Json(row)).into_response()
         }
         Err(e) => {
