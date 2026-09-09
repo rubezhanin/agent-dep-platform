@@ -45,6 +45,10 @@ RR-NNN | <status> | <finding ref> | <category> | <description> | <owner> | <miti
 
 > На момент создания реестра (Phase 0) — реестр пуст. Записи появляются по мере closing'а P0/P1 finding'ов и фиксации их residual risk.
 
+| RR-NNN | Status | Finding | Category | Description | Owner | Mitigation / acceptance | Date |
+|---|---|---|---|---|---|---|---|
+| RR-005 | ACCEPTED | audit D2 | OPS | Two reqwest versions in Cargo.lock: `reqwest 0.12.28` (workspace: cli, server, hermes-adapter, dev-deps) and `reqwest 0.13.4` (transitive via `tauri 2.11.5` for webview internals). The audit recommendation (unify on one version) is impossible without forking tauri. Impact: ~doubled HTTP-client compile time, larger tauri-app binary (which is the only consumer of 0.13.4). Server / CLI / hermes-adapter still get a single version (0.12.28). | self | ACCEPTED. If tauri ships an upstream `reqwest = 0.12` compat release, re-evaluate. Otherwise this is a permanent tax for embedding tauri. | 2026-09-09 |
+
 | RR-NNN | Status | Finding ref | Category | Description | Owner | Mitigation / acceptance | Date |
 |---|---|---|---|---|---|---|---|
 | RR-001 | OPEN | P0-F-05 | CWE-798 | Windows file ACL для `vault.salt` не enforced агентом — `set_salt_file_mode` is no-op на Windows. Если Windows host с shared user'ами, другие user'ы могут прочитать salt. | operator | Документировать в `docs/DEPLOY.md` Windows deployment; mitigation = `icacls` post-install или dedicated agency user. ACCEPTED до Phase 5. | 2026-09-07 |
