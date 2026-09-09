@@ -215,6 +215,44 @@ pub fn router(state: ServerState) -> Router {
             axum::routing::delete(handlers::delete_target)
                 .layer(middleware::from_fn_with_state(state.clone(), allow_admin)),
         )
+        // 2.10.0 (B2, audit CWE-352
+        // Cross-Site Request Forgery):
+        // CSRF guard on every state-
+        // changing request. Sits
+        // AFTER `require_session_or_bearer`
+        // (so the CsrfContext
+        // extension is populated)
+        // and BEFORE the per-route
+        // role guard (so a CSRF
+        // attempt surfaces in the
+        // audit log even if the
+        // attacker would have failed
+        // the role check). Public
+        // routes (OIDC login /
+        // callback) bypass via the
+        // no-CsrfContext branch in
+        // the middleware.
+        //
+        // Order matters: in axum 0.7
+        // `route_layer` calls wrap in
+        // REVERSE order, so the LATER
+        // call is the OUTER one (runs
+        // first). For the CSRF
+        // middleware to see the
+        // CsrfContext extension,
+        // `require_session_or_bearer`
+        // must run FIRST — i.e. it
+        // must be the LATER
+        // `route_layer` call. We
+        // therefore register CSRF
+        // here (added first → inner)
+        // and `require_session_or_bearer`
+        // below (added second →
+        // outer).
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_csrf_for_mutations,
+        ))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_session_or_bearer,

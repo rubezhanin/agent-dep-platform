@@ -573,7 +573,7 @@ pub async fn callback_handler(
             // migration can land
             // independently of the server
             // upgrade.
-            let (sid, _row) = match state
+            let (sid, row) = match state
                 .sessions
                 .create(
                     out.user.id,
@@ -597,6 +597,19 @@ pub async fn callback_handler(
             (
                 StatusCode::OK,
                 [(axum::http::header::SET_COOKIE, cookie)],
+                // 2.10.0 (B2, audit CWE-352
+                // Cross-Site Request Forgery):
+                // the SPA needs the session's
+                // csrf_token to send as
+                // `X-CSRF-Token` on every
+                // state-changing request. We
+                // return it in the JSON body
+                // (NOT in a cookie — cookies
+                // are not readable from JS by
+                // design, and the SPA must
+                // echo the value into an
+                // explicit header for the
+                // double-submit check).
                 Json(serde_json::json!({
                     "token": out.token,
                     "user": {
@@ -605,6 +618,7 @@ pub async fn callback_handler(
                         "role": format!("{:?}", out.user.role),
                     },
                     "expires_at": out.expires_at,
+                    "csrf_token": row.csrf_token,
                 })),
             )
                 .into_response()
@@ -651,6 +665,14 @@ pub struct RefreshResponse {
     /// MUST replace its stored value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
+    /// 2.10.0 (B2, audit CWE-352
+    /// Cross-Site Request Forgery):
+    /// the new session's CSRF token.
+    /// The SPA MUST replace its
+    /// stored value — the old one
+    /// is bound to the (now-revoked)
+    /// pre-refresh session.
+    pub csrf_token: String,
 }
 
 /// 2.7.8: serializable user info for
@@ -836,6 +858,11 @@ pub async fn refresh_handler(
                     },
                     expires_at: refreshed.expires_at,
                     refresh_token: refreshed.new_refresh_token,
+                    // Session create failed; the
+                    // SPA must call /refresh again
+                    // after this response to
+                    // install a session + csrf.
+                    csrf_token: String::new(),
                 }),
             )
                 .into_response();
@@ -854,6 +881,13 @@ pub async fn refresh_handler(
             },
             expires_at: refreshed.expires_at,
             refresh_token: refreshed.new_refresh_token,
+            // 2.10.0 (B2): the new
+            // session's CSRF token.
+            // SPA stores this in
+            // memory and echoes it as
+            // `X-CSRF-Token` on every
+            // state-changing request.
+            csrf_token: _row.csrf_token,
         }),
     )
         .into_response()

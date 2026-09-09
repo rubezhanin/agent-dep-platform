@@ -157,6 +157,118 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   для /v1/secrets/:name
   plaintext path.
 
+- **B2 CSRF
+  middleware
+  (audit CWE-352
+  Cross-Site
+  Request
+  Forgery).**
+  Pre-fix
+  `sessions.csrf_token`
+  генерировался
+  но не
+  проверялся —
+  единственная
+  защита была
+  SameSite=Strict
+  cookie flag,
+  которая не
+  закрывает
+  same-site CSRF.
+  Post-fix:
+  - `CsrfContext`
+    extension
+    в `auth.rs` —
+    `require_session_or_bearer`
+    вставляет
+    `CsrfContext(Some(row.csrf_token))`
+    для
+    session-cookie,
+    `CsrfContext(None)`
+    для bearer
+  - `require_csrf_for_mutations`
+    middleware
+    в `auth.rs`:
+    state-changing
+    методы
+    (POST / PUT /
+    DELETE / PATCH)
+    требуют
+    `X-CSRF-Token`
+    header ==
+    session's
+    csrf_token
+    (constant-time
+    compare,
+    manual `ct_eq()`
+    без external
+    dep); mismatch
+    → 403 + audit
+    row `csrf.mismatch`
+    + `target: "csrf"`
+  - GET / HEAD /
+    OPTIONS bypass
+  - Bearer auth
+    bypass
+    (bearer нельзя
+    эксфильтровать
+    из браузера)
+  - Public routes
+    (OIDC login /
+    callback)
+    bypass через
+    no-CsrfContext
+    branch
+  - CSRF token
+    exposure:
+    OIDC callback
+    response +
+    RefreshResponse
+    теперь
+    возвращают
+    `csrf_token`
+    в JSON
+    (audit B2 #4)
+  - Wiring:
+    CSRF
+    `route_layer`
+    регистрируется
+    **перед**
+    `require_session_or_bearer`
+    в axum 0.7
+    `route_layer`
+    оборачивает
+    в обратном
+    порядке
+    (last = outer);
+    CSRF должен
+    быть INNER,
+    чтобы видеть
+    `CsrfContext`
+    extension
+  - 5 новых
+    integration
+    тестов в
+    `http_integration.rs`:
+    `csrf_mutation_without_token_returns_403`
+    +
+    `csrf_mutation_with_wrong_token_returns_403`
+    +
+    `csrf_mutation_with_correct_token_succeeds`
+    +
+    `csrf_safe_methods_do_not_require_token`
+    +
+    `csrf_bearer_auth_bypasses_check`
+  - 44/44
+    http_integration
+    зелёные,
+    clippy clean,
+    fmt clean.
+  CWE-352 closed
+  для
+  session-cookie
+  path.
+
 ### Security
 
 - **P1-F-02 OIDC discovery strict

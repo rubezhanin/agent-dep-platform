@@ -33,6 +33,24 @@ pub struct AuthenticatedUser {
     pub role: Role,
 }
 
+/// 2.10.0 (B2, audit CWE-352
+/// Cross-Site Request Forgery):
+/// per-request extension carrying
+/// the CSRF token from the current
+/// session. Populated by
+/// `require_session_or_bearer` from
+/// `sessions.csrf_token`. `Some`
+/// for session-cookie auth, `None`
+/// for bearer auth (bearer is not
+/// CSRF-vulnerable because an
+/// attacker cannot read the bearer
+/// token from a victim's browser
+/// via cross-origin requests).
+/// Consumed by
+/// `require_csrf_for_mutations`.
+#[derive(Debug, Clone)]
+pub struct CsrfContext(pub Option<String>);
+
 pub async fn require_bearer(
     State(state): State<ServerState>,
     request: Request,
@@ -106,6 +124,14 @@ pub async fn require_bearer(
                 name: user.name,
                 role: user.role,
             });
+            // 2.10.0 (B2): bearer-auth
+            // cannot be CSRF-attacked
+            // (attacker can't read the
+            // bearer from a victim's
+            // browser), so the CSRF
+            // middleware skips when
+            // `CsrfContext` is `None`.
+            request.extensions_mut().insert(CsrfContext(None));
             next.run(request).await
         }
         Ok(None) => unauthorized(&state, &method, &path, "invalid bearer token").await,
@@ -273,6 +299,16 @@ pub async fn require_session_or_bearer(
                             name: user.name,
                             role: user.role,
                         });
+                        // 2.10.0 (B2): stash the
+                        // session's CSRF token so
+                        // the
+                        // `require_csrf_for_mutations`
+                        // middleware can verify
+                        // the `X-CSRF-Token`
+                        // header on POST/PUT/DELETE.
+                        request
+                            .extensions_mut()
+                            .insert(CsrfContext(Some(row.csrf_token)));
                         return next.run(request).await;
                     }
                     Ok(_) => {
@@ -327,6 +363,159 @@ pub async fn require_session_or_bearer(
          this path is deprecated and will be removed in 2.12.0"
     );
     require_bearer(State(state), request, next).await
+}
+
+/// 2.10.0 (B2, audit CWE-352
+/// Cross-Site Request Forgery):
+/// CSRF protection for state-changing
+/// requests (POST / PUT / DELETE /
+/// PATCH). Runs AFTER
+/// `require_session_or_bearer` and
+/// BEFORE role-guard.
+///
+/// Rules:
+/// 1. Safe methods (GET / HEAD /
+///    OPTIONS) are not
+///    state-changing; no CSRF
+///    check.
+/// 2. If `CsrfContext` is
+///    `CsrfContext(None)` (bearer
+///    auth), bearer is not
+///    CSRF-vulnerable (attacker
+///    cannot read the bearer from
+///    the victim's browser), so
+///    no CSRF check.
+/// 3. If `CsrfContext` is
+///    `CsrfContext(Some(expected))`
+///    (session-cookie auth), the
+///    `X-CSRF-Token` request
+///    header MUST match `expected`
+///    in constant time. Mismatch
+///    → 403 + audit row
+///    `csrf.mismatch` (the
+///    attacker cannot see the
+///    session's csrf_token via
+///    cross-origin JS, so any
+///    mismatch is suspicious).
+///
+/// Why this is wired *before* the
+/// role guard: a CSRF attacker
+/// cannot read the csrf_token,
+/// so the missing-header /
+/// wrong-header cases are
+/// evidence of either a
+/// misconfigured SPA or a
+/// cross-origin request. Both
+/// should be logged before the
+/// operator-privilege check
+/// happens.
+pub async fn require_csrf_for_mutations(
+    State(state): State<ServerState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    // 1. Safe methods: no CSRF check.
+    if method == axum::http::Method::GET
+        || method == axum::http::Method::HEAD
+        || method == axum::http::Method::OPTIONS
+    {
+        return next.run(request).await;
+    }
+    // 2. Pull the CSRF context
+    //    inserted by
+    //    `require_session_or_bearer`.
+    let csrf_ctx = request.extensions().get::<CsrfContext>().cloned();
+    let csrf_ctx = match csrf_ctx {
+        Some(c) => c,
+        None => {
+            // No CSRF context = the auth
+            // middleware never ran on this
+            // route (it's a public
+            // endpoint like /login or
+            // OIDC callback). Bypass.
+            return next.run(request).await;
+        }
+    };
+    // 3. Bearer-authenticated: not
+    //    CSRF-vulnerable; bypass.
+    let expected = match csrf_ctx.0 {
+        None => return next.run(request).await,
+        Some(t) => t,
+    };
+    // 4. Session-authenticated: the
+    //    `X-CSRF-Token` header must
+    //    match.
+    let presented = request
+        .headers()
+        .get("X-CSRF-Token")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.as_bytes().to_vec());
+    let presented = match presented {
+        Some(p) => p,
+        None => return csrf_rejected(&state, &method, &path, "missing").await,
+    };
+    if !ct_eq(presented.as_slice(), expected.as_bytes()) {
+        return csrf_rejected(&state, &method, &path, "mismatch").await;
+    }
+    next.run(request).await
+}
+
+/// 2.10.0 (B2): constant-time
+/// string compare for CSRF token
+/// verification. Avoids a timing
+/// oracle that could leak the
+/// expected token byte-by-byte.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+async fn csrf_rejected(
+    state: &crate::ServerState,
+    method: &axum::http::Method,
+    path: &str,
+    reason: &'static str,
+) -> Response {
+    // Audit the rejection. The
+    // `actor` is the unauthenticated
+    // requester (no AuthenticatedUser
+    // extension at this point), so
+    // we use a fixed label. The
+    // operator can correlate with
+    // access logs by path + method
+    // + IP.
+    let action = format!("{} {}", method.as_str(), path);
+    let details = format!(r#"{{"csrf":"{}"}}"#, reason);
+    let _ = state
+        .audit
+        .record_sync(
+            "anonymous",
+            &action,
+            Some("csrf"),
+            agent_dep_core::infrastructure::repository::audit_log_repository::AuditOutcome::Error,
+            Some(&details),
+        )
+        .await;
+    (
+        axum::http::StatusCode::FORBIDDEN,
+        axum::Json(json!({
+            "code": "csrf.mismatch",
+            "kind": "client",
+            "hint": "state-changing requests must include \
+                     `X-CSRF-Token` header matching the \
+                     session's csrf_token (use GET /v1/auth/me \
+                     or login response to read it)"
+        })),
+    )
+        .into_response()
 }
 
 /// Per-route role-check inner function. Wired by

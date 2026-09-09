@@ -2336,3 +2336,187 @@ spec:
         v["deploy"]["source_snapshot_id"]
     );
 }
+
+// ---------------------------------------------------------------------------
+// 2.10.0 (B2, audit CWE-352
+// Cross-Site Request Forgery): the
+// session-cookie auth path must reject
+// state-changing requests (POST / PUT /
+// DELETE) that lack a matching
+// `X-CSRF-Token` header. Bearer auth
+// is exempt (bearer is not
+// CSRF-vulnerable).
+// ---------------------------------------------------------------------------
+
+/// Test helper: create a session
+/// for `user_id` in the test DB and
+/// return `(session_id, csrf_token)`.
+/// The caller sends the session id in
+/// a `Cookie: agency_session=<sid>`
+/// header and the csrf_token in an
+/// `X-CSRF-Token` header.
+async fn _create_session(srv: &TestServer, user_id: i64) -> (String, String) {
+    use agent_dep_core::infrastructure::repository::sessions_repository::SessionRepository;
+    let repo = SessionRepository::new(connect_helper(srv).await);
+    let (sid, row) = repo
+        .create(user_id, None, None)
+        .await
+        .expect("create session");
+    (sid, row.csrf_token)
+}
+
+#[tokio::test]
+async fn csrf_mutation_without_token_returns_403() {
+    // 2.10.0 (B2): session-cookie
+    // auth + POST without
+    // `X-CSRF-Token` must be
+    // rejected with 403. This is
+    // the headline CSRF defence:
+    // any cross-origin form post
+    // that triggers our session
+    // cookie is denied because
+    // the attacker cannot read /
+    // forge the csrf_token from
+    // their page.
+    let srv = boot().await;
+    // Create a session for `admin`.
+    // (admin already has user id 1
+    // from boot_default_state.)
+    let (sid, _csrf) = _create_session(&srv, 1).await;
+    // Build a cookie header that
+    // the auth middleware will
+    // parse.
+    let cookie = format!("agency_session={sid}");
+    // POST /v1/users without
+    // X-CSRF-Token. The handler is
+    // `create_user` (Admin-only,
+    // mutation). The CSRF
+    // middleware should reject
+    // BEFORE the role guard, so
+    // this is a 403, not a 401.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/users", srv.base))
+        .header(axum::http::header::COOKIE, &cookie)
+        .json(&json!({ "name": "newuser", "role": "viewer" }))
+        .send()
+        .await
+        .expect("post");
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    assert_eq!(
+        status, 403,
+        "missing CSRF token must be 403; got body={body}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(v["code"], "csrf.mismatch");
+    // The audit log records the
+    // rejection. Wait briefly for
+    // the async flush.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/audit?limit=200", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .send()
+        .await
+        .expect("get audit");
+    let v: serde_json::Value = resp.json().await.expect("json");
+    let items = v["items"].as_array().expect("items");
+    let csrf_row = items
+        .iter()
+        .find(|r| r["action"] == "POST /v1/users" && r["outcome"] == "error")
+        .expect("csrf mismatch row must be in audit log");
+    assert_eq!(csrf_row["target"].as_str(), Some("csrf"));
+}
+
+#[tokio::test]
+async fn csrf_mutation_with_wrong_token_returns_403() {
+    // 2.10.0 (B2): wrong
+    // X-CSRF-Token (constant-time
+    // compare fails) returns 403.
+    // This catches a misconfigured
+    // SPA that sends a stale or
+    // cross-session token.
+    let srv = boot().await;
+    let (sid, _csrf) = _create_session(&srv, 1).await;
+    let cookie = format!("agency_session={sid}");
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/users", srv.base))
+        .header(axum::http::header::COOKIE, &cookie)
+        .header("X-CSRF-Token", "this-is-not-the-real-token")
+        .json(&json!({ "name": "newuser2", "role": "viewer" }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), 403);
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["code"], "csrf.mismatch");
+}
+
+#[tokio::test]
+async fn csrf_mutation_with_correct_token_succeeds() {
+    // 2.10.0 (B2): the happy path
+    // — session cookie + correct
+    // X-CSRF-Token unlocks the
+    // mutation. The handler
+    // receives the authenticated
+    // user (the admin) and the
+    // create_user call succeeds.
+    let srv = boot().await;
+    let (sid, csrf) = _create_session(&srv, 1).await;
+    let cookie = format!("agency_session={sid}");
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/users", srv.base))
+        .header(axum::http::header::COOKIE, &cookie)
+        .header("X-CSRF-Token", &csrf)
+        .json(&json!({ "name": "newuser3", "role": "viewer" }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), 201, "valid session + csrf must succeed");
+    let v: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(v["name"], "newuser3");
+}
+
+#[tokio::test]
+async fn csrf_safe_methods_do_not_require_token() {
+    // 2.10.0 (B2): GET requests
+    // never need X-CSRF-Token —
+    // they're not state-changing.
+    // The CSRF middleware short-
+    // circuits on safe methods.
+    let srv = boot().await;
+    let (sid, _csrf) = _create_session(&srv, 1).await;
+    let cookie = format!("agency_session={sid}");
+    // No X-CSRF-Token; GET must
+    // still succeed.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/v1/users", srv.base))
+        .header(axum::http::header::COOKIE, &cookie)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn csrf_bearer_auth_bypasses_check() {
+    // 2.10.0 (B2): bearer auth
+    // (legacy 2.0.0-2.7.7 path) is
+    // exempt from CSRF because
+    // the attacker cannot read the
+    // bearer token from a victim's
+    // browser. The middleware
+    // short-circuits on
+    // `CsrfContext(None)`.
+    let srv = boot().await;
+    // No cookie, no X-CSRF-Token;
+    // just bearer. Should succeed.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/users", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({ "name": "bearer-user", "role": "viewer" }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), 201);
+}
