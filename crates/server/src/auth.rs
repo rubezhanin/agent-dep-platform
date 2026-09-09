@@ -157,22 +157,20 @@ pub async fn require_bearer(
             // operator can opt back in
             // during the 2.11.0
             // transition window.
-            if user.token_expires_at.is_none()
-                && {
-                    // Suppress the
-                    // deprecation lint at
-                    // the 2.11.0 call site
-                    // — `bearer_fallback_enabled`
-                    // is the documented
-                    // transition aid; the
-                    // 2.12.0 removal is
-                    // mechanical and
-                    // self-contained.
-                    #[allow(deprecated)]
-                    let fallback = bearer_fallback_enabled();
-                    !fallback
-                }
-            {
+            if user.token_expires_at.is_none() && {
+                // Suppress the
+                // deprecation lint at
+                // the 2.11.0 call site
+                // — `bearer_fallback_enabled`
+                // is the documented
+                // transition aid; the
+                // 2.12.0 removal is
+                // mechanical and
+                // self-contained.
+                #[allow(deprecated)]
+                let fallback = bearer_fallback_enabled();
+                !fallback
+            } {
                 tracing::warn!(
                     "2.11.0 (B1) REFUSED bearer token for pre-OIDC user `{}` \
                      (id={}); set AGENCY_BEARER_FALLBACK=1 to re-enable during \
