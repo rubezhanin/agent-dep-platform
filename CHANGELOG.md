@@ -326,6 +326,55 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     clippy clean,
     fmt clean.
 
+- **C5 graceful
+  shutdown (audit).**
+  Pre-fix
+  `lib.rs::run` —
+  `axum::serve`
+  без
+  `with_graceful_shutdown`:
+  - `systemctl stop agency-server`
+    TCP-RST-ил все
+    in-flight requests
+  - background
+    AuditRecorder
+    flush task
+    терял
+    последний
+    batch (до 100
+    events) в 1s
+    shutdown window
+  - `JoinHandle` из
+    `AuditRecorder::debounced()`
+    сразу
+    dropался
+  Post-fix:
+  - `shutdown_signal()`
+    helper в
+    `lib.rs`:
+    `tokio::select!`
+    между
+    `ctrl_c()`
+    (SIGINT) и
+    `unix::signal(SIGTERM)`
+    (#[cfg(unix)]
+    guard)
+  - `axum::serve(...).with_graceful_shutdown(shutdown)`
+  - `AuditRecorder`
+    rewiring:
+    `flush_handle:
+    Mutex<Option<JoinHandle>>`
+    + `take_flush_handle()`
+  - `run()` post-axum
+    drain:
+    `tokio::time::timeout(5s,
+    audit.shutdown())`
+  - 5/5
+    audit_recorder
+    + 44/44
+    http_integration
+    зелёные
+
 ### Security
 
 - **P1-F-02 OIDC discovery strict

@@ -141,6 +141,17 @@ pub struct AuditRecorder {
     /// integration tests that want
     /// `record_async` to behave like `record_sync`).
     tx: Option<mpsc::Sender<AuditEvent>>,
+    /// 2.10.0 (C5): the background
+    /// flush task's `JoinHandle`.
+    /// Set in `debounced()`, `None`
+    /// for `direct()` (no background
+    /// task). Consumed by
+    /// `take_flush_handle()` during
+    /// graceful shutdown so the
+    /// process can wait for the
+    /// final batch to commit before
+    /// exit.
+    flush_handle: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl AuditRecorder {
@@ -149,7 +160,11 @@ impl AuditRecorder {
     /// tests that need to assert audit row
     /// counts immediately after a request.
     pub fn direct(repo: AuditLogRepository) -> Arc<Self> {
-        Arc::new(Self { repo, tx: None })
+        Arc::new(Self {
+            repo,
+            tx: None,
+            flush_handle: std::sync::Mutex::new(None),
+        })
     }
 
     /// Build a recorder with a debounced async
@@ -163,11 +178,31 @@ impl AuditRecorder {
         flush_interval: Duration,
         batch_size: usize,
         channel_capacity: usize,
-    ) -> (Arc<Self>, JoinHandle<()>) {
+    ) -> Arc<Self> {
         let (tx, rx) = mpsc::channel::<AuditEvent>(channel_capacity);
         let repo_for_task = repo.clone();
         let handle = tokio::spawn(flush_loop(rx, repo_for_task, flush_interval, batch_size));
-        (Arc::new(Self { repo, tx: Some(tx) }), handle)
+        Arc::new(Self {
+            repo,
+            tx: Some(tx),
+            flush_handle: std::sync::Mutex::new(Some(handle)),
+        })
+    }
+
+    /// 2.10.0 (C5): take the
+    /// background flush task's
+    /// `JoinHandle` (consuming it).
+    /// Called once during graceful
+    /// shutdown to await the
+    /// in-flight batch. Returns
+    /// `None` if debouncing was
+    /// never enabled (e.g. test
+    /// path with `direct()`).
+    pub fn take_flush_handle(&self) -> Option<JoinHandle<()>> {
+        self.flush_handle
+            .lock()
+            .expect("flush_handle mutex poisoned")
+            .take()
     }
 
     /// Read access to the audit log. Pass-through
@@ -296,7 +331,18 @@ impl AuditRecorder {
     /// Close the channel and await the flush
     /// task. Integration tests call this before
     /// asserting audit row counts.
-    pub async fn shutdown(self: Arc<Self>, handle: JoinHandle<()>) {
+    /// 2.10.0 (C5): the handle is no
+    /// longer passed in (it was a
+    /// leak / footgun — the
+    /// canonical handle lives in
+    /// `flush_handle` and is taken
+    /// via `take_flush_handle`).
+    /// If the recorder was built with
+    /// `direct()`, `take_flush_handle`
+    /// returns `None` and this is a
+    /// no-op.
+    pub async fn shutdown(self: Arc<Self>) {
+        let handle = self.take_flush_handle();
         // Drop the sender half of the channel by
         // replacing the recorder's `tx` with
         // `None`. The flush task sees the channel
@@ -309,7 +355,9 @@ impl AuditRecorder {
         // `Arc<AuditRecorder>` is dropped, which
         // is after the test ends.)
         drop(self);
-        let _ = handle.await;
+        if let Some(h) = handle {
+            let _ = h.await;
+        }
     }
 
     /// True if the debounced async path is
@@ -502,8 +550,7 @@ mod tests {
     async fn debounced_flushes_in_one_batch() {
         let (db, _dir) = fresh_db().await;
         let repo = AuditLogRepository::new(db.pool().clone());
-        let (rec, handle) =
-            AuditRecorder::debounced(repo.clone(), Duration::from_millis(50), 16, 64);
+        let rec = AuditRecorder::debounced(repo.clone(), Duration::from_millis(50), 16, 64);
         // Enqueue 10 events.
         for i in 0..10 {
             rec.record_async(
@@ -519,15 +566,14 @@ mod tests {
         let rows = repo.list(None, 100).await.unwrap();
         assert_eq!(rows.len(), 10, "all 10 events must flush");
         // Shutdown drains the channel.
-        AuditRecorder::shutdown(rec, handle).await;
+        AuditRecorder::shutdown(rec).await;
     }
 
     #[tokio::test]
     async fn record_sync_still_works_when_debounced() {
         let (db, _dir) = fresh_db().await;
         let repo = AuditLogRepository::new(db.pool().clone());
-        let (rec, handle) =
-            AuditRecorder::debounced(repo.clone(), Duration::from_millis(50), 16, 64);
+        let rec = AuditRecorder::debounced(repo.clone(), Duration::from_millis(50), 16, 64);
         // record_sync bypasses the channel.
         let id = rec
             .record_sync(
@@ -543,7 +589,7 @@ mod tests {
         // No sleep needed — sync is durable.
         let rows = repo.list(None, 100).await.unwrap();
         assert_eq!(rows.len(), 1);
-        AuditRecorder::shutdown(rec, handle).await;
+        AuditRecorder::shutdown(rec).await;
     }
 
     #[tokio::test]
@@ -555,8 +601,7 @@ mod tests {
         // event fills the channel; the second
         // event is rejected and falls back to
         // sync (the spawned task).
-        let (rec, handle) =
-            AuditRecorder::debounced(repo.clone(), Duration::from_secs(10), 1000, 1);
+        let rec = AuditRecorder::debounced(repo.clone(), Duration::from_secs(10), 1000, 1);
         rec.record_async("eve", "GET /v1/systems", None, AuditOutcome::Ok, None);
         rec.record_async("eve", "GET /v1/systems", None, AuditOutcome::Ok, None);
         rec.record_async("eve", "GET /v1/systems", None, AuditOutcome::Ok, None);
@@ -569,6 +614,6 @@ mod tests {
         // because the threshold may or may not
         // have fired in the 200 ms window.
         assert!(!rows.is_empty(), "at least one event must land on disk");
-        AuditRecorder::shutdown(rec, handle).await;
+        AuditRecorder::shutdown(rec).await;
     }
 }

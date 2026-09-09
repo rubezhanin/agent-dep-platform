@@ -569,7 +569,16 @@ pub async fn boot_default_state() -> Result<ServerState> {
     // `CancellationToken` through every
     // request handler, which is a much larger
     // refactor.
-    let (audit_recorder, _flush_handle) = audit_recorder::AuditRecorder::debounced(
+    // 2.10.0 (C5): the background
+    // `JoinHandle` is now stored
+    // inside the recorder (see
+    // `audit_recorder::AuditRecorder::take_flush_handle`)
+    // — the previous code returned
+    // it and dropped it immediately
+    // (`_flush_handle`), which meant
+    // graceful shutdown couldn't
+    // await the in-flight batch.
+    let audit_recorder = audit_recorder::AuditRecorder::debounced(
         audit,
         audit_recorder::DEFAULT_FLUSH_INTERVAL,
         audit_recorder::DEFAULT_BATCH_SIZE,
@@ -843,15 +852,76 @@ pub struct ServerArgs {
 
 pub async fn run(addr: SocketAddr) -> Result<()> {
     let state = boot_default_state().await?;
+    // Stash the audit recorder Arc
+    // before `state` is moved into
+    // `router(state)` (the
+    // Arc<AuditRecorder> is
+    // cheap-clone, so this is just
+    // a refcount bump).
+    let audit = state.audit.clone();
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind {addr}"))?;
     eprintln!("agency-server listening on http://{addr}");
+    // 2.10.0 (C5, audit): graceful
+    // shutdown on SIGINT (Ctrl-C) +
+    // SIGTERM (systemd stop, Docker
+    // stop). The pre-fix code did
+    // `axum::serve(listener, app)`
+    // without `with_graceful_shutdown`
+    // — `systemctl stop agency-server`
+    // would TCP-RST every in-flight
+    // request. After axum drains
+    // in-flight requests we also
+    // drain the AuditRecorder queue
+    // (the same CWE-778 surface as
+    // P1-AUD-FIX, but at the
+    // process-shutdown boundary).
+    let shutdown = shutdown_signal();
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
         .await
         .with_context(|| "axum::serve")?;
+    eprintln!("agency-server: axum drained, flushing audit queue");
+    // Wait up to 5s for the
+    // background flush task to
+    // commit the remaining
+    // batch. SIGKILL after this
+    // is acceptable (audit
+    // completeness is best-
+    // effort by design — see
+    // P1-PERF-01 README).
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), audit.shutdown()).await;
+    eprintln!("agency-server: shutdown complete");
     Ok(())
+}
+
+/// 2.10.0 (C5): signal handler that
+/// resolves on the FIRST of SIGINT
+/// (interactive Ctrl-C) or SIGTERM
+/// (systemd / Docker / Kubernetes).
+/// On Windows, `signal(SIGTERM)`
+/// returns an error (Windows has
+/// no SIGTERM) — we fall back to
+/// ctrl_c only.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let sigterm = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut s) = signal(SignalKind::terminate()) {
+            s.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let sigterm = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => eprintln!("agency-server: SIGINT received"),
+        _ = sigterm => eprintln!("agency-server: SIGTERM received"),
+    }
 }
 
 #[cfg(test)]
