@@ -20,7 +20,7 @@
     loading?: boolean;
     error?: string | null;
     items?: unknown[];
-    row: Snippet<[unknown]>;
+    row?: Snippet<[unknown]>;
     children?: Snippet;
   }>();
 </script>
@@ -40,7 +40,7 @@
   {:else}
     <ul class="list-view">
       {#each items as item, i (i)}
-        <li>{@render row(item)}</li>
+        <li>{@render row?.(item)}</li>
       {/each}
     </ul>
   {/if}
