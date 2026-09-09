@@ -39,6 +39,7 @@ use axum::{
     Router,
 };
 use base64::Engine;
+use clap::Parser;
 use rand::RngCore;
 use tower_http::trace::TraceLayer;
 
@@ -797,51 +798,47 @@ pub async fn boot_default_state() -> Result<ServerState> {
     Ok(state)
 }
 
-pub fn parse_port(args: &[String]) -> u16 {
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--port" {
-            if let Some(v) = args.get(i + 1) {
-                if let Ok(n) = v.parse::<u16>() {
-                    if n != 0 {
-                        return n;
-                    }
-                }
-            }
-        }
-        i += 1;
-    }
-    0
-}
-
-/// 2.9.0: read the bind IP from the
-/// CLI (`--bind <ip>`) or the
-/// `AGENCY_BIND_IP` env var. Default
-/// is `0.0.0.0` (all interfaces) so
-/// the binary is VPS-ready out of
-/// the box. Integration tests and
-/// the dev loop override with
-/// `--bind 127.0.0.1`.
-pub fn parse_bind(args: &[String]) -> String {
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--bind" {
-            if let Some(v) = args.get(i + 1) {
-                let trimmed = v.trim();
-                if !trimmed.is_empty() {
-                    return trimmed.to_string();
-                }
-            }
-        }
-        i += 1;
-    }
-    if let Ok(v) = std::env::var("AGENCY_BIND_IP") {
-        let trimmed = v.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    "0.0.0.0".to_string()
+/// 2.10.0 (A6, audit): `clap::Parser`-
+/// driven CLI args for `agency-server`.
+///
+/// Supported forms:
+/// - `--bind 0.0.0.0`
+/// - `--bind=127.0.0.1`
+/// - `AGENCY_BIND_IP` env var (fallback
+///   when `--bind` is not present)
+/// - `--port 8080` / `--port=8080`
+/// - `--help` / `--version` (free with
+///   `clap::Parser`)
+///
+/// 2.10.0 also dropped the `0.0.0.0`
+/// default's silent override when
+/// `--bind 0.0.0.0` is given
+/// explicitly (the pre-fix
+/// `parse_bind` had a `if !trimmed.is_empty()`
+/// guard that swallowed `--bind ""`
+/// silently).
+#[derive(Debug, Clone, Parser)]
+#[command(
+    name = "agency-server",
+    version,
+    about = "Enterprise agent deployment server"
+)]
+pub struct ServerArgs {
+    /// IP address to bind to. Use
+    /// `127.0.0.1` for the dev loop /
+    /// integration tests; `0.0.0.0`
+    /// (default) for VPS / production
+    /// behind a reverse proxy. Also
+    /// reads `AGENCY_BIND_IP` env var.
+    #[arg(long, env = "AGENCY_BIND_IP", default_value = "0.0.0.0")]
+    pub bind: std::net::IpAddr,
+    /// TCP port. Default `8080`. Set
+    /// to `0` to let the kernel pick
+    /// (useful for parallel test
+    /// runners; the actual port is
+    /// printed on stdout).
+    #[arg(long, default_value_t = 8080)]
+    pub port: u16,
 }
 
 pub async fn run(addr: SocketAddr) -> Result<()> {
@@ -855,4 +852,116 @@ pub async fn run(addr: SocketAddr) -> Result<()> {
         .await
         .with_context(|| "axum::serve")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod server_args_tests {
+    use super::*;
+    use clap::Parser;
+    use std::net::IpAddr;
+
+    /// Helper: clear `AGENCY_BIND_IP`
+    /// for the duration of a test
+    /// so tests don't inherit
+    /// ambient env.
+    fn with_cleared_bind_env<F: FnOnce()>(f: F) {
+        let prev = std::env::var("AGENCY_BIND_IP").ok();
+        // SAFETY: tests run single-
+        // threaded (--test-threads=1)
+        // for the http_integration
+        // suite, and the lib tests
+        // below don't touch the env
+        // elsewhere. set_var is
+        // marked unsafe in modern
+        // rust because of libc
+        // thread-safety, but it's
+        // fine here.
+        unsafe {
+            std::env::remove_var("AGENCY_BIND_IP");
+        }
+        f();
+        if let Some(v) = prev {
+            unsafe {
+                std::env::set_var("AGENCY_BIND_IP", v);
+            }
+        }
+    }
+
+    #[test]
+    fn defaults_bind_to_0_0_0_0_and_port_8080() {
+        with_cleared_bind_env(|| {
+            let args = ServerArgs::parse_from(["agency-server"]);
+            assert_eq!(args.bind, "0.0.0.0".parse::<IpAddr>().unwrap());
+            assert_eq!(args.port, 8080);
+        });
+    }
+
+    #[test]
+    fn parses_space_separated_bind_and_port() {
+        with_cleared_bind_env(|| {
+            let args =
+                ServerArgs::parse_from(["agency-server", "--bind", "127.0.0.1", "--port", "9090"]);
+            assert_eq!(args.bind, "127.0.0.1".parse::<IpAddr>().unwrap());
+            assert_eq!(args.port, 9090);
+        });
+    }
+
+    #[test]
+    fn parses_equals_separated_bind_and_port() {
+        // 2.10.0 (A6): the pre-fix
+        // `parse_bind` argv walker
+        // did NOT support `--bind=ip`
+        // form (only `--bind ip` with
+        // a space). clap accepts
+        // both.
+        with_cleared_bind_env(|| {
+            let args =
+                ServerArgs::parse_from(["agency-server", "--bind=192.168.1.10", "--port=9999"]);
+            assert_eq!(args.bind, "192.168.1.10".parse::<IpAddr>().unwrap());
+            assert_eq!(args.port, 9999);
+        });
+    }
+
+    #[test]
+    fn env_var_falls_back_when_no_flag() {
+        with_cleared_bind_env(|| {
+            unsafe {
+                std::env::set_var("AGENCY_BIND_IP", "10.0.0.5");
+            }
+            let args = ServerArgs::parse_from(["agency-server", "--port", "7000"]);
+            assert_eq!(args.bind, "10.0.0.5".parse::<IpAddr>().unwrap());
+            assert_eq!(args.port, 7000);
+            // Cleanup handled by
+            // with_cleared_bind_env.
+        });
+    }
+
+    #[test]
+    fn explicit_flag_overrides_env_var() {
+        with_cleared_bind_env(|| {
+            unsafe {
+                std::env::set_var("AGENCY_BIND_IP", "10.0.0.5");
+            }
+            let args = ServerArgs::parse_from(["agency-server", "--bind", "172.16.0.1"]);
+            assert_eq!(args.bind, "172.16.0.1".parse::<IpAddr>().unwrap());
+        });
+    }
+
+    #[test]
+    fn rejects_invalid_ip() {
+        // clap rejects malformed IPs
+        // at parse time. This
+        // replaces the pre-fix
+        // `parse_bind` behaviour that
+        // silently returned
+        // `"0.0.0.0"` on parse
+        // failure (the bind would
+        // then fail in
+        // `axum::serve` with a less
+        // helpful error).
+        with_cleared_bind_env(|| {
+            let result = ServerArgs::try_parse_from(["agency-server", "--bind", "not-an-ip"]);
+            assert!(result.is_err(), "invalid IP must be rejected at parse time");
+        });
+    }
 }

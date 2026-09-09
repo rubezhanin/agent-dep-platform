@@ -4,21 +4,26 @@
 //! The library surface is what the integration tests
 //! link against.
 //!
-//! 2.9.0 (VPS deploy): the bind address is
-//! configurable. The CLI flag `--bind` and
-//! the `AGENCY_BIND` env var both accept
-//! `<ip>:<port>`. Default is `0.0.0.0:8080` —
-//! the integration tests (and the 2.x dev
-//! loop) override this with `--bind 127.0.0.1:0`
-//! to keep the kernel-port collision surface
-//! small. Production deployments behind a
-//! reverse proxy should leave the default and
-//! let caddy/nginx do the TLS termination on
-//! the public side.
+//! 2.10.0 (A6, audit): the CLI
+//! argument parser was rewritten
+//! with `clap::Parser` (was a
+//! hand-rolled argv walker in
+//! `lib.rs::parse_bind` /
+//! `parse_port` that didn't support
+//! `--bind=ip` syntax, had no
+//! `--help`, and silently ignored
+//! invalid input). The
+//! `ServerArgs` struct is `pub` so
+//! integration tests can
+//! `ServerArgs::parse_from(&[...])`
+//! directly without going through
+//! the binary's `std::env::args`.
 
 use std::net::SocketAddr;
 
-use agent_dep_server::{parse_bind, parse_port};
+use clap::Parser;
+
+use agent_dep_server::{run, ServerArgs};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -32,13 +37,9 @@ async fn main() -> anyhow::Result<()> {
     // the warning prevents a silent inheritance
     // misconfiguration.
     agent_dep_server::env_validate::warn_cli_only_envs();
-    let args: Vec<String> = std::env::args().collect();
-    let bind = parse_bind(&args);
-    let port = parse_port(&args);
-    let addr: SocketAddr = format!("{bind}:{port}")
-        .parse()
-        .map_err(|e| anyhow::anyhow!("parse {bind}:{port}: {e}"))?;
-    agent_dep_server::run(addr).await
+    let args = ServerArgs::parse();
+    let addr: SocketAddr = SocketAddr::new(args.bind, args.port);
+    run(addr).await
 }
 
 fn init_tracing() {

@@ -269,6 +269,63 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   session-cookie
   path.
 
+- **A6
+  clap-driven
+  CLI для
+  `agency-server`.**
+  Pre-fix
+  `lib.rs::parse_bind`
+  / `parse_port`
+  — hand-rolled
+  argv walker
+  без поддержки
+  `--bind=ip`
+  (только через
+  space), без
+  `--help`,
+  молча
+  игнорирующий
+  невалидный
+  IP (fallback
+  на `0.0.0.0`).
+  Post-fix:
+  - `ServerArgs`
+    struct в
+    `lib.rs` —
+    `#[derive(Parser)]`
+    с `bind: IpAddr`
+    + `port: u16`
+  - `clap =
+    { workspace = true, features = ["env"] }`
+    в
+    `crates/server/Cargo.toml`
+  - `main.rs`
+    переписан
+    на
+    `ServerArgs::parse()`
+  - `parse_bind` /
+    `parse_port`
+    удалены
+  - 6 новых
+    unit тестов
+    в
+    `lib::server_args_tests`:
+    defaults +
+    space-form +
+    `=`-form +
+    env fallback +
+    flag override
+    + reject
+    invalid IP
+  - 44/44
+    http_integration
+    зелёные +
+    6/6 новых
+    server_args
+    unit теста,
+    clippy clean,
+    fmt clean.
+
 ### Security
 
 - **P1-F-02 OIDC discovery strict
