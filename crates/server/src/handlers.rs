@@ -185,6 +185,21 @@ pub struct PlanRequest {
     /// directly so the operator does not have to ship the
     /// file separately.
     pub system_yaml: String,
+    /// P1-D-01d (TZ #1 §10 / D-01d,
+    /// CWE-494): the optional
+    /// `source_snapshots.id` (UUID)
+    /// the plan should be built
+    /// against. When present, the
+    /// server loads the stored agents
+    /// / divisions / skills from the
+    /// snapshot row instead of
+    /// re-ingesting the live working
+    /// copy. See `DeployRequestBody::source_snapshot_id`
+    /// for the matching deploy-time
+    /// field and the CWE-345 source
+    /// confusion guard.
+    #[serde(default)]
+    pub source_snapshot_id: Option<String>,
 }
 
 pub async fn plan_system(
@@ -204,8 +219,22 @@ pub async fn plan_system(
     // `sources` table. The caller never
     // influences the filesystem path the
     // server ingests.
-    match plan::compute_plan_from_source(state.db.pool(), &req.source_id, &req.system_yaml).await {
-        Ok((_resolved_source_id, summary)) => {
+    // P1-D-01d: the `/v1/systems/plan`
+    // endpoint accepts the same
+    // `source_snapshot_id` as
+    // `/v1/deploys` (see `PlanRequest`).
+    // We forward it to the plan fn so a
+    // plan preview is also reproducible
+    // against a stored snapshot.
+    match plan::compute_plan_from_source(
+        state.db.pool(),
+        &req.source_id,
+        &req.system_yaml,
+        req.source_snapshot_id.as_deref(),
+    )
+    .await
+    {
+        Ok((_resolved_source_id, summary, _resolved_snap_id)) => {
             let target = format!("system:{}", summary.system_id);
             let details = Some(json!({"wrote": summary.writes.len()}).to_string());
             state.audit.record_async(                    &user.name,
@@ -521,6 +550,17 @@ pub struct DeployView {
     /// CLI. Populated when the request body
     /// includes `"target": "<name>"`.
     pub target_id: Option<i64>,
+    /// P1-D-01d (TZ #1 §10 / D-01d,
+    /// CWE-494): the
+    /// `source_snapshots.id` the plan
+    /// was built against. `null` for
+    /// legacy deploys that used the
+    /// re-ingest path (no snapshot
+    /// pinned). When present, the
+    /// `mark_applied` freshness
+    /// check verifies the snapshot
+    /// still exists.
+    pub source_snapshot_id: Option<String>,
     pub approved_by: Option<i64>,
     pub approved_at: Option<String>,
     pub rejection_reason: Option<String>,
@@ -537,6 +577,7 @@ fn deploy_view(r: &PendingDeployRow) -> DeployView {
         status: r.status,
         environment: r.environment,
         target_id: r.target_id,
+        source_snapshot_id: r.source_snapshot_id.clone(),
         approved_by: r.approved_by,
         approved_at: r.approved_at.clone(),
         rejection_reason: r.rejection_reason.clone(),
@@ -572,6 +613,39 @@ pub struct DeployRequestBody {
     /// 2.4.0 path-based CLI keeps working).
     #[serde(default)]
     pub target: Option<String>,
+    /// P1-D-01d (TZ #1 §10 / D-01d,
+    /// CWE-494 Download of Code Without
+    /// Integrity Check): the optional
+    /// `source_snapshots.id` (UUID)
+    /// the plan should be built
+    /// against. When present, the
+    /// server loads the stored agents
+    /// / divisions / skills from the
+    /// snapshot row instead of
+    /// re-ingesting the live working
+    /// copy. The plan is therefore
+    /// pinned to the exact commit the
+    /// operator approved; later edits
+    /// to the working copy cannot
+    /// change the deploy that the
+    /// pending_deploys row records.
+    /// The snapshot's `source_id`
+    /// MUST equal the request's
+    /// `source_id` (CWE-345
+    /// source-confusion guard) — a
+    /// mismatch returns 400.
+    /// `None` is allowed (the 2.11.0
+    /// `agency` CLI and the SPA
+    /// before it learns about
+    /// `GET /v1/sources/{id}/snapshots`
+    /// still use the re-ingest path;
+    /// those rows have
+    /// `pending_deploys.source_snapshot_id = NULL`
+    /// and the `mark_applied`
+    /// freshness check is a no-op for
+    /// them).
+    #[serde(default)]
+    pub source_snapshot_id: Option<String>,
 }
 
 pub async fn request_deploy(
@@ -654,8 +728,23 @@ pub async fn request_deploy(
                 .into_response();
         }
     };
-    match plan::compute_plan_from_source(state.db.pool(), &req.source_id, &req.system_yaml).await {
-        Ok((_source_id, summary)) => {
+    // P1-D-01d: forward the caller-supplied
+    // `source_snapshot_id` (if any) to the
+    // plan fn. The plan fn returns the
+    // resolved snap id (as a String) so we
+    // can write it into
+    // `pending_deploys.source_snapshot_id`
+    // — that is what enables the
+    // `mark_applied` freshness check (CWE-494).
+    match plan::compute_plan_from_source(
+        state.db.pool(),
+        &req.source_id,
+        &req.system_yaml,
+        req.source_snapshot_id.as_deref(),
+    )
+    .await
+    {
+        Ok((_source_id, summary, snap_id)) => {
             let plan_json = match serde_json::to_string(&summary) {
                 Ok(s) => s,
                 Err(e) => {
@@ -684,7 +773,7 @@ pub async fn request_deploy(
                     user.id,
                     env,
                     target_id,
-                    None,
+                    snap_id.as_deref(),
                 )
                 .await
             {
@@ -695,6 +784,21 @@ pub async fn request_deploy(
                             "system_id": row.system_id,
                             "writes": summary.writes.len(),
                             "environment": row.environment.as_str(),
+                            // 2.11.0 (P1-D-01d):
+                            // include the
+                            // resolved snap id
+                            // in the audit
+                            // row so the
+                            // operator can
+                            // trace which
+                            // snapshot the
+                            // plan was built
+                            // against. `null`
+                            // means the
+                            // legacy
+                            // re-ingest path
+                            // was used.
+                            "source_snapshot_id": row.source_snapshot_id,
                         })
                         .to_string(),
                     );

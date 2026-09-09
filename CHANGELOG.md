@@ -3638,6 +3638,128 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   четыре
   защитных слоя.
 
+- **P1-D-01d
+  `request_deploy`
+  pins plan to
+  the stored
+  `source_snapshots.id`
+  (TZ #1 §10 /
+  D-01d, CWE-494
+  Download of
+  Code Without
+  Integrity
+  Check).** Pre-fix
+  `compute_plan_from_source`
+  re-ingested
+  the live
+  working copy
+  on every
+  `POST /v1/deploys`
+  call. If the
+  source files
+  changed between
+  `request` and
+  `apply` (hours
+  or days later
+  for slow
+  approval
+  queues), the
+  applied artifact
+  was a different
+  artifact than
+  the one the
+  operator
+  approved. Post-fix:
+  1. New
+  `source_snapshot_id:
+  Option<String>`
+  field on
+  `PlanRequest`
+  and
+  `DeployRequestBody`
+  (`#[serde(default)]`,
+  backward-compat
+  with the 2.11.0
+  `agency` CLI and
+  the pre-snapshot
+  SPA).
+  2. When the
+  caller passes
+  a
+  `source_snapshot_id`,
+  the plan loads
+  the stored
+  agents /
+  divisions /
+  skills from the
+  `source_snapshots`
+  row instead of
+  re-ingesting.
+  3. The snap id
+  is written to
+  `pending_deploys.source_snapshot_id`
+  (P1-D-01a
+  column, kept
+  `NULL` for the
+  legacy
+  re-ingest
+  path). 4. CWE-345
+  source-confusion
+  guard: a snap
+  from source A
+  used with
+  `source_id` B
+  returns 400.
+  5. `DeployView`
+  now includes
+  `source_snapshot_id`
+  (nullable). 6.
+  Audit row for
+  `POST /v1/deploys`
+  now records
+  the resolved
+  snap id. 7.
+  Backward-compat
+  path (no
+  `source_snapshot_id`)
+  still works
+  unchanged. 7
+  new tests in
+  `http_integration.rs`:
+  `plan_endpoint_uses_source_snapshot_id_when_supplied`
+  +
+  `plan_endpoint_with_unknown_source_snapshot_id_returns_400`
+  +
+  `plan_endpoint_with_cross_source_snapshot_id_returns_400`
+  +
+  `request_deploy_with_source_snapshot_id_persists_it`
+  +
+  `request_deploy_with_unknown_source_snapshot_id_returns_400`
+  +
+  `request_deploy_with_cross_source_snapshot_id_returns_400`
+  +
+  `request_deploy_without_source_snapshot_id_uses_reingest_path`.
+  690+7=697
+  tests pass
+  (+7 net,
+  dropped 0),
+  clippy clean,
+  fmt clean на
+  touched files.
+  **CWE-494 closed**
+  for the
+  request→apply
+  artifact-drift
+  surface. NOTES:
+  1 pre-existing
+  flake
+  (`legacy_token_migrates_to_admin_on_first_start`)
+  failed 1 раз в
+  parallel run,
+  прошёл при
+  изоляции — not
+  a regression.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

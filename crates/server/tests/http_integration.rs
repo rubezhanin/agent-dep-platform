@@ -1636,3 +1636,525 @@ async fn register_local_source(db_path: &std::path::Path, path: &std::path::Path
     .expect("insert source");
     id
 }
+
+// ---------------------------------------------------------------------------
+// 2.11.0 (P1-D-01d, TZ #1 §10 / D-01d,
+// CWE-494 Download of Code Without
+// Integrity Check): the
+// `source_snapshot_id` field on
+// `POST /v1/systems/plan` and
+// `POST /v1/deploys`.
+// ---------------------------------------------------------------------------
+
+/// P1-D-01d test helper: write a
+/// catalog with a single `be@1.0.0`
+/// agent and an `fe@1.0.0` agent.
+fn _write_snapshot_catalog(cat: &std::path::Path) {
+    use std::fs;
+    fs::create_dir_all(cat.join("agents/engineering")).unwrap();
+    fs::write(
+        cat.join("divisions.json"),
+        r#"{"divisions":[{"id": "engineering", "label": "Eng", "order": 0}]}"#,
+    )
+    .unwrap();
+    let be_md = r#"---
+id: be
+name: Backend
+display_name: Backend
+division: engineering
+role: backend
+description: be
+version: 1.0.0
+sensitive: false
+activation_phrases: []
+tools: []
+---
+
+You are be.
+"#;
+    fs::write(cat.join("agents/engineering/be.md"), be_md).unwrap();
+    let fe_md = r#"---
+id: fe
+name: Frontend
+display_name: Frontend
+division: engineering
+role: frontend
+description: fe
+version: 1.0.0
+sensitive: false
+activation_phrases: []
+tools: []
+---
+
+You are fe.
+"#;
+    fs::write(cat.join("agents/engineering/fe.md"), fe_md).unwrap();
+}
+
+/// P1-D-01d test helper: register
+/// a local source for `cat_path`
+/// AND write a `source_snapshots`
+/// row + `agents` rows for the
+/// agents in the catalog. Returns
+/// `(source_id, snapshot_id)`.
+/// Tests that need a stored
+/// snapshot call this once at the
+/// top of their setup.
+async fn register_local_source_with_snapshot(
+    srv: &TestServer,
+    cat_path: &std::path::Path,
+) -> (String, String) {
+    use agent_dep_core::application::ingest::IngestService;
+    use agent_dep_core::domain::source::{Source, SourceKind};
+    use agent_dep_core::infrastructure::repository::IngestRepository;
+    let pool = connect_helper(srv).await;
+    // 1. Insert the `sources` row.
+    let source_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO sources (id, kind, location, created_at) \
+         VALUES (?1, 'local', ?2, '2026-01-01T00:00:00Z')",
+    )
+    .bind(source_id.to_string())
+    .bind(cat_path.to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .expect("insert source");
+    // 2. Ingest the catalog into an
+    //    `IngestResult`.
+    let source = Source::new(SourceKind::local(cat_path.to_path_buf()));
+    let (result, report) = IngestService::new()
+        .ingest_local(&source, None)
+        .expect("ingest_local");
+    // 3. Persist the snapshot +
+    //    child rows. `record_snapshot`
+    //    supersedes any current
+    //    `active` row for this source
+    //    and inserts the new one.
+    let snap_id = result.snapshot.id;
+    let repo = IngestRepository::new(pool.clone());
+    repo.record_snapshot(source_id, &result, &report)
+        .await
+        .expect("record_snapshot");
+    (source_id.to_string(), snap_id.to_string())
+}
+
+/// P1-D-01d: `POST /v1/systems/plan`
+/// with `source_snapshot_id` looks
+/// up the stored snapshot and
+/// composes against its agents. The
+/// stored snapshot must be the
+/// catalog we registered, not the
+/// post-snapshot edits on disk.
+#[tokio::test]
+async fn plan_endpoint_uses_source_snapshot_id_when_supplied() {
+    let srv = boot().await;
+    let cat = srv._dir.path().join("snap_plan_cat");
+    _write_snapshot_catalog(&cat);
+    // Register the source + write
+    // the snapshot.
+    let (source_id, snap_id) =
+        register_local_source_with_snapshot(&srv, &cat).await;
+    // 2.11.0 (P1-D-01d, CWE-494):
+    // MUTATE the catalog on disk.
+    // Any plan that re-ingests the
+    // working copy would now see the
+    // mutated agents and fail. A plan
+    // that uses the stored snapshot
+    // continues to compose against
+    // the pre-mutation agents.
+    std::fs::remove_dir_all(cat.join("agents")).unwrap();
+    std::fs::create_dir_all(cat.join("agents/engineering")).unwrap();
+    std::fs::write(
+        cat.join("agents/engineering/zzz.md"),
+        r#"---
+id: zzz
+name: Zzz
+display_name: Zzz
+division: engineering
+role: zzz
+description: zzz
+version: 1.0.0
+sensitive: false
+activation_phrases: []
+tools: []
+---
+
+zzz body.
+"#,
+    )
+    .unwrap();
+    let sys = r#"apiVersion: agent-dep/v1
+kind: System
+metadata:
+  id: test-sys
+  name: test
+spec:
+  source: ./catalog
+  runtime_type: hermes
+  agents:
+    - ref: be@1.0.0
+"#;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/systems/plan", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({
+            "source_id": source_id,
+            "system_yaml": sys,
+            "source_snapshot_id": snap_id,
+        }))
+        .send()
+        .await
+        .expect("post");
+    let status = resp.status();
+    let body_text = resp.text().await.unwrap_or_default();
+    assert_eq!(
+        status, 200,
+        "stored-snapshot plan should succeed (P1-D-01d): status={status} body={body_text}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body_text).expect("json");
+    let writes = v["writes"].as_array().expect("writes");
+    assert_eq!(writes.len(), 1, "exactly one write (be)");
+    assert_eq!(writes[0]["agent_ref"], "be@1.0.0");
+}
+
+/// P1-D-01d: an unknown
+/// `source_snapshot_id` is rejected
+/// with 400 (not 500 — the failure
+/// mode is caller error, not a
+/// server bug). The server MUST
+/// NOT silently fall back to
+/// re-ingest (that would let a
+/// caller pick the plan they want
+/// by quoting a non-existent snap
+/// id).
+#[tokio::test]
+async fn plan_endpoint_with_unknown_source_snapshot_id_returns_400() {
+    let srv = boot().await;
+    let cat = srv._dir.path().join("snap_unknown_cat");
+    _write_snapshot_catalog(&cat);
+    let (source_id, _snap_id) =
+        register_local_source_with_snapshot(&srv, &cat).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/systems/plan", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({
+            "source_id": source_id,
+            "system_yaml": r#"apiVersion: agent-dep/v1
+kind: System
+metadata:
+  id: test-sys
+  name: test
+spec:
+  source: ./catalog
+  runtime_type: hermes
+  agents:
+    - ref: be@1.0.0
+"#,
+            "source_snapshot_id": "00000000-0000-0000-0000-deadbeefcafe",
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), 400);
+}
+
+/// P1-D-01d (CWE-345 source
+/// confusion): a snapshot that
+/// belongs to source A MUST NOT be
+/// usable in a plan that names
+/// source B. The server returns
+/// 400.
+#[tokio::test]
+async fn plan_endpoint_with_cross_source_snapshot_id_returns_400() {
+    let srv = boot().await;
+    let cat_a = srv._dir.path().join("snap_xsrc_cat_a");
+    let cat_b = srv._dir.path().join("snap_xsrc_cat_b");
+    _write_snapshot_catalog(&cat_a);
+    // `cat_b` exists too (so the
+    // sources table accepts it as
+    // a real location), but is
+    // empty — the plan will fail
+    // anyway because the snapshot
+    // check runs first. The point
+    // of the test is the CWE-345
+    // guard, not the ingest path.
+    std::fs::create_dir_all(&cat_b).unwrap();
+    // Register source A (this one
+    // gets the snapshot).
+    let (_source_id_a, snap_id_a) =
+        register_local_source_with_snapshot(&srv, &cat_a).await;
+    // Register source B at a
+    // different path (the
+    // `sources` table has UNIQUE
+    // (kind, location)).
+    let source_id_b = uuid::Uuid::new_v4().to_string();
+    {
+        let pool = connect_helper(&srv).await;
+        sqlx::query(
+            "INSERT INTO sources (id, kind, location, created_at) \
+             VALUES (?1, 'local', ?2, '2026-01-01T00:00:00Z')",
+        )
+        .bind(&source_id_b)
+        .bind(cat_b.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .expect("insert source B");
+    }
+    // Plan against B + A's snap.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/systems/plan", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({
+            "source_id": source_id_b,
+            "system_yaml": r#"apiVersion: agent-dep/v1
+kind: System
+metadata:
+  id: test-sys
+  name: test
+spec:
+  source: ./catalog
+  runtime_type: hermes
+  agents:
+    - ref: be@1.0.0
+"#,
+            "source_snapshot_id": snap_id_a,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(
+        resp.status(),
+        400,
+        "cross-source snapshot MUST be 400 (CWE-345), got {}",
+        resp.status()
+    );
+}
+
+/// P1-D-01d: `POST /v1/deploys`
+/// with `source_snapshot_id`
+/// populates
+/// `pending_deploys.source_snapshot_id`
+/// in the persisted row. This is
+/// the field that the
+/// `mark_applied` freshness check
+/// (CWE-494) reads to verify the
+/// snapshot still exists at apply
+/// time.
+#[tokio::test]
+async fn request_deploy_with_source_snapshot_id_persists_it() {
+    let srv = boot().await;
+    let cat = srv._dir.path().join("snap_deploy_cat");
+    _write_snapshot_catalog(&cat);
+    let (source_id, snap_id) =
+        register_local_source_with_snapshot(&srv, &cat).await;
+    // 2.5.3: create a target so
+    // `request_deploy` accepts the
+    // request.
+    let _ = _ensure_target(&srv, "dev", "snap-target").await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/deploys", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({
+            "source_id": source_id,
+            "system_yaml": r#"apiVersion: agent-dep/v1
+kind: System
+metadata:
+  id: test-sys
+  name: test
+spec:
+  source: ./catalog
+  runtime_type: hermes
+  agents:
+    - ref: be@1.0.0
+"#,
+            "environment": "dev",
+            "target": "snap-target",
+            "source_snapshot_id": snap_id,
+        }))
+        .send()
+        .await
+        .expect("post deploy");
+    let status = resp.status();
+    let body_text = resp.text().await.unwrap_or_default();
+    assert_eq!(
+        status, 201,
+        "deploy should succeed: status={status} body={body_text}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body_text).expect("json");
+    // The response surfaces the
+    // resolved snap id in the
+    // `deploy` view (P1-D-01d).
+    assert_eq!(
+        v["deploy"]["source_snapshot_id"].as_str(),
+        Some(snap_id.as_str()),
+        "deploy view must include the resolved source_snapshot_id"
+    );
+    // Also: the audit row records
+    // it. The `record_async` path
+    // uses a spawned task, so wait
+    // briefly for the drain.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let audit: serde_json::Value = {
+        let pool = connect_helper(&srv).await;
+        let row: (String, String,) = sqlx::query_as(
+            "SELECT actor, details FROM audit_log WHERE action = 'POST /v1/deploys' \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("audit row");
+        json!({"actor": row.0, "details": row.1})
+    };
+    let details: serde_json::Value =
+        serde_json::from_str(audit["details"].as_str().unwrap_or("{}"))
+            .expect("details json");
+    assert_eq!(
+        details["source_snapshot_id"].as_str(),
+        Some(snap_id.as_str()),
+        "audit row must record the resolved source_snapshot_id"
+    );
+    // And the DB row matches.
+    let pool = connect_helper(&srv).await;
+    let db_snap: Option<String> = sqlx::query_scalar(
+        "SELECT source_snapshot_id FROM pending_deploys \
+         WHERE id = ?1",
+    )
+    .bind(v["deploy"]["id"].as_i64().unwrap())
+    .fetch_one(&pool)
+    .await
+    .expect("db snap");
+    assert_eq!(db_snap.as_deref(), Some(snap_id.as_str()));
+}
+
+/// P1-D-01d: a request_deploy with
+/// an unknown `source_snapshot_id`
+/// returns 400 (not 500). The
+/// caller quoted a snap id that
+/// does not exist.
+#[tokio::test]
+async fn request_deploy_with_unknown_source_snapshot_id_returns_400() {
+    let srv = boot().await;
+    let cat = srv._dir.path().join("snap_deploy_unknown_cat");
+    _write_snapshot_catalog(&cat);
+    let (source_id, _snap_id) =
+        register_local_source_with_snapshot(&srv, &cat).await;
+    let _ = _ensure_target(&srv, "dev", "snap-unknown-target").await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/deploys", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({
+            "source_id": source_id,
+            "system_yaml": "x",
+            "environment": "dev",
+            "target": "snap-unknown-target",
+            "source_snapshot_id": "00000000-0000-0000-0000-deadbeefcafe",
+        }))
+        .send()
+        .await
+        .expect("post deploy");
+    assert_eq!(resp.status(), 400);
+}
+
+/// P1-D-01d (CWE-345): a request
+/// that names `source_id = B` but
+/// `source_snapshot_id` from
+/// `source_id = A` is rejected
+/// with 400.
+#[tokio::test]
+async fn request_deploy_with_cross_source_snapshot_id_returns_400() {
+    let srv = boot().await;
+    let cat_a = srv._dir.path().join("snap_deploy_xsrc_cat_a");
+    let cat_b = srv._dir.path().join("snap_deploy_xsrc_cat_b");
+    _write_snapshot_catalog(&cat_a);
+    std::fs::create_dir_all(&cat_b).unwrap();
+    let (_source_id_a, snap_id_a) =
+        register_local_source_with_snapshot(&srv, &cat_a).await;
+    // Register source B at a
+    // different path (`sources`
+    // has UNIQUE (kind, location)).
+    let source_id_b = uuid::Uuid::new_v4().to_string();
+    {
+        let pool = connect_helper(&srv).await;
+        sqlx::query(
+            "INSERT INTO sources (id, kind, location, created_at) \
+             VALUES (?1, 'local', ?2, '2026-01-01T00:00:00Z')",
+        )
+        .bind(&source_id_b)
+        .bind(cat_b.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .expect("insert source B");
+    }
+    let _ = _ensure_target(&srv, "dev", "snap-xsrc-target").await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/deploys", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({
+            "source_id": source_id_b,
+            "system_yaml": "x",
+            "environment": "dev",
+            "target": "snap-xsrc-target",
+            "source_snapshot_id": snap_id_a,
+        }))
+        .send()
+        .await
+        .expect("post deploy");
+    assert_eq!(resp.status(), 400);
+}
+
+/// P1-D-01d: a request_deploy
+/// without `source_snapshot_id`
+/// (the legacy path) still
+/// succeeds. The persisted row
+/// has `source_snapshot_id =
+/// NULL` and the audit row's
+/// `source_snapshot_id` field is
+/// `null`. This is the
+/// backward-compat path for the
+/// 2.11.0 CLI / pre-snapshot SPA.
+#[tokio::test]
+async fn request_deploy_without_source_snapshot_id_uses_reingest_path() {
+    let srv = boot().await;
+    let cat = srv._dir.path().join("snap_legacy_cat");
+    _write_snapshot_catalog(&cat);
+    let (source_id, _snap_id) =
+        register_local_source_with_snapshot(&srv, &cat).await;
+    let _ = _ensure_target(&srv, "dev", "snap-legacy-target").await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/deploys", srv.base))
+        .bearer_auth(&srv.admin_token)
+        .json(&json!({
+            "source_id": source_id,
+            "system_yaml": r#"apiVersion: agent-dep/v1
+kind: System
+metadata:
+  id: test-sys
+  name: test
+spec:
+  source: ./catalog
+  runtime_type: hermes
+  agents:
+    - ref: be@1.0.0
+"#,
+            "environment": "dev",
+            "target": "snap-legacy-target",
+        }))
+        .send()
+        .await
+        .expect("post deploy");
+    let status = resp.status();
+    let body_text = resp.text().await.unwrap_or_default();
+    assert_eq!(
+        status, 201,
+        "legacy path should still succeed: status={status} body={body_text}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body_text).expect("json");
+    // No `source_snapshot_id`
+    // in the response — the legacy
+    // path leaves the column NULL.
+    assert!(
+        v["deploy"]["source_snapshot_id"].is_null(),
+        "legacy path must persist source_snapshot_id = null, got {:?}",
+        v["deploy"]["source_snapshot_id"]
+    );
+}
