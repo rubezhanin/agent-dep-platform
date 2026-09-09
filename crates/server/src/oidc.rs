@@ -855,53 +855,116 @@ pub async fn refresh_handler(
         .into_response()
 }
 
-/// `GET /v1/auth/oidc/logout`. Public.
-/// 302-redirects to the IdP's
-/// `end_session_endpoint` if the IdP
-/// publishes one; otherwise returns
-/// 200 with `{"message": "logged out
-/// locally"}`. Always invalidates the
-/// local `token_hash` for the
-/// currently-logged-in user (if the
-/// Authorization header is present).
+/// Maximum body size for the logout
+/// endpoint. 1 KiB is generous for
+/// the `{refresh_token, post_logout_redirect_uri}`
+/// JSON envelope (the SPA sends
+/// ~250 bytes) and rejects accidental
+/// 100 MB body floods.
+const LOGOUT_MAX_BODY_BYTES: u32 = 1024;
+
+/// 2.11.0 (P2-LOGOUT-01, CWE-352
+/// Cross-Site Request Forgery): the
+/// logout endpoint changed from `GET`
+/// to `POST`. The pre-fix GET could
+/// be triggered by a malicious
+/// `<img src=".../logout">` on a
+/// third-party page (the browser
+/// sends the `agency_session` cookie
+/// along with the GET, and the user
+/// is logged out without their
+/// consent). POST is exempt from
+/// the simple-request CSRF rule
+/// because the SPA sends
+/// `Content-Type: application/json`
+/// (a non-simple CORS preflight
+/// blocks the malicious page).
 ///
-/// 2.11.0 (P1-F-03b, CWE-613): also
-/// revokes the server-side session
-/// identified by the `agency_session`
-/// cookie (if present) and emits a
-/// `Set-Cookie: agency_session=;
-/// Max-Age=0` to instruct the browser
-/// to drop the cookie. The two paths
-/// (bearer + cookie) are independent:
-/// revoking the cookie does not touch
-/// the bearer and vice versa, so a
-/// caller that has both (e.g. an
-/// automated script that still uses
-/// `Authorization: Bearer` while a
-/// browser is also open) gets a
-/// complete logout.
+/// The handler:
+/// 1. Reads the JSON body
+///    (`{refresh_token}`) with a 1 KiB
+///    cap. Missing or empty
+///    `refresh_token` is allowed (the
+///    SPA may have lost the token —
+///    we still want to revoke the
+///    local session + clear the
+///    cookie).
+/// 2. Revokes the server-side
+///    session (CWE-613).
+/// 3. Invalidates the bearer (legacy
+///    path, kept for the
+///    automation-script use case).
+/// 4. Calls
+///    `oidc_client.revoke_refresh_token`
+///    to drop the refresh_token at
+///    the IdP (RFC 7009 back-channel).
+///    The IdP-side revoke is a
+///    best-effort layer; the local
+///    `users.token_hash` is the
+///    authoritative CWE-613 step.
+/// 5. 302-redirects to the IdP's
+///    `end_session_endpoint` (front-
+///    channel) if one is cached; or
+///    returns 200 with `{"message":
+///    "logged out locally"}`.
 pub async fn logout_handler(
     State(state): State<ServerState>,
     headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
 ) -> Response {
-    // 1. Revoke the server-side session
-    //    if the cookie is present. This
-    //    is the authoritative step for
-    //    the CWE-613 fix: a stolen
-    //    cookie is dead the moment
-    //    `logout` returns.
+    // Step 1: parse the JSON body.
+    // The body is bounded to
+    // `LOGOUT_MAX_BODY_BYTES` by
+    // the `axum::body::Bytes`
+    // extractor, which itself is
+    // bounded by the
+    // `body_size_limit_middleware`
+    // (1 MiB server-wide default).
+    // We do an additional explicit
+    // check here so a misconfigured
+    // server (max_body_bytes = 0)
+    // still gets the 1 KiB
+    // defense-in-depth.
+    if body.len() > LOGOUT_MAX_BODY_BYTES as usize {
+        let (status, json) = crate::error_response::from_core_error(
+            &agent_dep_core::error::CoreError::ErrSchemaInvalid {
+                path: "oidc.logout.body".to_string(),
+                reason: format!(
+                    "request body is {} bytes; \
+                     max allowed is {LOGOUT_MAX_BODY_BYTES} bytes",
+                    body.len()
+                ),
+            },
+        );
+        return (status, json).into_response();
+    }
+    let refresh_token: Option<String> = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(v) => v
+                .get("refresh_token")
+                .and_then(|t| t.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty()),
+            Err(_) => None,
+        }
+    };
+    // Step 2: revoke the server-side
+    // session if the cookie is
+    // present. The CWE-613
+    // authoritative step.
     let mut clear_cookie_header: Option<String> = None;
     if let Some(sid) = crate::session_cookie::parse_session_cookie(&headers) {
         if let Ok(true) = state.sessions.revoke(&sid).await {
-            clear_cookie_header = Some(crate::session_cookie::clear_session_cookie_header(
-                state.cookie_secure,
-            ));
+            clear_cookie_header = Some(
+                crate::session_cookie::clear_session_cookie_header(state.cookie_secure),
+            );
         }
     }
-    // 2. If a bearer is present,
-    //    invalidate the local token.
-    //    (Legacy path, kept for one
-    //    release.)
+    // Step 3: invalidate the bearer
+    // (legacy path).
+    let mut bearer_user: Option<String> = None;
     if let Some(auth) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -909,25 +972,52 @@ pub async fn logout_handler(
         if let Some(token) = auth.strip_prefix("Bearer ") {
             if let Ok(Some(user)) = state.users.find_by_token(token).await {
                 let _ = state.users.invalidate_token(user.id).await;
-                state.audit.record_async(                        &user.name,
-                        "oidc.logout",
-                        Some(&format!("user:{}", user.id)),
-                        AuditOutcome::Ok,
-                        None,);
+                bearer_user = Some(user.name.clone());
             }
         }
     }
-    // 3. 302-redirect to the IdP's
-    //    end_session_endpoint if the
-    //    real client has one cached.
+    // Step 4: best-effort IdP-side
+    // revoke of the refresh_token.
+    // We intentionally do NOT fail
+    // the logout when the IdP
+    // returns non-2xx (some IdPs
+    // return 400 for unknown refresh
+    // tokens; the local revoke is
+    // authoritative). The audit row
+    // records the IdP outcome.
+    let idp_revoke_outcome = if let Some(rt) = refresh_token.as_deref() {
+        match state.oidc_client.revoke_refresh_token(rt).await {
+            Ok(()) => "ok",
+            Err(_) => "idp_error",
+        }
+    } else {
+        "no_refresh_token"
+    };
+    // Step 5: audit the logout. The
+    // actor is the bearer user (if
+    // any); the details include the
+    // IdP-revoke outcome so the
+    // operator can spot
+    // misconfigured IdP revokes.
+    let actor = bearer_user.clone().unwrap_or_else(|| "anonymous".to_string());
+    let details = serde_json::json!({
+        "refresh_token_provided": refresh_token.is_some(),
+        "idp_revoke": idp_revoke_outcome,
+        "session_cookie_cleared": clear_cookie_header.is_some(),
+    })
+    .to_string();
+    state.audit.record_async(
+        &actor,
+        "oidc.logout",
+        None,
+        AuditOutcome::Ok,
+        Some(&details),
+    );
+    // Step 6: 302-redirect to the
+    // IdP's end_session_endpoint
+    // (front-channel) if one is
+    // cached.
     if let Some(end_session) = end_session_url_for(&state).await {
-        // Append the `Set-Cookie: ...
-        // Max-Age=0` to the redirect
-        // response so the browser
-        // drops the cookie on its way
-        // to the IdP. Browsers DO
-        // process `Set-Cookie` on 302
-        // responses.
         let mut response = (
             StatusCode::FOUND,
             [(axum::http::header::LOCATION, end_session)],
@@ -941,9 +1031,9 @@ pub async fn logout_handler(
         }
         return response;
     }
-    // 4. Mock client (or IdP without
-    //    end_session_endpoint): return
-    //    200 locally.
+    // Step 7: mock client (or IdP
+    // without end_session_endpoint):
+    // return 200 locally.
     let json = Json(serde_json::json!({"message": "logged out locally"}));
     if let Some(c) = clear_cookie_header {
         (StatusCode::OK, [(axum::http::header::SET_COOKIE, c)], json).into_response()

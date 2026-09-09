@@ -1501,13 +1501,21 @@ async fn oidc_refresh_with_unknown_sub_returns_404() {
 #[tokio::test]
 async fn oidc_logout_endpoint_returns_200_locally() {
     let srv = boot().await;
-    // No bearer — anonymous logout
-    // still returns 200 because the
-    // mock client has no
-    // end_session_endpoint.
-    let resp = reqwest::get(format!("{}/v1/auth/oidc/logout", srv.base))
+    // 2.11.0 (P2-LOGOUT-01, CWE-352):
+    // the endpoint changed from GET to
+    // POST (CSRF hardening). Anonymous
+    // logout (no body) still returns
+    // 200 because the mock client has
+    // no end_session_endpoint and
+    // `revoke_refresh_token` is a
+    // no-op on an empty body.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/auth/oidc/logout", srv.base))
+        .body("")
+        .header("content-type", "application/json")
+        .send()
         .await
-        .expect("get");
+        .expect("post");
     assert_eq!(resp.status(), 200);
     let v: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(v["message"], "logged out locally");
@@ -1536,12 +1544,17 @@ async fn oidc_logout_with_bearer_invalidates_local_token() {
         .expect("rotate")
         .expect("present");
     // Logout with the bearer.
+    // 2.11.0 (P2-LOGOUT-01): POST +
+    // optional `refresh_token` in the
+    // JSON body.
     let resp = reqwest::Client::new()
-        .get(format!("{}/v1/auth/oidc/logout", srv.base))
+        .post(format!("{}/v1/auth/oidc/logout", srv.base))
         .bearer_auth(&plain)
+        .body(r#"{"refresh_token":"opaque-mock-refresh"}"#)
+        .header("content-type", "application/json")
         .send()
         .await
-        .expect("get");
+        .expect("post");
     assert_eq!(resp.status(), 200);
     // The local token must no longer
     // work.

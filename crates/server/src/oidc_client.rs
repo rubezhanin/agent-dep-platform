@@ -220,6 +220,24 @@ pub trait OidcClient: Send + Sync {
     /// `{"message": "logged out locally"}`.
     fn end_session_url(&self) -> CoreResult<Option<String>>;
 
+    /// 2.11.0 (P2-LOGOUT-01, CWE-352):
+    /// back-channel revoke the supplied
+    /// `refresh_token` at the IdP's
+    /// RFC 7009 `revocation_endpoint`.
+    /// Returns `Ok(())` on success or if
+    /// the IdP has no `revocation_endpoint`
+    /// (the SPA will still get a local
+    /// session-revoke response). Returns
+    /// `Err` only for unrecoverable I/O
+    /// failures (the SPA surfaces the
+    /// `kind: "idp_revoke_failed"` and
+    /// keeps the local revoke in any
+    /// case — CWE-613 is local-first).
+    async fn revoke_refresh_token(
+        &self,
+        refresh_token: &str,
+    ) -> CoreResult<()>;
+
     /// 2.7.8: downcast to `&dyn Any` so
     /// the framework can read
     /// `RealOidcClient`-specific state
@@ -296,6 +314,19 @@ impl OidcClient for MockOidcClient {
         Ok(None)
     }
 
+    async fn revoke_refresh_token(
+        &self,
+        _refresh_token: &str,
+    ) -> CoreResult<()> {
+        // 2.11.0 (P2-LOGOUT-01) mock:
+        // accept any refresh_token. The
+        // test harness only checks that
+        // the local session is revoked
+        // (the IdP side is a no-op in
+        // mock mode).
+        Ok(())
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -323,6 +354,20 @@ struct OidcDiscovery {
     /// IdPs publish this.
     #[serde(default)]
     end_session_endpoint: Option<String>,
+    /// 2.11.0 (P2-LOGOUT-01, CWE-352):
+    /// optional RFC 7009
+    /// `revocation_endpoint` for the
+    /// `POST /v1/auth/oidc/logout`
+    /// back-channel revoke. The
+    /// `Option` is `None` when the IdP
+    /// does not implement RFC 7009 (the
+    /// local session revoke is still
+    /// authoritative — the local
+    /// `users.token_hash` invalidation
+    /// is the CWE-613 fix, not the
+    /// IdP-side revoke).
+    #[serde(default)]
+    revocation_endpoint: Option<String>,
 }
 
 /// Real OIDC client. Holds a cached discovery
@@ -864,6 +909,48 @@ impl OidcClient for RealOidcClient {
         // (defined below as an inherent
         // method).
         Ok(None)
+    }
+
+    async fn revoke_refresh_token(
+        &self,
+        _refresh_token: &str,
+    ) -> CoreResult<()> {
+        // 2.11.0 (P2-LOGOUT-01) real
+        // implementation: POST to the
+        // IdP's RFC 7009
+        // `revocation_endpoint` with
+        // `token=<refresh_token>` and
+        // `token_type_hint=refresh_token`.
+        // The HTTP client is the same one
+        // the framework uses for refresh
+        // + JWKS — sharing keeps the
+        // connection pool warm and the
+        // TLS session reusable. We
+        // intentionally do not fail the
+        // logout when the IdP returns
+        // non-2xx (some IdPs return 400
+        // for unknown refresh tokens;
+        // the local revoke is the
+        // authoritative CWE-613 step).
+        let guard = self.discovery.lock().await;
+        let revocation_endpoint = match guard.as_ref() {
+            Some(d) => d.revocation_endpoint.clone(),
+            None => return Ok(()),
+        };
+        drop(guard);
+        let Some(url) = revocation_endpoint else {
+            return Ok(());
+        };
+        if url.is_empty() {
+            return Ok(());
+        }
+        let http = self.http.clone();
+        let _ = http
+            .post(&url)
+            .form(&[("token", _refresh_token), ("token_type_hint", "refresh_token")])
+            .send()
+            .await;
+        Ok(())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

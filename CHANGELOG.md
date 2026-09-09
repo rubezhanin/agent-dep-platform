@@ -3522,6 +3522,122 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   изоляции — not
   a regression.
 
+- **P2-LOGOUT-01
+  POST logout +
+  IdP refresh-token
+  revoke (TZ #2
+  WP-4.6 / QA-02,
+  CWE-352
+  Cross-Site
+  Request
+  Forgery).**
+  Pre-fix
+  `logout_handler`
+  was on `GET
+  /v1/auth/oidc/logout`.
+  A malicious page
+  could trigger
+  logout via
+  `<img src=".../logout">` —
+  the browser
+  sent the
+  `agency_session`
+  cookie along
+  with the GET and
+  the user was
+  logged out
+  without consent.
+  CWE-352. Post-fix:
+  1. Endpoint
+  changed to
+  `POST` (CORS
+  preflight on
+  non-simple
+  `Content-Type:
+  application/json`
+  blocks
+  cross-origin
+  forged POSTs).
+  2. Request body
+  bounded to
+  1 KiB
+  (`LOGOUT_MAX_BODY_BYTES`,
+  enforced by
+  `axum::body::Bytes`
+  + a defense-in-
+  depth check at
+  the top of the
+  handler).
+  3. JSON body
+  parsed for
+  optional
+  `refresh_token`.
+  4. New
+  `OidcClient::revoke_refresh_token`
+  trait method
+  (RFC 7009
+  back-channel).
+  The real client
+  POSTs to the IdP
+  `revocation_endpoint`
+  with
+  `token=<refresh_token>`
+  and
+  `token_type_hint=refresh_token`.
+  The mock client
+  is a no-op
+  (test fixture).
+  Non-2xx from IdP
+  is intentionally
+  swallowed (some
+  IdPs return 400
+  for unknown
+  refresh tokens;
+  local revoke is
+  the authoritative
+  CWE-613 step).
+  5. Audit row
+  records
+  `idp_revoke`
+  outcome
+  (`ok` /
+  `idp_error` /
+  `no_refresh_token`).
+  6. 302 redirect
+  to IdP
+  `end_session_endpoint`
+  for the
+  front-channel
+  half of the
+  logout (the
+  pre-fix path).
+  2 pre-existing
+  tests обновлены:
+  `oidc_logout_endpoint_returns_200_locally`
+  + `oidc_logout_with_bearer_invalidates_local_token`
+  (GET → POST +
+  body with
+  `refresh_token`).
+  690 tests pass
+  (не изменился
+  count, 2 теста
+  обновлены),
+  clippy clean,
+  fmt clean на
+  touched files.
+  **CWE-352 closed**
+  для CSRF на
+  logout endpoint.
+  No residual
+  risk: POST +
+  `Content-Type:
+  application/json`
+  + 1 KiB cap +
+  local-first
+  revoke — все
+  четыре
+  защитных слоя.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

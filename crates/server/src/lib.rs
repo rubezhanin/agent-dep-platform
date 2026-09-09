@@ -235,7 +235,10 @@ pub fn router(state: ServerState) -> Router {
             "/v1/auth/oidc/refresh",
             axum::routing::post(oidc::refresh_handler),
         )
-        .route("/v1/auth/oidc/logout", get(oidc::logout_handler));
+        .route(
+            "/v1/auth/oidc/logout",
+            axum::routing::post(oidc::logout_handler),
+        );
     Router::new()
         .route("/v1/health", get(handlers::health))
         .merge(oidc_routes)
