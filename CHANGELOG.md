@@ -373,6 +373,72 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
     connection
     refused → fail
 
+- **D4
+  SECURITY.md
+  + CODEOWNERS
+  (audit).**
+  Pre-fix
+  публичный
+  GitHub-репо
+  без
+  disclosure
+  channel:
+  - External
+    security
+    researchers
+    не имели
+    куда
+    писать
+    (только
+    public
+    issues —
+    reveals
+    vulnerability)
+  - PR review
+    default
+    GitHub —
+    нет
+    обязательных
+    reviewers
+    для
+    auth /
+    vault /
+    audit кода
+  Post-fix:
+  - `SECURITY.md`:
+    email
+    contact +
+    PGP
+    fingerprint
+    placeholder,
+    SLAs
+    (3/7/14/30 days),
+    threat model
+    для двух
+    modes,
+    supported
+    versions
+    table,
+    disclosure
+    history
+  - `CODEOWNERS`:
+    GitHub
+    auto-requests
+    review от
+    `@rubezhanin`
+    для
+    security-
+    sensitive
+    paths
+    (auth,
+    vault,
+    audit,
+    rate
+    limit,
+    plugin
+    trust,
+    CI/build)
+
 - **C5 graceful
   shutdown (audit).**
   Pre-fix

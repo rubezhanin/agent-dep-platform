@@ -1,0 +1,62 @@
+# CODEOWNERS — Agent Deployment Platform
+#
+# Per kimi-k3 2026-09-09 audit §D4
+# recommendation: "for
+# `crates/server/src/auth.rs`,
+# `crates/server/src/oidc*.rs`,
+# `crates/core/src/infrastructure/repository/secrets_repository.rs`
+# — mandatory review от владельца".
+#
+# GitHub auto-requests review from the
+# listed owners when a PR touches the
+# matching paths. The owner is the
+# project maintainer
+# (https://github.com/rubezhanin).
+
+# Default owner: project maintainer
+* @rubezhanin
+
+# Auth surface — auth bypass / privilege
+# escalation is the highest-impact class
+# of bug in this project. Every PR to
+# these files MUST be reviewed by the
+# maintainer (the default owner already
+# covers this, but the path-specific
+# entries are documentation).
+/crates/server/src/auth.rs @rubezhanin
+/crates/server/src/auth_tests.rs @rubezhanin
+/crates/server/src/oidc.rs @rubezhanin
+/crates/server/src/oidc_client.rs @rubezhanin
+/crates/server/src/oidc_tests.rs @rubezhanin
+/crates/server/src/session_cookie.rs @rubezhanin
+
+# Vault / secrets — plaintext storage of
+# operator credentials. Same threat
+# model as auth.
+/crates/core/src/infrastructure/repository/secrets_repository.rs @rubezhanin
+/crates/core/src/infrastructure/repository/vault_init.rs @rubezhanin
+/crates/server/src/handlers.rs @rubezhanin
+
+# Audit log — tamper-evident storage. Any
+# change to the hash chain / HMAC
+# verification path is a security event.
+/crates/core/src/infrastructure/repository/audit_log_repository.rs @rubezhanin
+/crates/core/src/infrastructure/repository/audit_log_repository_tests.rs @rubezhanin
+/crates/server/src/audit_recorder.rs @rubezhanin
+
+# Rate limiter / DoS surface
+/crates/server/src/rate_limit.rs @rubezhanin
+
+# Plugin signing / trust store
+/crates/core/src/application/scanner/trust_store.rs @rubezhanin
+/crates/core/src/application/scanner/manifest.rs @rubezhanin
+
+# CI / GitHub workflow — never accept
+# changes from non-owners
+/.github/ @rubezhanin
+
+# Build / release — release surface
+/Cargo.toml @rubezhanin
+/Cargo.lock @rubezhanin
+/docker-compose.yml @rubezhanin
+/Caddyfile @rubezhanin
