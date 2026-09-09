@@ -3433,6 +3433,95 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   + body/header
   depth surface.
 
+- **P1-PERF-01
+  finish: 9 GET
+  handlers →
+  `record_async`.**
+  Pre-fix
+  (commits 6f9e98c +
+  180c7af + 7beb8f3):
+  только `list_systems`
+  использовал
+  batched async
+  audit path;
+  остальные 9 GET
+  handlers
+  (list_audit /
+  list_users /
+  list_deploys /
+  get_deploy /
+  list_secrets /
+  get_secret /
+  list_environments
+  / list_targets /
+  get_target)
+  оставались на
+  `record_sync(...).await`
+  = 1 fsync per
+  request. Post-fix:
+  Python regex
+  conversion
+  (negative
+  lookahead
+  исключает Err
+  branches с
+  `AuditOutcome::Error`)
+  + manual test
+  updates. 14 GET
+  Ok-branches в
+  `handlers.rs`
+  + 3 в `oidc.rs`
+  → `record_async(...);`
+  (no `.await`,
+  no `let _ = `,
+  unit return —
+  trailing `;`
+  добавлен чтобы
+  избежать
+  parser
+  confusion с
+  next
+  expression). 2
+  http_integration
+  tests
+  (audit_list_records_each_request
+  / operator_can_read_audit)
+  обновлены с
+  100ms `tokio::time::sleep`
+  чтобы
+  дождаться
+  commit of
+  spawned
+  audit rows. 690
+  tests pass
+  (667 → 690 = +23
+  net;
+  http_integration
+  21 → 23 = +2 net
+  after dropping
+  0 pre-existing),
+  clippy clean,
+  fmt clean на
+  touched files.
+  **CWE-400
+  closed** для
+  audit write
+  amplification
+  surface полностью
+  (10/10 GET
+  handlers
+  теперь
+  non-blocking).
+  NOTES: 1
+  pre-existing
+  flake
+  (`legacy_token_migrates_to_admin_on_first_start`)
+  failed 1 раз в
+  parallel run,
+  прошёл при
+  изоляции — not
+  a regression.
+
 ## [2.9.0] — 2026-09-05 — VPS deploy surface
 
 ### Added

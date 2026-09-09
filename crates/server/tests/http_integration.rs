@@ -212,6 +212,15 @@ async fn audit_list_records_each_request() {
         .await
         .expect("send");
 
+    // 2.11.0 (P1-PERF-01): the GET audit
+    // calls now go through the
+    // debounced `record_async` path;
+    // wait for the spawned tasks to
+    // commit before asserting on the
+    // list. 100 ms is well over the
+    // SQLite WAL commit time.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
     let resp = reqwest::Client::new()
         .get(format!("{}/v1/audit?limit=50", srv.base))
         .bearer_auth(&srv.admin_token)
@@ -559,7 +568,19 @@ async fn operator_can_read_audit() {
         .await
         .expect("get");
     assert_eq!(resp.status(), 200, "operator must read the audit log");
-    let v: serde_json::Value = resp.json().await.expect("json");
+    // 2.11.0 (P1-PERF-01): the audit
+    // entry for the `list_audit`
+    // call above is enqueued via
+    // `record_async`; wait for it
+    // to commit before reading.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let resp2 = reqwest::Client::new()
+        .get(format!("{}/v1/audit?limit=10", srv.base))
+        .bearer_auth(&op_token)
+        .send()
+        .await
+        .expect("get");
+    let v: serde_json::Value = resp2.json().await.expect("json");
     let items = v["items"].as_array().expect("items");
     assert!(!items.is_empty(), "audit log should have at least one row");
 }

@@ -49,16 +49,11 @@ pub async fn list_audit(
                 .filter(|_| rows.len() as u32 == limit);
             let action = "GET /v1/audit";
             let details = Some(json!({"limit": limit, "cursor": q.cursor}).to_string());
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     None,
                     AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+                    details.as_deref(),);
             (
                 StatusCode::OK,
                 Json(AuditPage {
@@ -213,16 +208,11 @@ pub async fn plan_system(
         Ok((_resolved_source_id, summary)) => {
             let target = format!("system:{}", summary.system_id);
             let details = Some(json!({"wrote": summary.writes.len()}).to_string());
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     &action,
                     Some(&target),
                     AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+                    details.as_deref(),);
             (StatusCode::OK, Json(summary)).into_response()
         }
         Err(e) => {
@@ -263,16 +253,11 @@ pub async fn rollback_operation(
                 })
                 .to_string(),
             );
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     &action,
                     Some(&target),
                     AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+                    details.as_deref(),);
             (StatusCode::OK, Json(summary)).into_response()
         }
         Err(e) => {
@@ -335,16 +320,11 @@ pub async fn list_users(
         Ok(rows) => {
             let views: Vec<UserView> = rows.iter().map(to_view).collect();
             let details = Some(json!({"count": views.len()}).to_string());
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     None,
                     AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+                    details.as_deref(),);
             (StatusCode::OK, Json(views)).into_response()
         }
         Err(e) => {
@@ -377,16 +357,11 @@ pub async fn create_user(
     match state.users.create(&req.name, req.role).await {
         Ok(created) => {
             let details = Some(json!({"role": created.user.role.as_str()}).to_string());
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     Some(&target),
                     AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+                    details.as_deref(),);
             let view = to_view(&created.user);
             (
                 StatusCode::CREATED,
@@ -723,16 +698,11 @@ pub async fn request_deploy(
                         })
                         .to_string(),
                     );
-                    let _ = state
-                        .audit
-                        .record_sync(
-                            &user.name,
+                    state.audit.record_async(                            &user.name,
                             action,
                             Some(&target),
                             AuditOutcome::Ok,
-                            details.as_deref(),
-                        )
-                        .await;
+                            details.as_deref(),);
                     let view = deploy_view(&row);
                     (
                         StatusCode::CREATED,
@@ -835,16 +805,11 @@ pub async fn list_deploys(
                 })
                 .to_string(),
             );
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     None,
                     AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+                    details.as_deref(),);
             (StatusCode::OK, Json(views)).into_response()
         }
         Err(e) => {
@@ -929,16 +894,11 @@ pub async fn approve_deploy(
     match state.deploys.approve(id, user.id).await {
         Ok(Some(row)) => {
             let details = Some(json!({"status": "approved"}).to_string());
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     Some(&target),
                     AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+                    details.as_deref(),);
             (StatusCode::OK, Json(deploy_view(&row))).into_response()
         }
         Ok(None) => {
@@ -1004,16 +964,11 @@ pub async fn reject_deploy(
                 })
                 .to_string(),
             );
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     Some(&target),
                     AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+                    details.as_deref(),);
             (StatusCode::OK, Json(deploy_view(&row))).into_response()
         }
         Ok(None) => {
@@ -1173,16 +1128,11 @@ pub async fn list_secrets(
     match state.secrets.list().await {
         Ok(rows) => {
             let details = Some(json!({"count": rows.len()}).to_string());
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     None,
                     AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+                    details.as_deref(),);
             (StatusCode::OK, Json(rows)).into_response()
         }
         Err(e) => {
@@ -1252,16 +1202,11 @@ pub async fn create_secret(
     let target = format!("secret:{}", req.name);
     match state.secrets.create(&req.name, &req.value, user.id).await {
         Ok(row) => {
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     Some(&target),
                     AuditOutcome::Ok,
-                    Some(&format!("version={}", row.version)),
-                )
-                .await;
+                    Some(&format!("version={}", row.version)),);
             (StatusCode::CREATED, Json(row)).into_response()
         }
         Err(e) => {
@@ -1294,16 +1239,11 @@ pub async fn update_secret(
     let target = format!("secret:{name}");
     match state.secrets.update(&name, &req.value, user.id).await {
         Ok(Some(row)) => {
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     Some(&target),
                     AuditOutcome::Ok,
-                    Some(&format!("version={}", row.version)),
-                )
-                .await;
+                    Some(&format!("version={}", row.version)),);
             (StatusCode::OK, Json(row)).into_response()
         }
         Ok(None) => {
@@ -1445,16 +1385,11 @@ pub async fn list_targets(
                 })
                 .to_string(),
             );
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     None,
                     AuditOutcome::Ok,
-                    details.as_deref(),
-                )
-                .await;
+                    details.as_deref(),);
             (StatusCode::OK, Json(rows)).into_response()
         }
         Err(e) => {
@@ -1549,16 +1484,11 @@ pub async fn create_target(
         .await
     {
         Ok(row) => {
-            let _ = state
-                .audit
-                .record_sync(
-                    &user.name,
+            state.audit.record_async(                    &user.name,
                     action,
                     Some(&target),
                     AuditOutcome::Ok,
-                    Some(&format!("id={}", row.id)),
-                )
-                .await;
+                    Some(&format!("id={}", row.id)),);
             (StatusCode::CREATED, Json(row)).into_response()
         }
         Err(e) => {

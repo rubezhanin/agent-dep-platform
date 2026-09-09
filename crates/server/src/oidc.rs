@@ -422,10 +422,7 @@ pub async fn provision_user_from_claims(
             path: "oidc.provision".to_string(),
             reason: format!("set expiry: {e}"),
         })?;
-    let _ = state
-        .audit
-        .record_sync(
-            &user.name,
+    state.audit.record_async(            &user.name,
             "oidc.login",
             Some(&format!("user:{}", user.id)),
             AuditOutcome::Ok,
@@ -439,9 +436,7 @@ pub async fn provision_user_from_claims(
             // backslashes, control chars), and
             // produces silently-malformed rows
             // that fail downstream parsing.
-            Some(&serde_json::json!({"sub": sub}).to_string()),
-        )
-        .await;
+            Some(&serde_json::json!({"sub": sub}).to_string()),);
     Ok(OidcCallbackResult {
         token,
         user: AuthenticatedUser {
@@ -788,10 +783,7 @@ pub async fn refresh_handler(
         return crate::error_response::from_any_error(&e).into_response();
     }
     // 4. Audit.
-    let _ = state
-        .audit
-        .record_sync(
-            &user.name,
+    state.audit.record_async(            &user.name,
             "oidc.refresh",
             Some(&format!("user:{}", user.id)),
             AuditOutcome::Ok,
@@ -801,9 +793,7 @@ pub async fn refresh_handler(
             // manual JSON concatenation. See
             // the matching fix in `oidc.login`
             // above for the full rationale.
-            Some(&serde_json::json!({"sub": refreshed.claims.sub}).to_string()),
-        )
-        .await;
+            Some(&serde_json::json!({"sub": refreshed.claims.sub}).to_string()),);
     // 5. 2.11.0 (P1-F-03b, CWE-613): rotate
     //    the session. The old cookie id (if
     //    any) is revoked; a fresh session is
@@ -919,16 +909,11 @@ pub async fn logout_handler(
         if let Some(token) = auth.strip_prefix("Bearer ") {
             if let Ok(Some(user)) = state.users.find_by_token(token).await {
                 let _ = state.users.invalidate_token(user.id).await;
-                let _ = state
-                    .audit
-                    .record_sync(
-                        &user.name,
+                state.audit.record_async(                        &user.name,
                         "oidc.logout",
                         Some(&format!("user:{}", user.id)),
                         AuditOutcome::Ok,
-                        None,
-                    )
-                    .await;
+                        None,);
             }
         }
     }

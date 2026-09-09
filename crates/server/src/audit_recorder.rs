@@ -229,14 +229,19 @@ impl AuditRecorder {
         let event = AuditEvent::new(actor, action, target, outcome, details);
         match &self.tx {
             None => {
-                // Debouncing disabled — fall back
-                // to a fire-and-forget sync insert
-                // via a one-shot tokio task. We
-                // can't `.await` here (the caller
-                // isn't async) and we don't want
-                // to block the request thread, so
-                // we use `tokio::spawn` to move the
-                // INSERT off the hot path.
+                // Debouncing disabled (the test /
+                // dev path). The test runtime is
+                // `current_thread`, so we cannot
+                // `block_on` or `block_in_place`
+                // from inside a handler (that
+                // would deadlock). Instead, we
+                // fire-and-forget the INSERT via
+                // `tokio::spawn` — the test must
+                // wait for the spawn to complete
+                // before reading the audit log.
+                // Production code that wants
+                // synchronous durability uses
+                // `record_sync` directly.
                 let repo = self.repo.clone();
                 tokio::spawn(async move {
                     let _ = repo
