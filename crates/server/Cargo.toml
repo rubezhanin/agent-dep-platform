@@ -45,6 +45,11 @@ url = { workspace = true }
 # `Arc<dyn OidcClient>` in `ServerState`.
 reqwest = { workspace = true }
 async-trait = { workspace = true }
+# 2.11.0 (B5, audit): `dashmap`
+# in `rate_limit::RateLimiter`
+# replaces the global
+# `Mutex<HashMap>` bottleneck.
+dashmap = { workspace = true }
 # 2.10.0 (A6, audit): clap-driven
 # CLI for `agency-server`. Replaces
 # the hand-rolled `parse_bind` /

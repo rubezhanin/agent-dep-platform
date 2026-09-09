@@ -47,6 +47,15 @@ hex = "0.4"
 walkdir = "2"
 dunce = "1"
 semver = "1"
+# 2.11.0 (B5, audit): per-key
+# sharded, lock-free rate-limit
+# buckets. Replaces the
+# `Mutex<HashMap>` in
+# `crates/server/src/rate_limit.rs`
+# (the global Mutex was a
+# contention bottleneck at 100
+# RPS × N routes).
+dashmap = "6"
 axum = { version = "0.7", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.5", features = ["trace"] }

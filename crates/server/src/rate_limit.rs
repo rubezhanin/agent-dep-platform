@@ -58,10 +58,12 @@
 //! only at >10 kHz QPS, which the
 //! 100 req/s default rejects).
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
+
+use dashmap::DashMap;
 
 use axum::{
     extract::{ConnectInfo, Request, State},
@@ -80,6 +82,20 @@ pub const MAX_BODY_BYTES: u32 = 1024 * 1024;
 pub const MAX_HEADER_COUNT: u32 = 100;
 pub const REQUESTS_PER_SECOND: u32 = 100;
 pub const BURST_TOKENS: u32 = 200;
+/// 2.11.0 (B5, audit): cap on
+/// the *global* unauthenticated
+/// (anon) bucket. The per-route
+/// buckets above are per-source-IP,
+/// so a distributed brute-force from
+/// N IPs would otherwise get
+/// N × 100 RPS of headroom. The
+/// global bucket caps the total
+/// unauthenticated throughput at
+/// 10 RPS regardless of source IP
+/// distribution. The bucket is
+/// shared across all unauthenticated
+/// requests.
+pub const ANON_GLOBAL_RPS: u32 = 10;
 pub const SAMPLE_AND_KEEP_PERCENT: u8 = 1;
 
 #[derive(Debug, Clone)]
@@ -122,7 +138,26 @@ impl Bucket {
 
 #[derive(Debug)]
 pub struct RateLimiter {
-    buckets: Mutex<HashMap<String, Bucket>>,
+    /// 2.11.0 (B5, audit): per-key
+    /// sharded buckets via
+    /// `DashMap` (lock-free reads,
+    /// per-key write locks). The
+    /// pre-fix `Mutex<HashMap>`
+    /// was a global contention
+    /// bottleneck at 100 RPS × N
+    /// routes — every request
+    /// acquired the same mutex.
+    buckets: Arc<DashMap<String, Bucket>>,
+    /// 2.11.0 (B5): the *global*
+    /// unauthenticated bucket. All
+    /// anonymous (no token, no
+    /// session) requests share this
+    /// one bucket, regardless of
+    /// source IP. Capped at
+    /// `ANON_GLOBAL_RPS` so a
+    /// distributed brute-force
+    /// from N IPs is bounded.
+    anon_global: Arc<Mutex<Bucket>>,
     capacity: f64,
     rate: f64,
 }
@@ -134,17 +169,48 @@ impl RateLimiter {
 
     pub fn with_capacity_and_rate(capacity: f64, rate: f64) -> Self {
         Self {
-            buckets: Mutex::new(HashMap::new()),
+            buckets: Arc::new(DashMap::new()),
+            anon_global: Arc::new(Mutex::new(Bucket::new(
+                f64::from(ANON_GLOBAL_RPS),
+                f64::from(ANON_GLOBAL_RPS),
+            ))),
             capacity,
             rate,
         }
     }
 
     pub fn check(&self, key: &str) -> (bool, u32) {
-        let mut buckets = self.buckets.lock().expect("rate-limit mutex poisoned");
-        let bucket = buckets
+        // DashMap::entry returns a
+        // `RefMut` that holds the
+        // value (not a `&mut Bucket`),
+        // so we need to borrow it
+        // mutably via `value_mut()`.
+        let mut entry = self
+            .buckets
             .entry(key.to_string())
             .or_insert_with(|| Bucket::new(self.capacity, self.rate));
+        let allowed = entry.value_mut().try_consume();
+        let retry_after = if allowed {
+            0
+        } else {
+            entry.value().retry_after()
+        };
+        (allowed, retry_after)
+    }
+
+    /// 2.11.0 (B5, audit): global
+    /// anonymous bucket. Called
+    /// for every request where the
+    /// principal is `None` (no
+    /// bearer, no session). The
+    /// pre-fix code had no such
+    /// bucket — a distributed
+    /// brute-force from N IPs got
+    /// N × 100 RPS headroom.
+    /// Returns `(allowed,
+    /// retry_after_secs)`.
+    pub fn check_anon_global(&self) -> (bool, u32) {
+        let mut bucket = self.anon_global.lock().expect("anon_global mutex poisoned");
         let allowed = bucket.try_consume();
         let retry_after = if allowed { 0 } else { bucket.retry_after() };
         (allowed, retry_after)
