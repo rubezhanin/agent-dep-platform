@@ -19,7 +19,18 @@ repository = ""  # private local-only; intentionally empty
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
+# 2.11.0 (B8, audit): `serde_yaml`
+# 0.9.34 is `+deprecated` per
+# `cargo audit` — the official
+# crate has been unmaintained
+# since 2024-03 (no commits,
+# open unsoundness issues).
+# `serde_yaml_ng` is the
+# community-maintained active
+# fork (compatible API,
+# same semver namespace as
+# `serde_yaml`).
 thiserror = "1"
 anyhow = "1"
 libc = "0.2"

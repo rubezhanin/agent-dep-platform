@@ -140,7 +140,7 @@ impl LockFile {
     /// (1.2.0+, supports exact pins, carets, tildes, and
     /// compound ranges).
     pub fn from_yaml(text: &str) -> Result<Self, String> {
-        let f: LockFile = serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
+        let f: LockFile = serde_yaml_ng::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
         if f.lock_version != LOCK_FILE_VERSION {
             return Err(format!(
                 "unsupported lockVersion: got `{}`, expected `{}`",
@@ -176,7 +176,7 @@ impl LockFile {
 
     /// Serialize to a deterministic YAML string.
     pub fn to_yaml(&self) -> Result<String, String> {
-        serde_yaml::to_string(self).map_err(|e| format!("yaml serialize: {e}"))
+        serde_yaml_ng::to_string(self).map_err(|e| format!("yaml serialize: {e}"))
     }
 
     /// Convenience accessor for the typed `(id, Version)`

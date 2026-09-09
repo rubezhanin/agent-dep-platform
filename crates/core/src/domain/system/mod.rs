@@ -337,7 +337,8 @@ impl SystemFile {
     /// Parse a v1 system file. Validates the structural contract
     /// (apiVersion, kind, non-empty id, ≥1 agent).
     pub fn from_yaml_v1(text: &str) -> Result<Self, String> {
-        let f: SystemFile = serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
+        let f: SystemFile =
+            serde_yaml_ng::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
         if f.api_version != SYSTEM_FILE_API_VERSION_V1 {
             return Err(format!(
                 "unsupported apiVersion: got `{}`, expected `{}`",
@@ -364,7 +365,8 @@ impl SystemFileV2 {
     /// Parse a v2 system file. Validates the structural contract
     /// ($schema, apiVersion, kind, runtime.type, non-empty id).
     pub fn from_yaml(text: &str) -> Result<Self, String> {
-        let f: SystemFileV2 = serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
+        let f: SystemFileV2 =
+            serde_yaml_ng::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
         if f.schema_url != SYSTEM_FILE_SCHEMA_URL_V2 {
             return Err(format!(
                 "unsupported $schema: got `{}`, expected `{}`",

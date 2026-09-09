@@ -77,7 +77,7 @@ role: builds APIs
 description: backend person
 version: 1.0.0
 "#;
-        let parsed: UpstreamAgentFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        let parsed: UpstreamAgentFrontmatter = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(parsed.id, "backend-engineer");
         assert_eq!(parsed.division, "engineering");
         assert_eq!(parsed.version, Version::new(1, 0, 0));
@@ -100,7 +100,7 @@ tools: [claude-code, hermes]
 sensitive: true
 version: 2.1.0
 "#;
-        let parsed: UpstreamAgentFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        let parsed: UpstreamAgentFrontmatter = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(parsed.activation_phrases.len(), 1);
         assert_eq!(parsed.tools, vec!["claude-code", "hermes"]);
         assert!(parsed.sensitive);
@@ -116,7 +116,7 @@ role: builds APIs
 description: backend
 version: 1.0.0
 "#;
-        let parsed: Result<UpstreamAgentFrontmatter, _> = serde_yaml::from_str(yaml);
+        let parsed: Result<UpstreamAgentFrontmatter, _> = serde_yaml_ng::from_str(yaml);
         assert!(parsed.is_err());
     }
 }

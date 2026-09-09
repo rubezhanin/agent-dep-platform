@@ -502,7 +502,7 @@ fn extract_frontmatter(text: &str) -> Result<(UpstreamAgentFrontmatter, String),
     let body_text = body_lines.join("\n");
 
     let frontmatter: UpstreamAgentFrontmatter =
-        serde_yaml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
+        serde_yaml_ng::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
     Ok((frontmatter, body_text))
 }
 

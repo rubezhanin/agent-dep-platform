@@ -105,7 +105,7 @@ impl From<SkillPermissionYaml> for SkillPermission {
 /// Parse a v2 skill manifest from a YAML string. Returns a
 /// structured error on any structural or contract violation.
 pub fn parse_skill_yaml(text: &str) -> Result<SkillYaml, String> {
-    let y: SkillYaml = serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
+    let y: SkillYaml = serde_yaml_ng::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
     if y.schema_url != SKILL_SCHEMA_URL {
         return Err(format!(
             "unsupported $schema: got `{}`, expected `{}`",

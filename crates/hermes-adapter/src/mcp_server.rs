@@ -531,7 +531,7 @@ mod tests {
         // serde_yaml requires a tagged enum for the
         // transport/auth variants; parse through the
         // same JSON shape the CLI uses.
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&y).expect("YAML re-parse");
+        let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&y).expect("YAML re-parse");
         // The fields we care about.
         assert_eq!(parsed.get("name").and_then(|v| v.as_str()), Some("linear"));
         assert_eq!(

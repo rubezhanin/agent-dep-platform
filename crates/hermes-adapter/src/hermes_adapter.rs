@@ -334,7 +334,7 @@ impl HermesAdapter {
         struct AgentProbe {
             id: String,
         }
-        let parsed: ManifestProbe = match serde_yaml::from_str(&manifest_text) {
+        let parsed: ManifestProbe = match serde_yaml_ng::from_str(&manifest_text) {
             Ok(m) => m,
             Err(e) => {
                 checks.push(ProbeCheck {

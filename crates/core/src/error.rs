@@ -53,7 +53,7 @@ pub enum CoreError {
     ErrJson(#[from] serde_json::Error),
 
     #[error("YAML error: {0}")]
-    ErrYaml(#[from] serde_yaml::Error),
+    ErrYaml(#[from] serde_yaml_ng::Error),
 
     #[error("SQLx error: {0}")]
     ErrSqlx(#[from] sqlx::Error),

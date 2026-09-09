@@ -104,7 +104,7 @@ impl Policy {
     /// Parse from a YAML string. Validates the version
     /// and the structural contract.
     pub fn from_yaml(text: &str) -> CoreResult<Self> {
-        let p: Policy = serde_yaml::from_str(text).map_err(|e| CoreError::ErrSchemaInvalid {
+        let p: Policy = serde_yaml_ng::from_str(text).map_err(|e| CoreError::ErrSchemaInvalid {
             path: "policy".to_string(),
             reason: format!("yaml parse: {e}"),
         })?;

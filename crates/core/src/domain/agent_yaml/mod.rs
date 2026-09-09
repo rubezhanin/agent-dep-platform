@@ -65,7 +65,7 @@ pub struct AgentHermesRuntimeYaml {
 }
 
 pub fn parse_agent_yaml(text: &str) -> Result<AgentYaml, String> {
-    let y: AgentYaml = serde_yaml::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
+    let y: AgentYaml = serde_yaml_ng::from_str(text).map_err(|e| format!("yaml parse: {e}"))?;
     if y.schema_url != AGENT_SCHEMA_URL {
         return Err(format!(
             "unsupported $schema: got `{}`, expected `{}`",
