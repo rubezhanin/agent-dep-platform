@@ -12,6 +12,26 @@ pub struct AppState {
     pub paths: AppPaths,
     pub config: AppConfig,
     pub hermes: Arc<HermesAdapter>,
+    /// 3.0.0 (A5, audit): the
+    /// URL of the embedded
+    /// `axum` server. The
+    /// IPC commands proxy
+    /// HTTP requests to
+    /// `server_url` instead
+    /// of re-implementing
+    /// the business
+    /// logic on the Tauri
+    /// side. `None` only
+    /// during the
+    /// pre-`setup` window
+    /// (the IPC commands
+    /// are not callable
+    /// before `setup`
+    /// completes, so the
+    /// `None` case is
+    /// unreachable from
+    /// the IPC layer).
+    pub server_url: Arc<Option<String>>,
 }
 
 #[derive(Debug, Clone)]

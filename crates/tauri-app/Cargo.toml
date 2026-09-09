@@ -20,6 +20,33 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 agent_dep_core = { path = "../core" }
 agent_dep_hermes_adapter = { path = "../hermes-adapter" }
+# 3.0.0 (A5, audit): the
+# Tauri host boots an
+# embedded `axum` server
+# (the same router
+# `agency-server` uses)
+# on `127.0.0.1:0`, then
+# the IPC commands proxy
+# to it via
+# `reqwest`. This
+# removes the
+# pre-3.0.0 duplicated
+# handler logic (one
+# axum handler in
+# `crates/server`, one
+# Tauri command in
+# `crates/tauri-app` per
+# route).
+agent_dep_server = { path = "../server" }
+axum = { workspace = true }
+# `reqwest` was already a
+# workspace dep (used by
+# the OIDC real client
+# + integration tests);
+# promoting it to a
+# direct dep here for
+# the IPC proxy.
+reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls"] }
 tauri = { version = "2", features = [] }
 serde = { workspace = true }
 serde_json = { workspace = true }

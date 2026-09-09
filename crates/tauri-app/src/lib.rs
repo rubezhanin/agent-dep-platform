@@ -1,5 +1,6 @@
 //! Tauri 2 host for the Agent Deployment Platform.
 
+pub mod embedded_server;
 mod ipc;
 mod ipc_error;
 mod state;
@@ -57,7 +58,48 @@ pub fn run() -> tauri::Result<()> {
                 .unwrap_or_else(|| app_data_dir.join("hermes"));
             let hermes = Arc::new(agent_dep_hermes_adapter::HermesAdapter::new(hermes_home));
 
-            // Compose AppState.
+            // 3.0.0 (A5, audit): boot
+            // the embedded `axum`
+            // server on
+            // `127.0.0.1:0`. The
+            // bind is private
+            // (loopback only) and
+            // the port is
+            // kernel-assigned; the
+            // URL is stored in
+            // `AppState::server_url`
+            // for the IPC proxy
+            // layer.
+            //
+            // We use
+            // `tauri::async_runtime::block_on`
+            // (not
+            // `tokio::runtime::Handle::current().block_on`)
+            // because the Tauri
+            // 2 runtime already
+            // owns a tokio
+            // runtime and
+            // re-entering it via
+            // `Handle::block_on`
+            // panics with
+            // "Cannot drop a
+            // runtime in a context
+            // where blocking is
+            // not allowed" (the
+            // AGENTS.md gotcha
+            // entry).
+            let server_handle = tauri::async_runtime::block_on(embedded_server::boot(&db))
+                .map_err(|e| -> Box<dyn std::error::Error> {
+                    format!("embedded server boot: {e}").into()
+                })?;
+            tracing::info!(
+                addr = %server_handle.addr,
+                url = %server_handle.url,
+                "embedded axum server bound"
+            );
+
+            // Compose AppState
+            // with the bound URL.
             let state = AppState {
                 db,
                 cas,
@@ -70,8 +112,19 @@ pub fn run() -> tauri::Result<()> {
                     log_level: "info".into(),
                 },
                 hermes,
+                server_url: Arc::new(Some(server_handle.url.clone())),
             };
             app.manage(state);
+            // Stash the server
+            // handle for
+            // graceful shutdown
+            // (3.1+). For 3.0.0
+            // the `JoinHandle`
+            // is dropped (the
+            // task is cancelled
+            // when the Tauri
+            // runtime exits).
+            app.manage(server_handle);
 
             Ok(())
         })

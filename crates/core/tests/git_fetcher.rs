@@ -10,10 +10,10 @@
 
 use agent_dep_core::application::ingest::ingest_source;
 use agent_dep_core::domain::source::{Source, SourceKind};
+use agent_dep_core::error::CoreError;
 use agent_dep_core::infrastructure::git_fetcher::{
     classify_url, verify_annotated_tag, GitFetcher, HttpsFetcher, SshFetcher,
 };
-use agent_dep_core::error::CoreError;
 use git2::Repository;
 use std::fs;
 use std::path::Path;
@@ -314,8 +314,7 @@ fn verify_annotated_tag_accepts_annotated_tag() {
     // GPG verification is
     // a 3.1 follow-up).
     let (_dir, repo) = make_local_repo_with_annotated_tag();
-    verify_annotated_tag(&repo, "v1.0.0-annotated")
-        .expect("annotated tag must be accepted");
+    verify_annotated_tag(&repo, "v1.0.0-annotated").expect("annotated tag must be accepted");
 }
 
 #[test]
@@ -355,10 +354,7 @@ fn verify_annotated_tag_rejects_branch_pin() {
     let (_dir, repo) = make_local_repo_with(true);
     let head = repo.head().expect("head");
     let commit_oid = head.target().expect("head target");
-    let branch_name = head
-        .shorthand()
-        .unwrap_or("HEAD")
-        .to_string();
+    let branch_name = head.shorthand().unwrap_or("HEAD").to_string();
     // The verify path uses
     // `revparse_single`,
     // which accepts the
@@ -366,8 +362,7 @@ fn verify_annotated_tag_rejects_branch_pin() {
     // (it'll resolve
     // through HEAD).
     let _ = commit_oid;
-    let err = verify_annotated_tag(&repo, &branch_name)
-        .expect_err("branch pin must be rejected");
+    let err = verify_annotated_tag(&repo, &branch_name).expect_err("branch pin must be rejected");
     assert!(
         matches!(err, CoreError::ErrGitSignatureMissing { .. }),
         "expected ErrGitSignatureMissing, got: {err:?}"
@@ -386,8 +381,8 @@ fn verify_annotated_tag_rejects_commit_sha_pin() {
     let head_oid = repo.head().unwrap().target().unwrap();
     let commit_sha = head_oid.to_string();
     assert_eq!(commit_sha.len(), 40);
-    let err = verify_annotated_tag(&repo, &commit_sha)
-        .expect_err("commit SHA pin must be rejected");
+    let err =
+        verify_annotated_tag(&repo, &commit_sha).expect_err("commit SHA pin must be rejected");
     assert!(
         matches!(err, CoreError::ErrGitSignatureMissing { .. }),
         "expected ErrGitSignatureMissing, got: {err:?}"

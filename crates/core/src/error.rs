@@ -108,7 +108,9 @@ pub enum CoreError {
     /// signed). The fix is to
     /// set `pinned_ref` to an
     /// annotated tag name.
-    #[error("git ref `{ref_name}` requires `pinned_ref` to be set to an annotated tag (got no pin)")]
+    #[error(
+        "git ref `{ref_name}` requires `pinned_ref` to be set to an annotated tag (got no pin)"
+    )]
     ErrGitSignatureRequired { ref_name: String },
 
     /// 3.0.0 (B7, audit, CWE-345):
