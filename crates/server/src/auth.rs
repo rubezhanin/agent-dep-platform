@@ -65,6 +65,11 @@ pub struct CsrfContext(pub Option<String>);
 /// returns `false` unconditionally —
 /// the entire `require_bearer` is
 /// removed.
+#[deprecated(
+    since = "2.12.0",
+    note = "the `AGENCY_BEARER_FALLBACK` escape hatch is removed in 2.12.0; \
+            migrate pre-OIDC users to OIDC session-cookie auth instead"
+)]
 fn bearer_fallback_enabled() -> bool {
     if let Ok(v) = std::env::var("AGENCY_BEARER_FALLBACK") {
         matches!(v.as_str(), "1" | "true" | "yes" | "on")
@@ -73,6 +78,21 @@ fn bearer_fallback_enabled() -> bool {
     }
 }
 
+/// 2.12.0 (TZ-pinned): `require_bearer`
+/// is deprecated. New code should
+/// use `require_session_or_bearer`
+/// (session cookie first, with the
+/// `AGENCY_BEARER_FALLBACK=1` escape
+/// hatch as a transition aid). 2.12.0
+/// removes the escape hatch entirely
+/// (the function is left in the lib
+/// for the 2.11.0 LTS window but
+/// emits a deprecation warning at
+/// the call site).
+#[deprecated(
+    since = "2.12.0",
+    note = "use `require_session_or_bearer` and migrate to OIDC session-cookie auth"
+)]
 pub async fn require_bearer(
     State(state): State<ServerState>,
     request: Request,
@@ -137,7 +157,22 @@ pub async fn require_bearer(
             // operator can opt back in
             // during the 2.11.0
             // transition window.
-            if user.token_expires_at.is_none() && !bearer_fallback_enabled() {
+            if user.token_expires_at.is_none()
+                && {
+                    // Suppress the
+                    // deprecation lint at
+                    // the 2.11.0 call site
+                    // — `bearer_fallback_enabled`
+                    // is the documented
+                    // transition aid; the
+                    // 2.12.0 removal is
+                    // mechanical and
+                    // self-contained.
+                    #[allow(deprecated)]
+                    let fallback = bearer_fallback_enabled();
+                    !fallback
+                }
+            {
                 tracing::warn!(
                     "2.11.0 (B1) REFUSED bearer token for pre-OIDC user `{}` \
                      (id={}); set AGENCY_BEARER_FALLBACK=1 to re-enable during \
@@ -425,6 +460,16 @@ pub async fn require_session_or_bearer(
         "P1-F-03b: bearer auth used (no valid session cookie); \
          this path is deprecated and will be removed in 2.12.0"
     );
+    // The internal call to the
+    // deprecated `require_bearer`
+    // is allowed because the
+    // 2.12.0 removal is a
+    // self-contained refactor;
+    // the deprecation lint is
+    // suppressed at the call
+    // site so the 2.11.0 LTS
+    // window compiles cleanly.
+    #[allow(deprecated)]
     require_bearer(State(state), request, next).await
 }
 
