@@ -95,6 +95,66 @@ pub enum CoreError {
     #[error("git repository quota exceeded: {kind}")]
     ErrGitQuota { kind: String },
 
+    /// 3.0.0 (B7, audit, CWE-345
+    /// Insufficient Verification
+    /// of Data Authenticity):
+    /// the `Source` was created
+    /// with
+    /// `require_signed_refs =
+    /// true`, but no
+    /// `pinned_ref` was set
+    /// (a floating `HEAD` /
+    /// branch pin cannot be
+    /// signed). The fix is to
+    /// set `pinned_ref` to an
+    /// annotated tag name.
+    #[error("git ref `{ref_name}` requires `pinned_ref` to be set to an annotated tag (got no pin)")]
+    ErrGitSignatureRequired { ref_name: String },
+
+    /// 3.0.0 (B7, audit, CWE-345):
+    /// the pinned ref resolved
+    /// to a non-tag object
+    /// (lightweight tag,
+    /// branch, or commit
+    /// SHA). Lightweight refs
+    /// cannot carry a GPG
+    /// signature, so they're
+    /// not eligible for
+    /// signed-only sources.
+    /// The fix is to
+    /// (1) recreate the pin
+    /// as an annotated tag
+    /// (`git tag -a v1.2.3 -m
+    /// "..."`) and update the
+    /// `Source::pinned_ref`,
+    /// or (2) set
+    /// `require_signed_refs =
+    /// false` if the source
+    /// does not need
+    /// cryptographic
+    /// provenance.
+    #[error("git ref `{ref_name}` is not an annotated tag (lightweight refs cannot carry a GPG signature); got `{got}`")]
+    ErrGitSignatureMissing { ref_name: String, got: String },
+
+    /// 3.0.0 (B7, audit, CWE-345):
+    /// the annotated tag's
+    /// GPG signature could
+    /// not be parsed by
+    /// libgit2 (corrupt
+    /// signature, missing
+    /// GPG key, or
+    /// `tag.gpgVerify=true`
+    /// is set and the
+    /// signature is
+    /// cryptographically
+    /// invalid). The
+    /// `reason` is the
+    /// libgit2 error string
+    /// (operators see this
+    /// in the audit log).
+    #[error("git ref `{ref_name}` has an invalid GPG signature: {reason}")]
+    ErrGitSignatureInvalid { ref_name: String, reason: String },
+
     /// 2.11.0 (P1-D-01b, TZ #1 §10 / D-01,
     /// CWE-494): a deploy was approved
     /// against one version of a

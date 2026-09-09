@@ -46,6 +46,48 @@ pub struct Source {
     pub display_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_indexed_at: Option<DateTime<Utc>>,
+    /// 3.0.0 (B7, audit, CWE-345
+    /// Insufficient Verification
+    /// of Data Authenticity):
+    /// when `true`, the Git
+    /// fetcher rejects any
+    /// `pinned_ref` that is
+    /// NOT an annotated tag
+    /// (lightweight tags
+    /// cannot carry a GPG
+    /// signature, so they're
+    /// not eligible for
+    /// signed-only sources).
+    ///
+    /// Default `false` for
+    /// back-compat with
+    /// pre-3.0.0 sources.
+    /// New sources created
+    /// via the API for a
+    /// security-sensitive
+    /// pipeline (e.g.
+    /// production
+    /// catalog pulls)
+    /// should set this to
+    /// `true`.
+    ///
+    /// The check is
+    /// STRUCTURAL (the ref
+    /// must be an annotated
+    /// tag object, not a
+    /// lightweight
+    /// commit-pointer);
+    /// cryptographic GPG
+    /// signature verification
+    /// is a 3.1 follow-up
+    /// (requires
+    /// `pgp` / `gpgme`
+    /// integration +
+    /// a trust-store of
+    /// allowed key
+    /// fingerprints).
+    #[serde(default)]
+    pub require_signed_refs: bool,
 }
 
 impl Source {
@@ -57,7 +99,18 @@ impl Source {
             display_name: None,
             created_at: Utc::now(),
             last_indexed_at: None,
+            require_signed_refs: false,
         }
+    }
+
+    /// 3.0.0 (B7, audit):
+    /// builder-style setter.
+    /// Returns `self` so
+    /// callers can chain
+    /// `Source::new(kind).require_signed_refs(true)`.
+    pub fn require_signed_refs(mut self, value: bool) -> Self {
+        self.require_signed_refs = value;
+        self
     }
 }
 

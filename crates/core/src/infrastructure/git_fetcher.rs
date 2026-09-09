@@ -586,7 +586,12 @@ impl GitFetcher for HttpsFetcher {
                 });
             }
         };
-        clone_or_update(&url, dest, source.pinned_ref.as_deref())
+        clone_or_update(
+            &url,
+            dest,
+            source.pinned_ref.as_deref(),
+            source.require_signed_refs,
+        )
     }
 }
 
@@ -611,7 +616,12 @@ impl GitFetcher for SshFetcher {
                 });
             }
         };
-        clone_or_update(&url, dest, source.pinned_ref.as_deref())
+        clone_or_update(
+            &url,
+            dest,
+            source.pinned_ref.as_deref(),
+            source.require_signed_refs,
+        )
     }
 }
 
@@ -630,15 +640,211 @@ impl GitFetcher for SshFetcher {
 /// the fetch. When absent, we leave
 /// the working copy on whatever the
 /// remote's `HEAD` resolves to.
-fn clone_or_update(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResult<FetchResult> {
+///
+/// `require_signed_refs` (3.0.0,
+/// B7 audit, CWE-345): when
+/// `true`, the pinned ref must
+/// resolve to an annotated
+/// tag object (the only Git
+/// object type that carries a
+/// GPG signature). Lightweight
+/// tags, branches, and commit
+/// SHAs are rejected.
+fn clone_or_update(
+    url: &str,
+    dest: &Path,
+    pinned_ref: Option<&str>,
+    require_signed_refs: bool,
+) -> CoreResult<FetchResult> {
     if dest.exists() && dest.join(".git").exists() {
-        update_existing(url, dest, pinned_ref)
+        update_existing(url, dest, pinned_ref, require_signed_refs)
     } else {
-        fresh_clone(url, dest, pinned_ref)
+        fresh_clone(url, dest, pinned_ref, require_signed_refs)
     }
 }
 
-fn fresh_clone(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResult<FetchResult> {
+/// 3.0.0 (B7, audit, CWE-345
+/// Insufficient Verification of
+/// Data Authenticity): confirm
+/// that `pinned_ref` resolves
+/// to an annotated tag object
+/// in `repo`. The check is
+/// STRUCTURAL — it does NOT
+/// perform a cryptographic
+/// GPG signature verification
+/// (that requires libgit2's
+/// `gpg.program` to point at a
+/// GPG binary on the host, and
+/// a trust-store of allowed key
+/// fingerprints; both are 3.1
+/// follow-ups).
+///
+/// What we DO check:
+/// 1. The ref exists and is
+///    resolvable (a 40-char
+///    hex commit SHA is a
+///    valid ref, but it is NOT
+///    an annotated tag).
+/// 2. The resolved object is
+///    of kind `Tag` —
+///    lightweight refs and
+///    branch refs point at
+///    `Commit` objects, which
+///    cannot carry a GPG
+///    signature.
+/// 3. The tag has a tagger
+///    (annotated tags always
+///    have a `tagger` field;
+///    a missing `tagger` would
+///    mean a corrupt /
+///    manually-mutated tag
+///    object).
+///
+/// On a successful verify, the
+/// caller's audit log can
+/// attribute the snapshot to a
+/// specific signer + time. A
+/// future 3.1 release adds a
+/// `signed_by_fingerprints:
+/// Vec<String>` field on
+/// `Source` and a `pgp`-crate
+/// signature verification on
+/// the raw OpenPGP packet
+/// inside the tag object.
+/// 3.0.0 (B7, audit, CWE-345
+/// Insufficient Verification of
+/// Data Authenticity): confirm
+/// that `pinned_ref` resolves
+/// to an annotated tag object
+/// in `repo`. The check is
+/// STRUCTURAL — it does NOT
+/// perform a cryptographic
+/// GPG signature verification
+/// (that requires libgit2's
+/// `gpg.program` to point at a
+/// GPG binary on the host, and
+/// a trust-store of allowed key
+/// fingerprints; both are 3.1
+/// follow-ups).
+///
+/// What we DO check:
+/// 1. The ref exists and is
+///    resolvable (a 40-char
+///    hex commit SHA is a
+///    valid ref, but it is NOT
+///    an annotated tag).
+/// 2. The resolved object is
+///    of kind `Tag` —
+///    lightweight refs and
+///    branch refs point at
+///    `Commit` objects, which
+///    cannot carry a GPG
+///    signature.
+/// 3. The tag has a tagger
+///    (annotated tags always
+///    have a `tagger` field;
+///    a missing `tagger` would
+///    mean a corrupt /
+///    manually-mutated tag
+///    object).
+///
+/// On a successful verify, the
+/// caller's audit log can
+/// attribute the snapshot to a
+/// specific signer + time. A
+/// future 3.1 release adds a
+/// `signed_by_fingerprints:
+/// Vec<String>` field on
+/// `Source` and a `pgp`-crate
+/// signature verification on
+/// the raw OpenPGP packet
+/// inside the tag object.
+///
+/// `pub` so the
+/// `tests/git_fetcher.rs`
+/// integration suite can
+/// exercise the check
+/// directly without going
+/// through `clone_or_update`
+/// (which mixes the
+/// signature check with the
+/// network / quota / ref
+/// resolution machinery and
+/// is hard to test in
+/// isolation on Windows).
+pub fn verify_annotated_tag(repo: &Repository, pinned_ref: &str) -> CoreResult<()> {
+    // `revparse_single` accepts
+    // both ref names
+    // (`refs/tags/v1.2.3`,
+    // `v1.2.3`, `origin/v1.2.3`)
+    // and 40-char commit
+    // SHAs. We use it instead
+    // of
+    // `resolve_reference_from_short_name`
+    // because the latter
+    // returns a `Reference`
+    // whose `.target()` is the
+    // *peeled* commit OID, not
+    // the tag OID — losing the
+    // "is this an annotated
+    // tag?" signal.
+    let object = repo
+        .revparse_single(pinned_ref)
+        .map_err(|e| CoreError::ErrGitInvalidRef {
+            ref_name: pinned_ref.to_string(),
+            reason: format!("cannot resolve pinned ref: {e}"),
+        })?;
+    if object.kind() != Some(git2::ObjectType::Tag) {
+        let got = format!("{:?}", object.kind());
+        return Err(CoreError::ErrGitSignatureMissing {
+            ref_name: pinned_ref.to_string(),
+            got,
+        });
+    }
+    // The cast is safe: we
+    // just checked `kind()`.
+    let tag = object
+        .into_tag()
+        .map_err(|e| CoreError::ErrGitSignatureInvalid {
+            ref_name: pinned_ref.to_string(),
+            reason: format!("object is a tag but failed to cast: {e:?}"),
+        })?;
+    // A missing `tagger`
+    // indicates a corrupt /
+    // non-conforming tag
+    // object. A real
+    // `git tag -a v1.2.3 -m
+    // "..."` always writes
+    // one.
+    if tag.tagger().is_none() {
+        return Err(CoreError::ErrGitSignatureInvalid {
+            ref_name: pinned_ref.to_string(),
+            reason: "tag object has no `tagger` field (corrupt or non-annotated)".to_string(),
+        });
+    }
+    // Note: we deliberately do
+    // NOT call
+    // `tag.target()?.peel_to_commit()`
+    // here because that would
+    // also work for the
+    // cryptographically-valid
+    // case but would mask the
+    // "is this actually a tag?"
+    // signal when the ref is
+    // a lightweight pointer
+    // that happens to point
+    // at a commit. The above
+    // `kind()` check is the
+    // primary signal.
+    Ok(())
+}
+
+fn fresh_clone(
+    url: &str,
+    dest: &Path,
+    pinned_ref: Option<&str>,
+    require_signed_refs: bool,
+) -> CoreResult<FetchResult> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(CoreError::ErrIo)?;
     }
@@ -666,10 +872,32 @@ fn fresh_clone(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResult<F
     // for the next call to
     // update_existing.
     check_repo_quotas(dest, &quotas)?;
+    // 3.0.0 (B7, audit, CWE-345):
+    // the `pinned_ref`
+    // (resolved by
+    // `builder.branch()`
+    // during the clone) must
+    // be an annotated tag
+    // when the caller
+    // requires a signed ref.
+    if require_signed_refs {
+        if let Some(r) = pinned_ref {
+            verify_annotated_tag(&repo, r)?;
+        } else {
+            return Err(CoreError::ErrGitSignatureRequired {
+                ref_name: "HEAD".to_string(),
+            });
+        }
+    }
     resolve_head(&repo, url)
 }
 
-fn update_existing(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResult<FetchResult> {
+fn update_existing(
+    url: &str,
+    dest: &Path,
+    pinned_ref: Option<&str>,
+    require_signed_refs: bool,
+) -> CoreResult<FetchResult> {
     let repo = Repository::open(dest).map_err(|e| CoreError::ErrGitOpen {
         path: dest.display().to_string(),
         reason: format!("{e}"),
@@ -746,6 +974,28 @@ fn update_existing(url: &str, dest: &Path, pinned_ref: Option<&str>) -> CoreResu
             ref_name: format!("commit {commit_oid}"),
             reason: format!("{e}"),
         })?;
+    // 3.0.0 (B7, audit, CWE-345):
+    // if the caller requires
+    // a signed ref, verify
+    // the pinned ref (if
+    // any) is an annotated
+    // tag. Done BEFORE
+    // `repo.reset()` so a
+    // rejected fetch leaves
+    // the working copy on
+    // the previous (good)
+    // commit rather than a
+    // half-reset to the
+    // invalid commit.
+    if require_signed_refs {
+        if let Some(r) = pinned_ref {
+            verify_annotated_tag(&repo, r)?;
+        } else {
+            return Err(CoreError::ErrGitSignatureRequired {
+                ref_name: "HEAD".to_string(),
+            });
+        }
+    }
     let commit_sha = commit.id().to_string();
     let reset_target = commit.into_object();
     repo.reset(&reset_target, git2::ResetType::Hard, None)

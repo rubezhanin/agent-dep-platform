@@ -273,6 +273,21 @@ impl IngestRepository {
                     display_name,
                     created_at,
                     last_indexed_at,
+                    // 3.0.0 (B7, audit,
+                    // CWE-345): not
+                    // persisted in the
+                    // DB schema yet
+                    // (the migration is
+                    // a 3.1 follow-up).
+                    // The DB read path
+                    // defaults to
+                    // `false` so an
+                    // upgraded
+                    // installation
+                    // doesn't suddenly
+                    // start rejecting
+                    // lightweight pins.
+                    require_signed_refs: false,
                 }))
             }
         }
@@ -784,6 +799,11 @@ impl IngestRepository {
                 display_name,
                 created_at,
                 last_indexed_at,
+                // 3.0.0 (B7, audit,
+                // CWE-345): see the
+                // single-row read
+                // path above.
+                require_signed_refs: false,
             });
         }
         Ok(out)
