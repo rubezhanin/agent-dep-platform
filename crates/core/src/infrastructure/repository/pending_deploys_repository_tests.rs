@@ -715,37 +715,41 @@ async fn mark_applied_rejects_with_stale_deployment_fence() {
     // 34486167058 all surfaced this — the
     // `recreate idx` expect is the line that
     // fails).
+    // Drop the index AND verify that it is actually
+    // gone. CI runs 34493700094 and 34497839323
+    // surfaced two distinct ways `DROP INDEX IF
+    // EXISTS` can fail silently: (a) it returns
+    // `Ok(0 rows)` when a parallel writer holds
+    // a shared lock just long enough for SQLite
+    // to skip the work, and (b) it returns
+    // `Ok(0 rows)` outright on a stale connection
+    // whose schema cache has the index but whose
+    // underlying file does not. Either way the
+    // subsequent `CREATE UNIQUE INDEX` then fails
+    // with `index ... already exists`. Retry the
+    // drop until `sqlite_master` actually shows
+    // the index gone (8 attempts, 10 ms
+    // backoff). The retry only fires when the
+    // drop failed to take effect; the steady
+    // state is one attempt.
     for attempt in 0..8usize {
-        // Use `DROP INDEX IF EXISTS` so the step is
-        // idempotent. CI run 34493700094 surfaced a
-        // case where the bare `DROP INDEX` returned
-        // `Ok(0 rows affected)` without actually
-        // removing the index (a parallel `cargo test`
-        // writer held a shared lock just long enough
-        // for SQLite to skip the work and silently
-        // return success), and the subsequent
-        // `CREATE UNIQUE INDEX` then failed with
-        // `index ... already exists`. `IF EXISTS`
-        // makes the operation truly idempotent
-        // and surfaces the same `SQLITE_BUSY` to
-        // the retry loop when the lock is contended.
-        match sqlx::query("DROP INDEX IF EXISTS idx_pending_deploys_one_active_per_target")
+        let _ = sqlx::query("DROP INDEX IF EXISTS idx_pending_deploys_one_active_per_target")
             .execute(&pool)
             .await
-        {
-            Ok(_) => break,
-            Err(sqlx::Error::Database(e))
-                if e.code().as_deref() == Some("SQLITE_BUSY")
-                    || e.message().contains("database is locked") =>
-            {
-                if attempt == 7 {
-                    panic!("drop idx: still busy after 8 retries: {e}");
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt as u64 + 1)))
-                    .await;
-            }
-            Err(e) => panic!("drop idx: {e}"),
+            .expect("drop");
+        let still_there: Option<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?1")
+                .bind("idx_pending_deploys_one_active_per_target")
+                .fetch_optional(&pool)
+                .await
+                .expect("sqlite_master probe");
+        if still_there.is_none() {
+            break;
         }
+        if attempt == 7 {
+            panic!("drop idx: index still present after 8 retries");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt as u64 + 1))).await;
     }
     let row2_id: i64 = sqlx::query_as::<_, (i64,)>(
         "INSERT INTO pending_deploys \
