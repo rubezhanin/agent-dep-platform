@@ -134,6 +134,20 @@ where
         Ok(v) => v,
         Err(_) => return Ok(fallback()),
     };
+    validate_cli_path_value(var, raw)
+}
+
+/// Pure validation entry point: take the raw env-var
+/// value (the part that came from the operator or a
+/// launcher script) and decide whether it is
+/// acceptable. Split out from `read_cli_path` so the
+/// NUL-byte guard can be unit-tested WITHOUT touching
+/// `std::env::set_var` — modern glibc / musl panic
+/// in `set_var` when the value contains `\0`, so the
+/// old "set the env var to `\"good\0bad\"` and then
+/// parse" test could not even reach the assertion on
+/// Linux runners.
+fn validate_cli_path_value(var: &'static str, raw: String) -> Result<PathBuf, CliEnvError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(CliEnvError::EmptyPath { var });
@@ -285,16 +299,15 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn parse_rejects_nul_byte_in_data_dir() {
-        // On Windows, `std::env::set_var` itself
-        // panics when the value contains a NUL
-        // (WinAPI rejects NULs in env strings), so
-        // this test cannot run there. On Unix the
-        // OS would silently truncate the env var
-        // at the NUL, which is exactly the kind of
-        // confusion this guard exists to prevent.
-        let err = with_env("AGENCY_DATA_DIR", Some("good\0bad"), CliEnv::parse)
+        // The pure validator is called directly
+        // with a NUL-bearing string. Going through
+        // `with_env` + `std::env::set_var` is
+        // unsafe: modern glibc / musl panic in
+        // `set_var` when the value contains `\0`,
+        // so the previous test could not even
+        // reach the assertion on Linux runners.
+        let err = validate_cli_path_value("AGENCY_DATA_DIR", "good\0bad".to_string())
             .expect_err("NUL must be rejected");
         assert!(matches!(err, CliEnvError::NulByte { .. }));
     }
