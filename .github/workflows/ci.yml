@@ -123,12 +123,23 @@ jobs:
           cargo install --locked cargo-auditable
       - run: npm ci
       - name: Build headless crates
-        run: |
-          cargo build \
-            -p agent_dep_core \
-            -p agent_dep_hermes_adapter \
-            -p agent_dep_cli \
-            -p agent_dep_server
+        # No multiline \ continuation —
+        # `run: |` with `\` at EOL is
+        # interpreted as a YAML
+        # line-continuation, which
+        # then breaks the bash
+        # parser (the bash line
+        # arrives as one long
+        # argument). Verified on
+        # the Windows runner
+        # (2026-09-10 run
+        # 34445468753): single-line
+        # commands are reliable;
+        # multiline `\` fails with
+        # "exited with code 1" in
+        # 2 s (no actual cargo
+        # invocation).
+        run: cargo build -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server
       - name: cargo fmt
         run: cargo fmt -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server -- --check
       - name: cargo clippy
@@ -177,12 +188,15 @@ jobs:
           node-version: 24
       - run: npm ci
       - name: Build headless crates
-        run: |
-          cargo build \
-            -p agent_dep_core \
-            -p agent_dep_hermes_adapter \
-            -p agent_dep_cli \
-            -p agent_dep_server
+        # See comment in
+        # ci-core-linux above —
+        # single-line cargo build
+        # avoids the YAML/bash
+        # multiline-`\`
+        # interaction that failed
+        # the 2026-09-10
+        # 34445468753 run.
+        run: cargo build -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server
       - name: cargo fmt
         run: cargo fmt -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server -- --check
       - name: cargo clippy
