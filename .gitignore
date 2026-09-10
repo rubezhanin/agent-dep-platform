@@ -44,3 +44,7 @@ TZ_*.md
 # below keep the files untracked in fresh clones.
 docs/adr/
 docs/superpowers/
+
+# Transient CI debug helpers (per-session, not part of the codebase)
+p.py
+parse_*.py
