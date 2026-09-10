@@ -1114,7 +1114,7 @@ EOF
 /// The scan must succeed.
 #[cfg(unix)]
 #[test]
-fn path_constraint_is_noop_when_AGENCY_PLUGINS_DIR_unset() {
+fn path_constraint_is_noop_when_agency_plugins_dir_unset() {
     std::env::remove_var("AGENCY_PLUGINS_DIR");
     let (dir, root) = fresh_dir();
     let script = dir.path().join("anywhere.sh");
@@ -1139,7 +1139,7 @@ fn path_constraint_is_noop_when_AGENCY_PLUGINS_DIR_unset() {
 /// path-constraint check passes.
 #[cfg(unix)]
 #[test]
-fn path_constraint_passes_when_plugin_is_inside_AGENCY_PLUGINS_DIR() {
+fn path_constraint_passes_when_plugin_is_inside_agency_plugins_dir() {
     let (dir, root) = fresh_dir();
     let script = dir.path().join("inside.sh");
     fs::write(&script, "#!/bin/sh\necho '{\"findings\":[]}'\n").unwrap();
@@ -1180,7 +1180,7 @@ fn path_constraint_passes_when_plugin_is_inside_AGENCY_PLUGINS_DIR() {
 /// defense.
 #[cfg(unix)]
 #[test]
-fn path_constraint_rejects_plugin_outside_AGENCY_PLUGINS_DIR() {
+fn path_constraint_rejects_plugin_outside_agency_plugins_dir() {
     // Two disjoint tempdirs:
     // approved/ (the AGENCY_PLUGINS_DIR
     // point) and evil/ (where the
@@ -1239,7 +1239,7 @@ fn path_constraint_rejects_plugin_outside_AGENCY_PLUGINS_DIR() {
 /// runner; deferred to CI).
 #[cfg(unix)]
 #[test]
-fn AGENCY_ALLOW_UNSIGNED_PLUGINS_1_allows_unsigned() {
+fn agency_allow_unsigned_plugins_1_allows_unsigned() {
     let (_dir, root) = fresh_dir();
     let script = _dir.path().join("unsigned.sh");
     fs::write(
