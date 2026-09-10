@@ -3,7 +3,7 @@
   import ListView from "../lib/components/ListView.svelte";
   import { ipc } from "../lib/ipc";
   import { t, subscribe } from "../lib/i18n";
-  import type { AgentSummary } from "../lib/types.generated.ts";
+  import type { AgentSummary } from "../lib";
 
   let items: AgentSummary[] = $state([]);
   let loading = $state(true);
