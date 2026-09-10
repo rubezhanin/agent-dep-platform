@@ -276,7 +276,7 @@ fn check_plugin_path_constraint(binary: &Path) -> CoreResult<()> {
 /// as `0`); a negative or
 /// non-numeric value is also
 /// treated as the default.
-fn max_output_bytes() -> usize {
+fn max_output_bytes_env() -> usize {
     std::env::var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -334,6 +334,16 @@ pub struct PluginScanner {
     /// the global env var (CI run 34480492201
     /// surfaced the race).
     pub timeout: Option<Duration>,
+    /// Per-instance stdout/stderr cap override.
+    /// If `None`, `max_output_bytes()` falls
+    /// back to the `AGENCY_PLUGIN_MAX_OUTPUT_BYTES`
+    /// env var and then to the 16 MiB built-in
+    /// default. Set via `with_max_output_bytes`
+    /// from tests for the same reason as
+    /// `timeout` above (CI run 34483888711
+    /// surfaced a parallel `cargo test` race on
+    /// this env var).
+    pub max_output_bytes_override: Option<usize>,
 }
 
 impl PluginScanner {
@@ -342,6 +352,7 @@ impl PluginScanner {
             name: name.into(),
             binary: binary.into(),
             timeout: None,
+            max_output_bytes_override: None,
         }
     }
 
@@ -353,6 +364,18 @@ impl PluginScanner {
     /// (which is racy under parallel `cargo test`).
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// Override the per-invocation stdout/stderr
+    /// cap for this scanner instance. Takes
+    /// precedence over
+    /// `AGENCY_PLUGIN_MAX_OUTPUT_BYTES`. Used by
+    /// the cap tests so they do not have to
+    /// mutate a process-global env var (which is
+    /// racy under parallel `cargo test`).
+    pub fn with_max_output_bytes(mut self, bytes: usize) -> Self {
+        self.max_output_bytes_override = Some(bytes);
         self
     }
 
@@ -374,6 +397,21 @@ impl PluginScanner {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(30);
         Duration::from_secs(secs)
+    }
+
+    /// Cap on a single plugin's stdout AND
+    /// stderr in bytes. Resolution order:
+    /// 1. `self.max_output_bytes_override` if a
+    ///    per-instance override was set via
+    ///    `PluginScanner::with_max_output_bytes`.
+    /// 2. The `AGENCY_PLUGIN_MAX_OUTPUT_BYTES`
+    ///    env var (operator override).
+    /// 3. 16 MiB (built-in default).
+    fn max_output_bytes(&self) -> usize {
+        if let Some(b) = self.max_output_bytes_override {
+            return b;
+        }
+        max_output_bytes_env()
     }
 
     /// P0-ENV-01 (TZ #2 WP-1.1, CWE-200):
@@ -894,7 +932,7 @@ impl Scanner for PluginScanner {
         // and kills the child
         // (fail-closed) as soon
         // as either fires.
-        let cap = max_output_bytes();
+        let cap = self.max_output_bytes();
         let stdout_cap_hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stderr_cap_hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stdout_thread = child.stdout.take().map(|s| {
@@ -1081,7 +1119,7 @@ impl Scanner for PluginScanner {
                 ),
             }]);
         }
-        if output.stdout.len() > max_output_bytes() {
+        if output.stdout.len() > self.max_output_bytes() {
             return Ok(vec![Finding {
                 severity: Severity::Warn,
                 rule: format!("plugin.{}.output-too-large", self.name),

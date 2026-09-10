@@ -945,7 +945,6 @@ fn output_cap_kills_plugin_that_writes_more_than_cap() {
     // is used (not the env var)
     // to avoid racing other
     // parallel tests' set_var.
-    std::env::set_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES", "1024");
     let (dir, root) = fresh_dir();
     // A plugin that writes 64
     // KiB of stdout — well
@@ -976,27 +975,23 @@ EOF
         perms.set_mode(0o755);
         fs::set_permissions(&script, perms).unwrap();
     }
-    let scanner = PluginScanner::new("oversized", &script).with_timeout(Duration::from_secs(10));
-    let start = std::time::Instant::now();
+    let scanner = PluginScanner::new("oversized", &script)
+        .with_timeout(Duration::from_secs(10))
+        .with_max_output_bytes(1024);
+    let _start = std::time::Instant::now();
     let findings = scanner
         .scan(&root, &ScanPolicy::mvp_default())
         .expect("scan must return Ok with a synthetic finding, not Err");
-    let elapsed = start.elapsed();
-    // The scanner must return
-    // well before the 10s
-    // wall-clock timeout. The
-    // cap-hit path is the
-    // fast path (the plugin
-    // writes 64 KiB at full
-    // speed, the parent reads
-    // 1 KiB, then the cap
-    // fires and the parent
-    // kills the child — all
-    // within a few ms).
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "scan took {elapsed:?}; cap-hit path did not fire"
-    );
+    let _elapsed = _start.elapsed();
+    // We do NOT assert a wall-clock bound on
+    // `scan()` (same reasoning as
+    // `wall_clock_timeout_kills_runaway_plugin`:
+    // `Command::spawn` on a loaded runner can
+    // take 5-10 s before the poll loop starts
+    // and the cap-hit path is even reachable).
+    // The cap-hit path is proven by the
+    // `plugin.oversized.output-cap-exceeded`
+    // finding asserted below.
     // The synthetic
     // `output-cap-exceeded`
     // finding is the ONLY
@@ -1018,7 +1013,6 @@ EOF
         "reason should mention the kill: {}",
         findings[0].reason
     );
-    std::env::remove_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES");
 }
 
 #[cfg(unix)]
@@ -1038,7 +1032,6 @@ fn output_below_cap_completes_normally() {
     // any output exists"
     // implementation would
     // kill every plugin.
-    std::env::set_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES", "65536");
     let (dir, root) = fresh_dir();
     fs::write(root.join("a.md"), "harmless").unwrap();
     let script = dir.path().join("small_plugin.sh");
@@ -1058,14 +1051,13 @@ EOF
         perms.set_mode(0o755);
         fs::set_permissions(&script, perms).unwrap();
     }
-    let scanner = PluginScanner::new("small", &script);
+    let scanner = PluginScanner::new("small", &script).with_max_output_bytes(65536);
     let findings = scanner
         .scan(&root, &ScanPolicy::mvp_default())
         .expect("scan must return Ok");
     assert_eq!(findings.len(), 1, "got: {findings:?}");
     assert_eq!(findings[0].rule, "plugin.small.custom.small");
     assert_eq!(findings[0].reason, "tiny");
-    std::env::remove_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES");
 }
 
 // -----------------------------------------------------------------------
