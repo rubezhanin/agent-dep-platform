@@ -1,66 +1,87 @@
-# CI workflow. Active since 2026-09-08 (first
-# push to a remote). The recent (2026-09-09)
-# push-time failures on both
-# `ci-linux` (step 8 =
-# `vite build`, exit 101) and
-# `ci-windows` (step 10 =
-# `npm run build`, exit 1)
-# were traced to two
-# environment drifts,
-# fixed in this commit:
+# CI workflow. Active since 2026-09-08.
 #
-# 1. `npm install` honours
-#    caret ranges in
-#    `package.json` and
-#    can resolve to a
-#    newer minor on a
-#    fresh runner (the
-#    operator workstation
-#    has the older minor
-#    pinned in
-#    `package-lock.json`
-#    from prior `npm
-#    install` runs; the
-#    CI runner has no
-#    such state). The
-#    drift between Node
-#    22 (workstation) and
-#    Node 24 (the version
-#    `ubuntu-latest` ships
-#    with as of 2026-09)
-#    amplifies the
-#    breakage. Switching
-#    to `npm ci` makes
-#    the lockfile the
-#    sole source of
-#    truth, so the
-#    workstation and the
-#    runner install
-#    identical trees.
+# 3.0.0 (CI fix): four-job
+# layout. The workspace
+# contains a Tauri 2
+# desktop shell
+# (`agent_dep_app`)
+# that requires GTK 3 /
+# webkit2gtk-4.1 system
+# libraries on Linux.
+# `ubuntu-latest` and
+# `windows-latest`
+# runners do not ship
+# those libraries, so a
+# `cargo build
+# --workspace` step
+# fails on
+# `agent_dep_app`. The
+# fix:
 #
-# 2. `node-version: 22`
-#    pins setup-node to
-#    download a Node 22
-#    tarball even though
-#    the runner already
-#    has Node 24 (the
-#    `node-version: 22`
-#    pin in setup-node@v4
-#    + a Node 24 runner
-#    surfaces a
-#    "Node.js 20 is
-#    deprecated"
-#    annotation when
-#    the requested
-#    version is below
-#    the runner's
-#    default). Bumping
-#    the pin to 24
-#    silences the
-#    deprecation and
-#    matches the
-#    runner's
-#    installed Node.
+# 1. `ci-core-linux` and
+#    `ci-core-windows`
+#    (renamed from
+#    `ci-linux` /
+#    `ci-windows` to
+#    reflect the
+#    narrowed scope) now
+#    build only the
+#    headless crates
+#    (`core`,
+#    `hermes-adapter`,
+#    `cli`, `server`).
+#    `tauri-app` is
+#    excluded from the
+#    workspace build,
+#    fmt, clippy, and
+#    test steps. The
+#    `npm run check` /
+#    `npm run build`
+#    gates also run
+#    (the Svelte 5 SPA
+#    is buildable without
+#    Tauri system deps).
+#
+# 2. `ci-tauri-linux` and
+#    `ci-tauri-windows`
+#    build the Tauri 2
+#    shell. They use
+#    `tauri-apps/tauri-action@v0`
+#    to install the
+#    system libraries
+#    (Linux only; Windows
+#    bundles the WebView2
+#    runtime so no
+#    system-deps step is
+#    needed). The
+#    `npm run build`
+#    step stays here
+#    (it's a Tauri
+#    concern, not a SPA
+#    concern).
+#
+# Historical fixes:
+#
+# 2026-09-09 (commit
+# 0bfc58a):
+# - `node-version: 22`
+#   → `node-version: 24`
+#   (matches
+#   `ubuntu-latest` /
+#   `windows-latest`).
+# - `npm install` →
+#   `npm ci` (strict
+#   lockfile, so the
+#   workstation and
+#   the runner install
+#   identical trees).
+# - 2026-09-09 (commit
+#   d5e2aca): added
+#   `scripts/check-ts-drift.sh`
+#   so the trailing
+#   ci-windows step has
+#   a real script to
+#   call.
 name: CI
 
 on:
@@ -69,13 +90,22 @@ on:
   pull_request:
 
 jobs:
-  # Phase 0 (ADR-0041, Q11): ubuntu-latest is the
-  # required gate. Plugin sandbox (P0-S-01), real
-  # Keycloak tests (oidc_real_idp), and the
-  # security_replays (when un-ignored) only work on
-  # Linux. Windows is a build check only.
-  ci-linux:
-    name: Linux build + test + audit
+  # Headless crates
+  # only. `agent_dep_app`
+  # (Tauri 2 shell) is
+  # built by the
+  # `ci-tauri-*` jobs
+  # below — those jobs
+  # install the Tauri
+  # system libraries
+  # first. The
+  # `security_replays`
+  # step (when
+  # un-ignored) is the
+  # executable spec of
+  # the fix.
+  ci-core-linux:
+    name: "Core: Linux build + test + audit"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -92,24 +122,25 @@ jobs:
           cargo install --locked cargo-deny
           cargo install --locked cargo-auditable
       - run: npm ci
-      - name: Build workspace
-        run: cargo build --workspace
+      - name: Build headless crates
+        run: |
+          cargo build \
+            -p agent_dep_core \
+            -p agent_dep_hermes_adapter \
+            -p agent_dep_cli \
+            -p agent_dep_server
       - name: cargo fmt
-        run: cargo fmt --all -- --check
+        run: cargo fmt -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server -- --check
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: cargo test (workspace)
-        run: cargo test --workspace
+        run: cargo clippy -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server --all-targets -- -D warnings
+      - name: cargo test (headless)
+        run: cargo test -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server
       - name: security_replays (all un-ignored)
-        # Phase 0: all 5 seed tests are #[ignore]'d,
-        # so this is a no-op until Phase 1 closes the
-        # first P0. Once un-ignored, this is the
-        # executable spec of the fix.
         run: cargo test -p agent_dep_core --test security_replays -- --include-ignored
       - name: svelte-check
         run: npm run check
-      - name: vite build
-        run: npm run build
+      - name: ts-rs drift
+        run: ./scripts/check-ts-drift.sh
       - name: cargo audit
         # TZ #2 WP-5.1: any RUSTSEC hit blocks CI
         # except for ADR-documented false positives.
@@ -117,21 +148,24 @@ jobs:
       - name: cargo deny
         run: cargo deny check
       - name: cargo auditable (SBOM)
-        # Produces target/release/*.audit.json — the
-        # SBOM artifact that P2-SBOM-01 will publish
-        # to the release.
+        # Produces
+        # `target/release/*.audit.json`
+        # — the SBOM
+        # artifact that
+        # P2-SBOM-01 will
+        # publish to the
+        # release.
         run: |
-          cargo auditable build --release -p agent_dep_server -p agent_dep_cli
+          cargo auditable build --release \
+            -p agent_dep_server \
+            -p agent_dep_cli
       - uses: actions/upload-artifact@v4
         with:
-          name: sbom
+          name: sbom-linux
           path: target/release/*.audit.json
 
-  # Windows remains a build check. The plugin
-  # sandbox, real-IdP, and security_replays are
-  # gated on Linux only.
-  ci-windows:
-    name: Windows build + test (build check)
+  ci-core-windows:
+    name: "Core: Windows build + test"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -142,14 +176,87 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - run: cargo build --workspace
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: npm run check
-      - run: npm run build
-      - run: ./scripts/check-ts-drift.sh  # bash version of check-ts-drift.ps1
-        # SKIP_REAL_IDP_TESTS=1 makes the OIDC test
-        # harness skip-dummy-mode (no docker needed).
-        env:
-          SKIP_REAL_IDP_TESTS: "1"
+      - name: Build headless crates
+        run: |
+          cargo build \
+            -p agent_dep_core \
+            -p agent_dep_hermes_adapter \
+            -p agent_dep_cli \
+            -p agent_dep_server
+      - name: cargo fmt
+        run: cargo fmt -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server -- --check
+      - name: cargo clippy
+        run: cargo clippy -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server --all-targets -- -D warnings
+      - name: cargo test (headless)
+        run: cargo test -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server
+      - name: svelte-check
+        run: npm run check
+      - name: ts-rs drift
+        run: powershell -File scripts/check-ts-drift.ps1
+
+  # Tauri 2 desktop
+  # shell. The
+  # `tauri-action/setup-action@v0`
+  # installs the
+  # libgtk-3-dev,
+  # libwebkit2gtk-4.1-dev,
+  # libayatana-appindicator3-dev,
+  # librsvg2-dev,
+  # libsoup-3.0-dev
+  # packages on
+  # `ubuntu-latest`
+  # before any cargo
+  # invocation. The
+  # `windows-latest`
+  # variant only needs
+  # the WebView2 runtime
+  # (bundled by Tauri
+  # 2's Windows
+  # bundler — no system
+  # packages to install).
+  ci-tauri-linux:
+    name: "Tauri shell: Linux build"
+    runs-on: ubuntu-latest
+    needs: ci-core-linux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: Swatinem/rust-cache@v2
+      - uses: tauri-apps/tauri-action@v0
+      - run: npm ci
+      - name: cargo build (tauri-app)
+        run: cargo build -p agent_dep_app
+      - name: cargo fmt
+        run: cargo fmt -p agent_dep_app -- --check
+      - name: cargo clippy
+        run: cargo clippy -p agent_dep_app --all-targets -- -D warnings
+      - name: cargo test (tauri-app)
+        run: cargo test -p agent_dep_app
+
+  ci-tauri-windows:
+    name: "Tauri shell: Windows build"
+    runs-on: windows-latest
+    needs: ci-core-windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - name: cargo build (tauri-app)
+        run: cargo build -p agent_dep_app
+      - name: cargo fmt
+        run: cargo fmt -p agent_dep_app -- --check
+      - name: cargo clippy
+        run: cargo clippy -p agent_dep_app --all-targets -- -D warnings
+      - name: vite build (production bundle)
+        run: npm run build
