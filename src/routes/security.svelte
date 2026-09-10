@@ -3,7 +3,7 @@
   import ListView from "../lib/components/ListView.svelte";
   import { ipc } from "../lib/ipc";
   import { t, subscribe } from "../lib/i18n";
-  import type { Finding, ScanResult } from "../lib";
+  import type { Finding, ScanResult } from "../lib/types.generated.ts";
 
   let result: ScanResult | null = $state(null as ScanResult | null);
   let loading = $state(true);

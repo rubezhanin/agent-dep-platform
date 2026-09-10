@@ -3,7 +3,7 @@
   import ListView from "../lib/components/ListView.svelte";
   import { ipc } from "../lib/ipc";
   import { t, subscribe } from "../lib/i18n";
-  import type { DeploymentSummary } from "../lib";
+  import type { DeploymentSummary } from "../lib/types.generated.ts";
 
   let items: DeploymentSummary[] = $state([]);
   let loading = $state(true);

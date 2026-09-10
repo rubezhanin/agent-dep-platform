@@ -3,7 +3,7 @@
   import ListView from "../lib/components/ListView.svelte";
   import { ipc } from "../lib/ipc";
   import { t, subscribe } from "../lib/i18n";
-  import type { SystemSummary } from "../lib";
+  import type { SystemSummary } from "../lib/types.generated.ts";
 
   let items: SystemSummary[] = $state([]);
   let loading = $state(true);

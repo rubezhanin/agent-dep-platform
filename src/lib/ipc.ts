@@ -9,7 +9,7 @@ import type {
   SystemSummary,
   RuntimeInfo,
   Plan,
-} from "./types.generated";
+} from "./types.generated.ts";
 
 // MVP-1.0 (Phase 6): every Svelte route now binds to a
 // real Tauri command. The only one that is still a TODO
