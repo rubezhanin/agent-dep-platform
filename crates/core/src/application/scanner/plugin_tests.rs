@@ -772,18 +772,17 @@ fn wall_clock_timeout_kills_runaway_plugin() {
     // Set a 2-second timeout for
     // this test (the default is
     // 30s; the test would take
-    // 30s+ otherwise). The env
-    // var is read by
-    // `default_timeout()` at
-    // scan time, so it must be
-    // set BEFORE the scan call.
-    // The previous test's env
-    // may have left a stale
-    // value; `set_var` is the
-    // only safe way to override
-    // for this test (the helper
-    // re-reads on every call).
-    std::env::set_var("AGENCY_PLUGIN_TIMEOUT_SECS", "2");
+    // 30s+ otherwise). The
+    // per-instance timeout is
+    // used here (not the
+    // AGENCY_PLUGIN_TIMEOUT_SECS
+    // env var) so a parallel
+    // `cargo test` run cannot
+    // race another test's
+    // `std::env::set_var` on the
+    // same var — CI run
+    // 34480492201 surfaced that
+    // race.
     let (dir, root) = fresh_dir();
     // A 10s-sleep script. The
     // wall-clock timeout at 2s
@@ -801,7 +800,7 @@ fn wall_clock_timeout_kills_runaway_plugin() {
         perms.set_mode(0o755);
         fs::set_permissions(&script, perms).unwrap();
     }
-    let scanner = PluginScanner::new("hanging", &script);
+    let scanner = PluginScanner::new("hanging", &script).with_timeout(Duration::from_secs(2));
     let start = std::time::Instant::now();
     let findings = scanner
         .scan(&root, &ScanPolicy::mvp_default())
@@ -856,14 +855,19 @@ fn wall_clock_timeout_kills_runaway_plugin() {
 #[cfg(unix)]
 #[test]
 fn fast_plugin_completes_before_timeout() {
+    use std::time::Duration;
     // The timeout is set to 5s
     // (generous) and the plugin
     // exits in < 100ms. The
     // scanner must return the
     // plugin's findings verbatim
     // (no synthetic
-    // `timed-out` finding).
-    std::env::set_var("AGENCY_PLUGIN_TIMEOUT_SECS", "5");
+    // `timed-out` finding). The
+    // per-instance timeout is
+    // used (not the env var) so
+    // the timeout test is not
+    // racy with `cargo test`'s
+    // parallel execution.
     let (dir, root) = fresh_dir();
     fs::write(root.join("a.md"), "harmless").unwrap();
     let script = dir.path().join("fast_plugin.sh");
@@ -883,7 +887,7 @@ EOF
         perms.set_mode(0o755);
         fs::set_permissions(&script, perms).unwrap();
     }
-    let scanner = PluginScanner::new("fast", &script);
+    let scanner = PluginScanner::new("fast", &script).with_timeout(Duration::from_secs(5));
     let findings = scanner
         .scan(&root, &ScanPolicy::mvp_default())
         .expect("scan must return Ok");
@@ -893,7 +897,6 @@ EOF
     assert_eq!(findings.len(), 1, "got: {findings:?}");
     assert_eq!(findings[0].rule, "plugin.fast.custom.fast");
     assert_eq!(findings[0].reason, "quick");
-    std::env::remove_var("AGENCY_PLUGIN_TIMEOUT_SECS");
 }
 
 // -----------------------------------------------------------------------
@@ -945,7 +948,10 @@ fn output_cap_kills_plugin_that_writes_more_than_cap() {
     // first; the timeout path
     // would only fire if the
     // cap-hit path is broken.
-    std::env::set_var("AGENCY_PLUGIN_TIMEOUT_SECS", "10");
+    // The per-instance timeout
+    // is used (not the env var)
+    // to avoid racing other
+    // parallel tests' set_var.
     std::env::set_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES", "1024");
     let (dir, root) = fresh_dir();
     // A plugin that writes 64
@@ -977,7 +983,7 @@ EOF
         perms.set_mode(0o755);
         fs::set_permissions(&script, perms).unwrap();
     }
-    let scanner = PluginScanner::new("oversized", &script);
+    let scanner = PluginScanner::new("oversized", &script).with_timeout(Duration::from_secs(10));
     let start = std::time::Instant::now();
     let findings = scanner
         .scan(&root, &ScanPolicy::mvp_default())
@@ -1019,7 +1025,6 @@ EOF
         "reason should mention the kill: {}",
         findings[0].reason
     );
-    std::env::remove_var("AGENCY_PLUGIN_TIMEOUT_SECS");
     std::env::remove_var("AGENCY_PLUGIN_MAX_OUTPUT_BYTES");
 }
 

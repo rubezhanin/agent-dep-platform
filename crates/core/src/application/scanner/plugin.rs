@@ -177,16 +177,7 @@ const PLUGIN_WAIT_POLL: Duration = Duration::from_millis(100);
 /// the kill signal.
 const STDIN_CHUNK_BYTES: usize = 4 * 1024;
 
-/// Hard timeout for a single plugin invocation.
-/// Operators can override via the
-/// `AGENCY_PLUGIN_TIMEOUT_SECS` env var.
-fn default_timeout() -> Duration {
-    let secs = std::env::var("AGENCY_PLUGIN_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(30);
-    Duration::from_secs(secs)
-}
+
 
 /// 2.11.0 (P1-S-05, TZ #1 §9 / S-05,
 /// TZ #2 WP-1.1 / SEC-08, CWE-494
@@ -336,6 +327,15 @@ pub struct PluginScanner {
     pub name: String,
     /// Absolute path to the plugin binary.
     pub binary: PathBuf,
+    /// Per-instance timeout override. If `None`,
+    /// `default_timeout()` falls back to the
+    /// `AGENCY_PLUGIN_TIMEOUT_SECS` env var and
+    /// then to the 30 s built-in default. Set
+    /// via `with_timeout` from tests so a
+    /// parallel `cargo test` run cannot race
+    /// the global env var (CI run 34480492201
+    /// surfaced the race).
+    pub timeout: Option<Duration>,
 }
 
 impl PluginScanner {
@@ -343,7 +343,39 @@ impl PluginScanner {
         Self {
             name: name.into(),
             binary: binary.into(),
+            timeout: None,
         }
+    }
+
+    /// Override the per-invocation wall-clock
+    /// timeout for this scanner instance. Takes
+    /// precedence over `AGENCY_PLUGIN_TIMEOUT_SECS`.
+    /// Used by the timeout tests so they do not
+    /// have to mutate a process-global env var
+    /// (which is racy under parallel `cargo test`).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Hard timeout for a single plugin invocation.
+    /// Resolution order:
+    /// 1. `self.timeout` if a per-instance override
+    ///    was set via `PluginScanner::with_timeout`.
+    ///    Used by tests so a parallel cargo-test
+    ///    run cannot race the global env var.
+    /// 2. The `AGENCY_PLUGIN_TIMEOUT_SECS` env var
+    ///    (operator override).
+    /// 3. 30 seconds (built-in default).
+    fn default_timeout(&self) -> Duration {
+        if let Some(d) = self.timeout {
+            return d;
+        }
+        let secs = std::env::var("AGENCY_PLUGIN_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(30);
+        Duration::from_secs(secs)
     }
 
     /// P0-ENV-01 (TZ #2 WP-1.1, CWE-200):
@@ -885,7 +917,7 @@ impl Scanner for PluginScanner {
                 buf
             })
         });
-        let timeout = default_timeout();
+        let timeout = self.default_timeout();
         let deadline = Instant::now() + timeout;
         let exit: Result<std::process::ExitStatus, std::io::Error> = loop {
             // 2.11.0 (P1-S-03, CWE-400):
