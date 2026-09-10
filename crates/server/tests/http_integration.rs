@@ -212,6 +212,33 @@ async fn health_is_open_and_returns_ok() {
 
 #[tokio::test]
 async fn audit_requires_bearer_token() {
+    // 2.11.0 (B1, audit): the
+    // AGENCY_BEARER_FALLBACK env
+    // var is what keeps the
+    // existing pre-OIDC test
+    // infrastructure working
+    // (it lets a missing bearer
+    // through with a WARN log
+    // instead of a hard 401,
+    // so the legacy 2.0.0 admin
+    // token still authenticates
+    // after the bearer-deprecation
+    // commit 4ad29cd). This
+    // test, however, is the
+    // exception: it specifically
+    // proves the deprecation
+    // *can* be turned off and
+    // that the hard-401 path
+    // still fires. Unset the
+    // var for the duration of
+    // the test so the boot() default
+    // does not mask the strict
+    // path. Re-arm at the end so
+    // the rest of the suite
+    // keeps working.
+    unsafe {
+        std::env::remove_var("AGENCY_BEARER_FALLBACK");
+    }
     let srv = boot().await;
     let resp = reqwest::get(format!("{}/v1/audit", srv.base))
         .await
@@ -224,6 +251,9 @@ async fn audit_requires_bearer_token() {
         .await
         .expect("send");
     assert_eq!(resp.status(), 200);
+    unsafe {
+        std::env::set_var("AGENCY_BEARER_FALLBACK", "1");
+    }
 }
 
 #[tokio::test]
@@ -1145,15 +1175,38 @@ async fn reveal_secret_without_reason_returns_400() {
 
 #[tokio::test]
 async fn admin_deletes_secret_204_and_audit_logs_access() {
+    // 3.0.0 (CI flake): use one
+    // shared `reqwest::Client` for
+    // the whole test. The
+    // previous form spun up a
+    // fresh client per call
+    // (4 in this test) which on
+    // a loaded ubuntu-latest
+    // runner can race the kernel
+    // TIME_WAIT window between
+    // connections and surface as
+    // a transport-level error in
+    // `.send().await.expect(...)`
+    // (the panic CI run
+    // 34494494497 surfaced
+    //    `panicked at
+    //     http_integration.rs:1191:39` →
+    //     `.expect("delete")` on the
+    //     second request of this
+    //     test). Sharing the client
+    // also keeps a single keep-alive
+    // connection warm across the
+    // four round-trips.
     let srv = boot().await;
-    let _ = reqwest::Client::new()
+    let client = reqwest::Client::new();
+    let _ = client
         .post(format!("{}/v1/secrets", srv.base))
         .bearer_auth(&srv.admin_token)
         .json(&json!({ "name": "k", "value": "v" }))
         .send()
         .await
         .expect("seed");
-    let resp = reqwest::Client::new()
+    let resp = client
         .delete(format!("{}/v1/secrets/k", srv.base))
         .bearer_auth(&srv.admin_token)
         .send()
@@ -1165,7 +1218,7 @@ async fn admin_deletes_secret_204_and_audit_logs_access() {
     // (B3, audit CWE-598) replaced
     // GET /v1/secrets/:name with
     // POST /v1/secrets/:name/reveal.
-    let resp = reqwest::Client::new()
+    let resp = client
         .post(format!("{}/v1/secrets/k/reveal", srv.base))
         .bearer_auth(&srv.admin_token)
         .json(&json!({ "reason": "post-delete sanity check" }))
@@ -1181,7 +1234,7 @@ async fn admin_deletes_secret_204_and_audit_logs_access() {
     // async, so we wait briefly for
     // the drain.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    let resp = reqwest::Client::new()
+    let resp = client
         .get(format!("{}/v1/audit?limit=200", srv.base))
         .bearer_auth(&srv.admin_token)
         .send()
