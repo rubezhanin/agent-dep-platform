@@ -703,11 +703,50 @@ async fn legacy_token_migrates_to_admin_on_first_start() {
         .expect("get");
     assert_eq!(resp.status(), 200);
     let v: serde_json::Value = resp.json().await.expect("json");
-    let items = v["items"].as_array().expect("items");
+    // 3.0.0 (CI flake): the audit
+    // recorder is `record_async` in
+    // production (debounced). On
+    // a loaded ubuntu-latest runner
+    // the previous-GET audit row
+    // can take >100 ms to land
+    // (the debounce timer is
+    // 50 ms; the work-item
+    // serialises behind other
+    // writers on the same pool).
+    // The `100 ms` sleep that used
+    // to follow was not enough
+    // under load. Retry the read
+    // up to 10 times with 50 ms
+    // back-off (500 ms total
+    // wall-clock) and pick the
+    // first call that returns at
+    // least one `ok` row.
+    let client = reqwest::Client::new();
+    let mut items_value: serde_json::Value = v;
+    for _ in 0..10u8 {
+        if items_value
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["outcome"] == "ok")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let resp = client
+            .get(format!("{}/v1/audit", srv.base))
+            .bearer_auth(legacy)
+            .send()
+            .await
+            .expect("get");
+        assert_eq!(resp.status(), 200);
+        items_value = resp.json().await.expect("json");
+    }
+    let items = items_value.as_array().expect("items");
     let ok_row = items
         .iter()
         .find(|r| r["outcome"] == "ok")
-        .expect("at least one ok row");
+        .unwrap_or_else(|| panic!("at least one ok row: got items={items:?}"));
     assert_eq!(
         ok_row["actor"], "admin",
         "legacy token's bearer must attribute rows to `admin`"
