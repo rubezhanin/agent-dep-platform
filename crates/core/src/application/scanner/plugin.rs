@@ -177,8 +177,6 @@ const PLUGIN_WAIT_POLL: Duration = Duration::from_millis(100);
 /// the kill signal.
 const STDIN_CHUNK_BYTES: usize = 4 * 1024;
 
-
-
 /// 2.11.0 (P1-S-05, TZ #1 §9 / S-05,
 /// TZ #2 WP-1.1 / SEC-08, CWE-494
 /// Download of Code Without
