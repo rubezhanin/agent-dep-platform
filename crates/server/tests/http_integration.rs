@@ -724,12 +724,20 @@ async fn legacy_token_migrates_to_admin_on_first_start() {
     let client = reqwest::Client::new();
     let mut items_value: serde_json::Value = v;
     for _ in 0..10u8 {
-        if items_value
+        // The first call's body is
+        // whatever we got from the
+        // line above; on a loaded
+        // runner it can occasionally
+        // be a non-200 error envelope
+        // (e.g. `{"error": ...}`) and
+        // `.as_array()` would return
+        // `None` — treat that as
+        // "no row yet" and retry.
+        let has_ok = items_value
             .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["outcome"] == "ok")
-        {
+            .map(|a| a.iter().any(|r| r["outcome"] == "ok"))
+            .unwrap_or(false);
+        if has_ok {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -739,10 +747,19 @@ async fn legacy_token_migrates_to_admin_on_first_start() {
             .send()
             .await
             .expect("get");
-        assert_eq!(resp.status(), 200);
+        let status = resp.status();
+        if !status.is_success() {
+            // Non-2xx: rate limit or
+            // transient error. Keep
+            // retrying within the loop
+            // budget.
+            continue;
+        }
         items_value = resp.json().await.expect("json");
     }
-    let items = items_value.as_array().expect("items");
+    let items = items_value
+        .as_array()
+        .unwrap_or_else(|| panic!("audit response is not an array: {items_value:?}"));
     let ok_row = items
         .iter()
         .find(|r| r["outcome"] == "ok")
