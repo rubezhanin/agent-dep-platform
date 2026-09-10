@@ -3,7 +3,7 @@
   import ListView from "../lib/components/ListView.svelte";
   import { ipc } from "../lib/ipc";
   import { t, subscribe } from "../lib/i18n";
-  import type { BackupSummary } from "../lib/types.generated";
+  import type { BackupSummary } from "../lib/types.generated.ts";
 
   let items: BackupSummary[] = $state([]);
   let loading = $state(true);

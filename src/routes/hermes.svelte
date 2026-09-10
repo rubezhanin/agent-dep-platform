@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { ipc } from "../lib/ipc";
   import { t, subscribe } from "../lib/i18n";
-  import type { RuntimeInfo } from "../lib/types.generated";
+  import type { RuntimeInfo } from "../lib/types.generated.ts";
 
   let runtime: RuntimeInfo | null = $state(null);
   let loading = $state(true);

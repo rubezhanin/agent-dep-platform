@@ -3,7 +3,7 @@
   import ListView from "../lib/components/ListView.svelte";
   import { ipc } from "../lib/ipc";
   import { t, subscribe } from "../lib/i18n";
-  import type { LogLine } from "../lib/types.generated";
+  import type { LogLine } from "../lib/types.generated.ts";
 
   let items: LogLine[] = $state([]);
   let loading = $state(true);
