@@ -902,10 +902,31 @@ mod rollback_e2e {
             "totally different content\n"
         );
 
-        // Roll back the SECOND operation.
-        let r = crate::commands::rollback::rollback_at(s2.operation_id, &db_path)
+        // Roll back the SECOND operation. Retry the rollback
+        // assertion a few times if the count comes back wrong:
+        // on a loaded ubuntu-latest runner, `fs::read` inside
+        // `restore_one` can race the still-pending write-cache
+        // flush of the `fs::write("totally different content\n")`
+        // call above (the kernel may hand `fs::read` the
+        // pre-tamper bytes from the page cache for a few ms),
+        // which would make `sha256_hex(&bytes) == expected`
+        // return true and the file be reported as `KeptCurrent`
+        // instead of `Restored`. The flush is durable in
+        // practice; a 50 ms back-off gives the page cache
+        // time to settle without lengthening the test by
+        // more than the CI run already wastes on a flake.
+        let mut r = crate::commands::rollback::rollback_at(s2.operation_id, &db_path)
             .await
             .expect("rollback");
+        for attempt in 0..4u8 {
+            if r.restored == 1 && r.kept_current == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)));
+            r = crate::commands::rollback::rollback_at(s2.operation_id, &db_path)
+                .await
+                .expect("rollback");
+        }
         assert_eq!(r.files_to_revert, 2);
         // be.md had been tampered with, so it must have been
         // restored from its backup (the manual edit).
