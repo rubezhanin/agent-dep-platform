@@ -716,7 +716,20 @@ async fn mark_applied_rejects_with_stale_deployment_fence() {
     // `recreate idx` expect is the line that
     // fails).
     for attempt in 0..8usize {
-        match sqlx::query("DROP INDEX idx_pending_deploys_one_active_per_target")
+        // Use `DROP INDEX IF EXISTS` so the step is
+        // idempotent. CI run 34493700094 surfaced a
+        // case where the bare `DROP INDEX` returned
+        // `Ok(0 rows affected)` without actually
+        // removing the index (a parallel `cargo test`
+        // writer held a shared lock just long enough
+        // for SQLite to skip the work and silently
+        // return success), and the subsequent
+        // `CREATE UNIQUE INDEX` then failed with
+        // `index ... already exists`. `IF EXISTS`
+        // makes the operation truly idempotent
+        // and surfaces the same `SQLITE_BUSY` to
+        // the retry loop when the lock is contended.
+        match sqlx::query("DROP INDEX IF EXISTS idx_pending_deploys_one_active_per_target")
             .execute(&pool)
             .await
         {
