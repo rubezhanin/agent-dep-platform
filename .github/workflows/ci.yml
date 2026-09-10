@@ -170,6 +170,8 @@ jobs:
         run: cargo test -p agent_dep_core -p agent_dep_hermes_adapter -p agent_dep_cli -p agent_dep_server
       - name: security_replays (all un-ignored)
         run: cargo test -p agent_dep_core --test security_replays -- --include-ignored
+      - name: cargo test (ts_export, regenerates types.generated.ts)
+        run: cargo test -p agent_dep_core --test ts_export
       - name: svelte-check
         run: npm run check
       - name: ts-rs drift
