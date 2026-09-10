@@ -175,7 +175,7 @@ jobs:
       - name: svelte-check
         run: npm run check
       - name: ts-rs drift
-        run: ./scripts/check-ts-drift.sh
+        run: bash ./scripts/check-ts-drift.sh
 
   ci-core-windows:
     name: "Core: Windows build + test"
