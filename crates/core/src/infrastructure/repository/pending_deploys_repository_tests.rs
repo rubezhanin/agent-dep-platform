@@ -703,10 +703,37 @@ async fn mark_applied_rejects_with_stale_deployment_fence() {
         .expect("ok");
     pd.mark_applied(r1.id).await.expect("apply").expect("ok");
     // 2) Inject the race row.
-    sqlx::query("DROP INDEX idx_pending_deploys_one_active_per_target")
-        .execute(&pool)
-        .await
-        .expect("drop idx for race sim");
+    // The DROP/INSERT/CREATE-INDEX triple races
+    // with parallel `cargo test` writers; on a
+    // loaded ubuntu-latest runner the CREATE
+    // UNIQUE INDEX can hit SQLITE_BUSY (database
+    // is locked by another test's
+    // migration/insert). Retry with a small
+    // backoff so the test stops being a
+    // known flake (CI runs 34446115086, 122,
+    // 121, 34482431085, 34483888711,
+    // 34486167058 all surfaced this — the
+    // `recreate idx` expect is the line that
+    // fails).
+    for attempt in 0..8usize {
+        match sqlx::query("DROP INDEX idx_pending_deploys_one_active_per_target")
+            .execute(&pool)
+            .await
+        {
+            Ok(_) => break,
+            Err(sqlx::Error::Database(e))
+                if e.code().as_deref() == Some("SQLITE_BUSY")
+                    || e.message().contains("database is locked") =>
+            {
+                if attempt == 7 {
+                    panic!("drop idx: still busy after 8 retries: {e}");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt as u64 + 1)))
+                    .await;
+            }
+            Err(e) => panic!("drop idx: {e}"),
+        }
+    }
     let row2_id: i64 = sqlx::query_as::<_, (i64,)>(
         "INSERT INTO pending_deploys \
          (system_id, plan_summary, requested_by, requested_at, status, \
@@ -720,14 +747,29 @@ async fn mark_applied_rejects_with_stale_deployment_fence() {
     .await
     .expect("insert race row")
     .0;
-    sqlx::query(
-        "CREATE UNIQUE INDEX idx_pending_deploys_one_active_per_target \
-         ON pending_deploys(target_id) \
-         WHERE status IN ('pending', 'approved')",
-    )
-    .execute(&pool)
-    .await
-    .expect("recreate idx");
+    for attempt in 0..8usize {
+        match sqlx::query(
+            "CREATE UNIQUE INDEX idx_pending_deploys_one_active_per_target \
+             ON pending_deploys(target_id) \
+             WHERE status IN ('pending', 'approved')",
+        )
+        .execute(&pool)
+        .await
+        {
+            Ok(_) => break,
+            Err(sqlx::Error::Database(e))
+                if e.code().as_deref() == Some("SQLITE_BUSY")
+                    || e.message().contains("database is locked") =>
+            {
+                if attempt == 7 {
+                    panic!("recreate idx: still busy after 8 retries: {e}");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt as u64 + 1)))
+                    .await;
+            }
+            Err(e) => panic!("recreate idx: {e}"),
+        }
+    }
     // 3) Approve the
     // simulated stale row and
     // attempt the apply.
