@@ -812,11 +812,22 @@ fn wall_clock_timeout_kills_runaway_plugin() {
     // 10s sleep would have
     // completed. The deadline is
     // 2s + the 100ms poll
-    // granularity, so we assert
-    // < 5s to leave headroom on
-    // a slow CI machine.
+    // granularity, so the wall-
+    // clock bound is ~2.1s on a
+    // fast machine. We assert
+    // < 8s to leave generous
+    // headroom on a loaded
+    // ubuntu-latest CI runner
+    // (the scan path forks a
+    // child, polls the child,
+    // and reaps it; under load
+    // each of those can take
+    // hundreds of ms). 5s was
+    // the previous bound and
+    // surfaced as a flake on
+    // CI run 34480492201.
     assert!(
-        elapsed < Duration::from_secs(5),
+        elapsed < Duration::from_secs(8),
         "scan took {elapsed:?}; wall-clock timeout did not fire"
     );
     // The synthetic finding is
