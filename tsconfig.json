@@ -11,8 +11,8 @@
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
-    "verbatimModuleSyntax": true,
     "types": ["svelte"]
   },
   "include": ["src/**/*.ts", "src/**/*.svelte", "src/**/*.d.ts"]
 }
+
